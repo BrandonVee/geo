@@ -199,11 +199,14 @@ function SectionTitle({
 }) {
   return (
     <Flex gap={2} vertical>
-      <Typography.Text strong style={{ fontSize: 18 }}>
+      <Typography.Text className="overview-section-title" strong>
         {title}
       </Typography.Text>
       {description ? (
-        <Typography.Text type="secondary" style={{ fontSize: 13 }}>
+        <Typography.Text
+          className="overview-section-description"
+          type="secondary"
+        >
           {description}
         </Typography.Text>
       ) : null}
@@ -258,11 +261,7 @@ function MetricBlock({
   return (
     <div className="overview-metric-cell">
       <Typography.Text type="secondary">{title}</Typography.Text>
-      <Statistic
-        suffix={suffix}
-        value={format(metric?.value)}
-        valueStyle={{ fontSize: "clamp(24px, 2.5vw, 32px)", lineHeight: 1.2 }}
-      />
+      <Statistic suffix={suffix} value={format(metric?.value)} />
       <MetricTrend inverse={inverse} metric={metric} />
     </div>
   );
@@ -638,7 +637,7 @@ export function OverviewClient({
         <div className="overview-scope-layout">
           <div className="overview-scope-copy">
             <Space size={8}>
-              <Typography.Text strong style={{ fontSize: 17 }}>
+              <Typography.Text className="overview-scope-title" strong>
                 自动侦察范围
               </Typography.Text>
               <Badge status="processing" text="自动分析" />
