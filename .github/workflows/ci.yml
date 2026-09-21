@@ -1,0 +1,121 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: 24.12.0
+  PNPM_VERSION: 10.33.0
+  DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/geo
+  REDIS_URL: redis://127.0.0.1:6379/0
+  MIGRATION_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/geo
+  DB_APPLICATION_NAME: answerbit-geo-ci
+  DB_POOL_MAX: 4
+  JOB_DB_POOL_MAX: 2
+  APP_URL: http://127.0.0.1:3000
+  APP_VERSION: ci-${{ github.sha }}
+  APP_ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+  BETTER_AUTH_SECRET: ci-only-better-auth-secret-at-least-32-characters
+  BETTER_AUTH_URL: http://127.0.0.1:3000
+  BETTER_AUTH_TRUSTED_ORIGINS: http://127.0.0.1:3000
+  ANSWERBIT_BASE_URL: https://answerbit.qq.com
+
+jobs:
+  quality:
+    name: Quality gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Run repository quality gate
+        run: pnpm verify
+
+  database-release:
+    name: Database release gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: geo
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d geo"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Run database release
+        run: pnpm db:release
+      - name: Prove database release idempotence
+        run: pnpm db:release
+
+  container-build:
+    name: Container / ${{ matrix.target }}
+    needs:
+      - quality
+      - database-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - release
+          - web
+          - worker
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build ${{ matrix.target }} image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: ${{ matrix.target }}
+          tags: answerbit-geo-${{ matrix.target }}:ci
+          load: true
+          push: false
+          cache-from: type=gha,scope=answerbit-geo-${{ matrix.target }}
+          cache-to: type=gha,mode=max,scope=answerbit-geo-${{ matrix.target }}
+      - name: Verify non-root runtime
+        run: test "$(docker image inspect answerbit-geo-${{ matrix.target }}:ci --format '{{.Config.User}}')" = node

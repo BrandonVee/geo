@@ -1,0 +1,29 @@
+import {
+  createPublicationOrderWithBalance,
+  findPublicationChannel,
+  findPublicationChannelForUser,
+  findPublicationOrderByIdempotency,
+  findPublicationOrderWithChannel,
+  listPublicationChannels,
+  listPublicationChannelsPage,
+  listPublicationOrders,
+  recordPublicationProviderSnapshot,
+  updatePublicationOrder,
+  upsertProviderPublicationChannels,
+  upsertPublicationChannel,
+} from "@geo/db";
+
+export const publicationRepository = {
+  findByIdempotency: findPublicationOrderByIdempotency,
+  channels: listPublicationChannels,
+  channelPage: listPublicationChannelsPage,
+  upsertChannel: upsertPublicationChannel,
+  upsertProviderChannels: upsertProviderPublicationChannels,
+  findChannel: findPublicationChannel,
+  findChannelForUser: findPublicationChannelForUser,
+  orders: listPublicationOrders,
+  createOrder: createPublicationOrderWithBalance,
+  updateOrder: updatePublicationOrder,
+  recordProviderSnapshot: recordPublicationProviderSnapshot,
+  findOrder: findPublicationOrderWithChannel,
+};

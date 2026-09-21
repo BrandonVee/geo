@@ -1,0 +1,86 @@
+# 数据与安全架构
+
+本文描述持久化数据分组、租户隔离、授权、凭证保护、事务完整性和审计边界；字段级定义以 `packages/db/src/schema.ts`、`packages/db/drizzle/v1.sql` 和后续增量迁移为准。
+
+## 导航
+
+- [数据分组](#数据分组)
+- [租户隔离](#租户隔离)
+- [授权模型](#授权模型)
+- [凭证与会话](#凭证与会话)
+- [完整性与幂等](#完整性与幂等)
+- [审计与数据生命周期](#审计与数据生命周期)
+
+## 数据分组
+
+| 数据域               | 主要表                                                                                                                                       |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| 身份与租户           | `users`、`sessions`、`accounts`、`organizations`、`organization_members`                                                                     |
+| RBAC 与品牌范围      | `roles`、`permissions`、`role_permissions`、`member_roles`、`platform_user_roles`、`brand_access`、`organization_user_feature_scopes`        |
+| AnswerBit 配置与映射 | `platform_answerbit_credentials`、`platform_answerbit_brands`、`answerbit_connections`、`answerbit_team_bindings`、各类业务 mapping          |
+| 双余额与发布         | `balance_accounts`、`balance_transactions`、`feature_point_costs`、`platform_frog_credentials`、`publication_channels`、`publication_orders` |
+| 平台资源额度         | `billing_plans`、`billing_plan_versions`、`platform_subscriptions`、`subscription_entitlements`、`quota_ledgers`                             |
+| 工作流与用户数据     | `article_generation_jobs`、`content_folders`、`content_documents`、`content_document_versions`、`saved_views`、`report_exports`、通知相关表  |
+| 可观测与审计         | `answerbit_api_calls`、`operation_logs`、`runtime_heartbeats`、`runtime_task_statuses`                                                       |
+| 数据库发布状态       | `system_release_state`                                                                                                                       |
+
+`billing_*` 与 subscription 表只承担平台内部资源限额和权益，不表示在线订单、收款或支付状态。
+
+<a id="tenant_isolation"></a>
+
+## 租户隔离
+
+应用使用两类无登录数据库角色：`geo_tenant_app` 处理企业上下文，`geo_platform_app` 处理平台管理上下文。迁移为租户业务表启用 PostgreSQL RLS，应用通过事务级设置注入 `organization_id`、`user_id`、可选 `team_binding_id` 和 `brand_id`。
+
+隔离要求：
+
+- 租户 Repository 必须在 `withTenantDbContext` 的事务回调中执行；
+- 平台管理 Repository 必须在 `withPlatformDbContext` 中执行；
+- 业务查询仍显式携带组织和品牌条件，RLS 是第二道防线而非替代品；
+- 迁移账号只用于迁移和受控维护，不作为生产 Web/Worker 的常规直连身份；
+- 新租户表必须在同一迁移中评估策略、索引与 RLS 验证矩阵。
+
+## 授权模型
+
+平台权限、企业成员角色、企业功能范围和品牌范围分层表达。平台角色通过 `platform_user_roles` 授予；企业成员通过 `organization_members` 与 `member_roles` 关联；`organization_user_feature_scopes` 按目标企业收窄模块；品牌级可见范围通过 `brand_access` 限定。授权顺序为：有效 Session → 用户状态与代理商有效期 → 平台或企业角色权限 → 组织成员状态 → 企业功能范围 → 品牌范围。
+
+`account_type` 用于区分管理员、代理商和客户账号类型，不替代 RBAC 权限判断。`users.agent_valid_from` 与 `users.agent_expires_at` 以及三个代理商额度字段只允许代理商使用；时间范围必须递增，额度必须非负。空开始时间表示立即生效，空结束时间表示长期有效，额度 `null` 表示不限。角色与权限种子是授权语义的来源，企业功能范围只与角色取交集而不产生提权。新增权限点应同时更新种子、核心权限—功能映射和接口测试。
+
+本地品牌业务的统一授权还要求企业处于 active、内部 Team 绑定有效且属于企业、品牌映射属于该企业和 Team；企业管理员的全品牌权限不豁免归属校验。
+
+## 凭证与会话
+
+用户密码由 Better Auth 以 scrypt 哈希保存到 `accounts`，服务端不保留明文。用户名规范化为小写并满足固定格式；系统关闭自行注册。Session 默认有效期 7 天，每 24 小时刷新；生产环境启用安全 Cookie。
+
+AnswerBit 只使用一组平台凭证。`platform_answerbit_credentials` 保存固定 TeamID 和 API Key 密文；密文使用独立平台 AAD 做 AES-256-GCM 加密。其 `permissions` 列只为迁移兼容保留，保存时自动写入全部已接入 operation，不参与统一凭证的运行时授权判断。`platform_answerbit_brands` 保存该 TeamID 的官方品牌目录，也是平台企业的唯一来源。完整密钥只在平台管理端提交，任何读取接口只返回掩码，统一配置表只授予平台数据库角色访问。
+
+小青蛙聚合发布同样只使用一组平台凭证。`platform_frog_credentials` 保存基础地址、API Key 密文、指纹、掩码、版本和验证时间，使用独立平台 AAD 加密且只授予平台数据库角色访问；租户数据库角色无表权限。平台管理端保存前调用余额接口验证，读取接口不返回明文或密文。数据库网页配置优先于旧环境变量回退，Web 与 Worker 使用相同 `APP_ENCRYPTION_KEY` 解密同一记录。
+
+保存配置、核对目录或官方创建品牌时，每个 BrandID 自动生成一个 `organizations` 租户投影，并创建默认资源权益。内部 slug 由 BrandID 的 SHA-256 摘要稳定派生，显示名称随腾讯目录更新。每家企业通过 `answerbit_team_bindings` 保留固定 TeamID 的本地范围，并在 `answerbit_brand_mappings` 绑定自己的 Tencent BrandID。TeamID 唯一约束为 `(organization_id, team_id)`，允许各企业复用同一固定值；BrandID 与 organization_id 分别受唯一约束，保证腾讯品牌不跨企业重复分配且每家企业只有一个上游品牌。对应 `answerbit_connections` 是外键与日志占位记录，不保存统一密钥副本。平台删除企业时先删除腾讯品牌，再将 organization 标记为 `closed` 并停用绑定和连接；映射与目录项作为删除标记保留，以承接历史关系并阻止目录核对重新创建。关闭投影及历史未映射 organization 不进入正常目录和授权路径。
+
+Web Gateway 与 Worker 在验证企业绑定和 BrandID 归属后，使用平台 AAD 解密统一 Key 并直接调用已接入 OpenAPI；业务调用日志仍记录企业占位 connectionId。上游授权由腾讯官方控制台控制。企业管理员、代理商和普通成员不能创建、轮换或删除凭证，也不能停用或解绑固定 TeamID。`answerbit_credential_assignments` 与企业 AAD 密文仅保留旧多 Key 模型的迁移兼容，统一配置存在时不参与正常解析。
+
+统一腾讯配置的 `team_id` 非空且状态为 `active` 是全局业务就绪条件。Session 校验之后，业务 API 和平台管理 Service 都再次验证该条件；只有腾讯配置读写显式跳过就绪门禁。未就绪时返回 `PLATFORM_TENCENT_CONNECTION_REQUIRED`，Dashboard 对平台管理员跳转到腾讯接入，对其他账号展示等待接入状态。
+
+`runtime_heartbeats` 与 `runtime_task_statuses` 是平台级运行观测表，只授予 `geo_platform_app` 读写权限，不授予租户角色，也不包含组织或用户业务数据。Worker 使用启动时生成的实例 UUID 每 30 秒 upsert 心跳，平台只按最近更新时间推导在线、过期或离线状态；旧心跳最多保留 7 天，优雅退出会立即删除当前实例记录。周期任务状态使用任务名作为稳定主键并以 run ID 防止迟到完成覆盖新一轮状态，保留最近启动、成功、失败、耗时和错误码。这两张表不启用租户 RLS，因为租户角色没有对象权限，`db:rls-check` 同时验证租户拒绝和平台可读。
+
+`system_release_state` 是平台只读的数据库发布门禁，分别记录 schema 与幂等种子的当前修订；schema 修订由迁移和紧随其后的版本记录步骤推进，seed 修订只在完整种子执行成功后推进。两类修订统一使用 `vN` 格式并按数字比较。Web readiness 通过 `geo_platform_app` 读取并确认修订不低于应用内要求的最低版本，更高修订保持旧应用 readiness 可用。迁移身份使用独立 `MIGRATION_DATABASE_URL`，运行实例不得持有发布权限。
+
+数据库初始化历史以 `v1.sql` 表达清理后的基线，该脚本直接创建当时有效的表、枚举、约束、索引、触发器、RLS 和授权，不包含已删除表或中间 `ALTER/DROP` 过程；其 Drizzle 时间戳保留原 `0044_lively_shard` 的最终时间戳。`v2.sql` 追加平台小青蛙加密凭证表，`v3.sql` 追加客户价格等级、渠道采购成本、上游状态与固定售价表，并把 schema 修订推进为 `v3`。全新数据库依次执行 v1、v2、v3；已经完整执行旧 0000—0044 迁移链或上一版 `0044_baseline` 的数据库按时间戳跳过基线建表，再执行后续版本。`record-schema-version` 校验对应结构；未完成旧 0044 迁移的历史数据库必须先用旧版本升级完整。
+
+## 完整性与幂等
+
+- 余额、订单和对应流水在同一数据库事务内变化；扣减使用数据库条件防止负数。
+- 人工入账、品牌划拨、外部调用和返还均使用组织范围内的幂等键，并在余额事务开始时以事务级 advisory lock 串行化相同“企业 + 幂等键”的并发请求；发布订单使用同范围唯一键和事务约束。
+- 发布状态更新限定合法前态并使用条件更新，终态不可再次推进。
+- 首次管理员创建使用 advisory transaction lock，保证整个部署只成功一次。
+- 异步任务执行前重新读取主体、租户和品牌权限，不信任陈旧任务载荷。
+- `article_generation_jobs` 与 `report_exports` 使用每次领取时生成的 `execution_id` 作为执行租约；中间态、成功和失败更新都必须匹配当前租约，恢复任务清空旧租约后，迟到 Worker 不再有写权限。
+- 内容文档、版本和文件夹均保存 `organization_id` 并启用租户 RLS；文档同时保存内部团队绑定与品牌范围。AI 生成任务通过唯一 `source_job_id` 最多自动入库一次，文档版本使用 `(document_id, version)` 唯一约束并在事务锁内单调递增。
+- 异步恢复由 PostgreSQL advisory lock 保证同一时刻只有一个扫描器。文章功能扣减与返还使用同一 reference 的稳定幂等键；计费维护还会扫描已失败或取消但缺失返还的文章任务，按原扣款金额补齐一次返还。
+
+## 审计与数据生命周期
+
+平台敏感操作写入 `operation_logs`；AnswerBit 调用记录企业、操作用户、operation、状态、上游业务码、HTTP 状态和耗时，但不记录密钥。登录用户发起的完整计费功能把用户写入扣减与返还流水；AnswerBit 同步调用和用户提交的异步任务把发起用户写入调用日志；平台周期任务和升级前历史记录允许操作用户为空。流水和调用健康查询在授权后关联用户显示名称和账号，但不复制凭证信息。余额流水是不可变业务凭证，不通过修改历史记录“修正”余额，应使用新的补偿流水。AnswerBit 调用日志是可观测旁路，写入失败只输出结构化事件，不能改变上游结果或积分结算。
+
+报告文件最多包含 10,000 行，并在 24 小时后由维护任务清理。会话在用户停用时撤销；备份与恢复流程见 [部署与运行手册](../operations/deployment_and_runbook.md)。

@@ -1,0 +1,29 @@
+{
+  "name": "@geo/worker",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "start": "tsx src/index.ts",
+    "start:prod": "node dist/index.mjs",
+    "build": "tsc --noEmit && node scripts/build.mjs",
+    "lint": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@geo/config": "workspace:*",
+    "@geo/core": "workspace:*",
+    "@geo/db": "workspace:*",
+    "drizzle-orm": "^0.45.2",
+    "pg-boss": "latest",
+    "@geo/publication": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "esbuild": "0.28.2",
+    "tsx": "latest",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.0"
+  }
+}

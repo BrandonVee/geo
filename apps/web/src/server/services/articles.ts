@@ -1,0 +1,386 @@
+import type {
+  ArticleDetailQuery,
+  ArticleListQuery,
+  CreateArticleJobInput,
+  TraceArticleInput,
+} from "@geo/contracts";
+import type { Permission } from "@geo/core";
+import type { AuditContext } from "@/server/audit/write-audit";
+import { writeAudit } from "@/server/audit/write-audit";
+import { ApiError, databaseErrorCode } from "@/server/http/errors";
+import { loadAnswerBitTeamContext } from "@/server/integrations/answerbit/context";
+import {
+  getArticleContentLogged,
+  queryArticlesLogged,
+  queryArticleTemplatesLogged,
+  queryArticleTraceDetailLogged,
+  traceArticleLogged,
+} from "@/server/integrations/answerbit/gateway";
+import {
+  cancelArticleGeneration,
+  enqueueArticleGeneration,
+} from "@/server/jobs/boss";
+import { authorizeBrand } from "@/server/permissions/brand-scope";
+import { articleRepository } from "@/server/repositories/articles";
+import { getSecretCipher } from "@/server/security/secret-cipher";
+import { mapUpstreamError } from "./answerbit-connections";
+import { runPointBilledFeature } from "./feature-billing";
+type Scope = { organizationId: string; teamBindingId: string; brandId: string };
+const logContext = (
+  scope: Scope,
+  connectionId: string,
+  requestId: string,
+  actorUserId: string,
+) => ({
+  organizationId: scope.organizationId,
+  connectionId,
+  requestId,
+  actorUserId,
+  brandId: scope.brandId,
+});
+async function prepare(scope: Scope, userId: string, permission: Permission) {
+  await authorizeBrand(
+    scope.organizationId,
+    scope.teamBindingId,
+    scope.brandId,
+    userId,
+    permission,
+  );
+  return loadAnswerBitTeamContext(scope.organizationId, scope.teamBindingId);
+}
+const publicJob = (
+  job: Awaited<ReturnType<typeof articleRepository.findJob>>,
+) =>
+  job
+    ? {
+        id: job.id,
+        organizationId: job.organizationId,
+        teamBindingId: job.teamBindingId,
+        brandId: job.brandId,
+        status: job.status,
+        answerbitArticleId: job.answerbitArticleId,
+        articleTitle: job.articleTitle,
+        articleBody: job.articleBody,
+        articleStatus: job.articleStatus,
+        templateType: job.templateType,
+        source: job.source,
+        language: job.language,
+        tags: job.tags,
+        attemptCount: job.attemptCount,
+        errorCode: job.errorCode,
+        startedAt: job.startedAt,
+        completedAt: job.completedAt,
+        createdAt: job.createdAt,
+        updatedAt: job.updatedAt,
+      }
+    : undefined;
+export const articleService = {
+  async list(input: ArticleListQuery, userId: string, requestId: string) {
+    const { connection, apiKey } = await prepare(
+      input,
+      userId,
+      "resource.read",
+    );
+    try {
+      const data = await queryArticlesLogged(
+        apiKey,
+        {
+          brand_id: input.brandId,
+          limit: input.limit,
+          scroll_id: input.scrollId,
+          start_time: input.startTime,
+          end_time: input.endTime,
+          title: input.title,
+          status: input.statuses,
+          source: input.sources,
+          template_type: input.templateTypes,
+          tag_ids: input.tagIds,
+          ref_order_type: input.refOrderType,
+          language: input.languages,
+          has_video: input.hasVideo,
+          has_video_generating: input.hasVideoGenerating,
+        },
+        logContext(input, connection.id, requestId, userId),
+      );
+      await articleRepository.sync(input, data.list);
+      return data;
+    } catch (error) {
+      return mapUpstreamError(error);
+    }
+  },
+  async trace(
+    input: TraceArticleInput,
+    userId: string,
+    requestId: string,
+    audit: AuditContext,
+  ) {
+    const { connection, apiKey } = await prepare(
+      input,
+      userId,
+      "resource.create",
+    );
+    try {
+      return await runPointBilledFeature(
+        {
+          featureCode: "effect_tracking",
+          featureName: "效果追踪链接",
+          organizationId: input.organizationId,
+          brandId: input.brandId,
+          actorUserId: userId,
+          referenceId: requestId,
+        },
+        async () => {
+          const articleId = await traceArticleLogged(
+            apiKey,
+            {
+              brand_id: input.brandId,
+              title: input.title,
+              urls: input.urls,
+              tag_ids: input.tagIds,
+              language: input.language,
+            },
+            logContext(input, connection.id, requestId, userId),
+          );
+          const mapping = await articleRepository.save(input, {
+            articleId,
+            title: input.title,
+            status: 3,
+            source: 2,
+            templateType: 0,
+            language: input.language,
+          });
+          await writeAudit(audit, {
+            operation: "answerbit.article.trace",
+            resourceType: "answerbit_article",
+            resourceId: articleId,
+            summary: `创建效果追踪 ${input.title}`,
+          });
+          return mapping;
+        },
+      );
+    } catch (error) {
+      return mapUpstreamError(error);
+    }
+  },
+  async traceDetail(
+    articleId: string,
+    input: ArticleDetailQuery,
+    userId: string,
+    requestId: string,
+  ) {
+    const { connection, apiKey } = await prepare(
+      input,
+      userId,
+      "resource.read",
+    );
+    try {
+      return await queryArticleTraceDetailLogged(
+        apiKey,
+        {
+          article_id: articleId,
+          begin_date: input.beginDate,
+          end_date: input.endDate,
+        },
+        logContext(input, connection.id, requestId, userId),
+      );
+    } catch (error) {
+      return mapUpstreamError(error);
+    }
+  },
+  async content(
+    articleId: string,
+    scope: Scope,
+    userId: string,
+    requestId: string,
+  ) {
+    const { connection, apiKey } = await prepare(
+      scope,
+      userId,
+      "resource.read",
+    );
+    try {
+      const content = await getArticleContentLogged(
+        apiKey,
+        scope.brandId,
+        articleId,
+        logContext(scope, connection.id, requestId, userId),
+      );
+      await articleRepository.save(scope, {
+        articleId: content.article_id,
+        title: content.title,
+        status: content.status,
+        source: content.source,
+        templateType: content.template_type,
+        language: content.language,
+      });
+      return content;
+    } catch (error) {
+      return mapUpstreamError(error);
+    }
+  },
+  async templates(
+    scope: Scope,
+    localCode: string,
+    userId: string,
+    requestId: string,
+  ) {
+    const { connection, apiKey } = await prepare(
+      scope,
+      userId,
+      "resource.read",
+    );
+    try {
+      return await queryArticleTemplatesLogged(
+        apiKey,
+        localCode,
+        logContext(scope, connection.id, requestId, userId),
+      );
+    } catch (error) {
+      return mapUpstreamError(error);
+    }
+  },
+  async createJob(
+    input: CreateArticleJobInput,
+    idempotencyKey: string,
+    userId: string,
+    requestId: string,
+    audit: AuditContext,
+  ) {
+    await prepare(input, userId, "answerbit.resource.execute");
+    const existing = await articleRepository.findJobByIdempotency(
+      input.organizationId,
+      idempotencyKey,
+    );
+    if (existing) return { ...publicJob(existing), replayed: true };
+    const requestPayload = {
+      brand_id: input.brandId,
+      template_type: input.templateType,
+      prompt_ids: input.promptIds,
+      knowledge_ids: input.knowledgeIds,
+      once_knowledge: input.supplementalKnowledge,
+      high_ref: input.highReference,
+      tag_ids: input.tagIds,
+      language: input.language,
+    };
+    const encryptedRequestPayload = {
+      ciphertext: getSecretCipher().encrypt(
+        JSON.stringify(requestPayload),
+        input.organizationId,
+      ),
+    };
+    let job;
+    try {
+      job = await articleRepository.createJob({
+        organizationId: input.organizationId,
+        teamBindingId: input.teamBindingId,
+        brandId: input.brandId,
+        requestedBy: userId,
+        idempotencyKey,
+        requestPayload: encryptedRequestPayload,
+        templateType: input.templateType,
+        language: input.language,
+        tags: input.contentTags.map((tagName) => ({
+          tagId: `local:${tagName.toLocaleLowerCase()}`,
+          tagName,
+        })),
+      });
+    } catch (error) {
+      if (databaseErrorCode(error) === "23505") {
+        const duplicate = await articleRepository.findJobByIdempotency(
+          input.organizationId,
+          idempotencyKey,
+        );
+        if (duplicate) return { ...publicJob(duplicate), replayed: true };
+      }
+      throw error;
+    }
+    try {
+      const queueJobId = await enqueueArticleGeneration({
+        organizationId: input.organizationId,
+        jobId: job.id,
+      });
+      job = await articleRepository.updateJob(job.id, { queueJobId });
+    } catch {
+      job = await articleRepository.updateJob(job.id, {
+        status: "failed",
+        errorCode: "QUEUE_UNAVAILABLE",
+        completedAt: new Date(),
+      });
+      throw new ApiError(
+        503,
+        "ARTICLE_QUEUE_UNAVAILABLE",
+        "文章生成队列暂时不可用",
+      );
+    }
+    await writeAudit(audit, {
+      operation: "answerbit.article.generate",
+      resourceType: "article_generation_job",
+      resourceId: job.id,
+      summary: "提交按功能积分计费的 AI 文章生成任务",
+    });
+    return { ...publicJob(job), replayed: false };
+  },
+  async listJobs(scope: Scope, limit: number, userId: string) {
+    await authorizeBrand(
+      scope.organizationId,
+      scope.teamBindingId,
+      scope.brandId,
+      userId,
+      "resource.read",
+    );
+    return (await articleRepository.listJobs(scope, limit)).map((job) =>
+      publicJob(job),
+    );
+  },
+  async getJob(scope: Scope, jobId: string, userId: string) {
+    await authorizeBrand(
+      scope.organizationId,
+      scope.teamBindingId,
+      scope.brandId,
+      userId,
+      "resource.read",
+    );
+    const job = await articleRepository.findJob(scope, jobId);
+    if (!job)
+      throw new ApiError(404, "ARTICLE_JOB_NOT_FOUND", "文章生成任务不存在");
+    return publicJob(job);
+  },
+  async cancelJob(
+    scope: Scope,
+    jobId: string,
+    userId: string,
+    audit: AuditContext,
+  ) {
+    await authorizeBrand(
+      scope.organizationId,
+      scope.teamBindingId,
+      scope.brandId,
+      userId,
+      "answerbit.resource.execute",
+    );
+    const job = await articleRepository.findJob(scope, jobId);
+    if (!job)
+      throw new ApiError(404, "ARTICLE_JOB_NOT_FOUND", "文章生成任务不存在");
+    if (job.status !== "queued" || !job.queueJobId)
+      throw new ApiError(
+        409,
+        "ARTICLE_JOB_NOT_CANCELLABLE",
+        "仅等待中的任务可以取消",
+      );
+    await cancelArticleGeneration(job.queueJobId);
+    const cancelled = await articleRepository.cancelQueuedJob(scope, jobId);
+    if (!cancelled)
+      throw new ApiError(
+        409,
+        "ARTICLE_JOB_NOT_CANCELLABLE",
+        "任务已经开始执行",
+      );
+    await writeAudit(audit, {
+      operation: "answerbit.article.cancel",
+      resourceType: "article_generation_job",
+      resourceId: jobId,
+      summary: "取消尚未开始计费的文章生成任务",
+    });
+    return publicJob(cancelled);
+  },
+};

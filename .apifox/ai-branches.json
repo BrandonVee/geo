@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "updatedAt": "2026-09-17T15:28:49.551Z",
+  "projects": {
+    "8802999": {
+      "branches": {
+        "8594951": {
+          "projectId": 8802999,
+          "branchId": 8594951,
+          "name": "main",
+          "branchKind": "main",
+          "branchType": "SPRINT",
+          "isAiBranch": false,
+          "isAiWritableBranch": false,
+          "automationLifecycleStatus": null,
+          "isArchived": false,
+          "fetchedAt": "2026-09-17T15:28:49.550Z"
+        }
+      },
+      "recentEvents": [
+        {
+          "type": "branch_recorded",
+          "projectId": 8802999,
+          "branchId": 8594951,
+          "createdAt": "2026-09-15T03:21:12.089Z"
+        },
+        {
+          "type": "branch_recorded",
+          "projectId": 8802999,
+          "branchId": 8594951,
+          "createdAt": "2026-09-17T15:28:49.550Z"
+        }
+      ]
+    }
+  },
+  "recentEvents": [
+    {
+      "type": "branch_recorded",
+      "projectId": 8802999,
+      "branchId": 8594951,
+      "createdAt": "2026-09-15T03:21:12.089Z"
+    },
+    {
+      "type": "branch_recorded",
+      "projectId": 8802999,
+      "branchId": 8594951,
+      "createdAt": "2026-09-17T15:28:49.550Z"
+    }
+  ]
+}

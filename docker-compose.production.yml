@@ -1,0 +1,138 @@
+name: ${COMPOSE_PROJECT_NAME:-answerbit-geo}
+
+x-runtime-environment: &runtime-environment
+  NODE_ENV: production
+  DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+  APP_VERSION: ${APP_VERSION:-local-compose}
+  APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?APP_ENCRYPTION_KEY is required}
+  ANSWERBIT_BASE_URL: ${ANSWERBIT_BASE_URL:-https://answerbit.qq.com}
+  FROG_PUBLICATION_BASE_URL: ${FROG_PUBLICATION_BASE_URL:-http://8.138.187.158:8082}
+  FROG_PUBLICATION_API_KEY: ${FROG_PUBLICATION_API_KEY:-}
+  DB_POOL_MAX: ${DB_POOL_MAX:-10}
+  JOB_DB_POOL_MAX: ${JOB_DB_POOL_MAX:-5}
+  DB_POOL_IDLE_TIMEOUT_MS: ${DB_POOL_IDLE_TIMEOUT_MS:-30000}
+  DB_CONNECT_TIMEOUT_MS: ${DB_CONNECT_TIMEOUT_MS:-5000}
+  DB_QUERY_TIMEOUT_MS: ${DB_QUERY_TIMEOUT_MS:-30000}
+  DB_POOL_MAX_LIFETIME_SECONDS: ${DB_POOL_MAX_LIFETIME_SECONDS:-300}
+
+x-service-security: &service-security
+  init: true
+  read_only: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
+x-logging: &service-logging
+  driver: json-file
+  options:
+    max-size: 20m
+    max-file: "5"
+
+services:
+  postgres:
+    profiles: [bundled]
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-geo}
+      POSTGRES_USER: ${POSTGRES_USER:-geo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [backend]
+    logging: *service-logging
+
+  redis:
+    profiles: [bundled]
+    image: redis:8-alpine
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+    command:
+      - sh
+      - -c
+      - exec redis-server --appendonly yes --save 60 1000 --requirepass "$$REDIS_PASSWORD"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'redis-cli --no-auth-warning -a "$$REDIS_PASSWORD" ping | grep -q PONG',
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [backend]
+    logging: *service-logging
+
+  release:
+    profiles: [tools]
+    build:
+      context: .
+      target: release
+    image: ${IMAGE_PREFIX:-answerbit-geo}-release:${APP_VERSION:-local-compose}
+    environment:
+      MIGRATION_DATABASE_URL: ${MIGRATION_DATABASE_URL:?MIGRATION_DATABASE_URL is required}
+      DB_APPLICATION_NAME: answerbit-geo-release
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks: [backend]
+    logging: *service-logging
+
+  web:
+    <<: *service-security
+    build:
+      context: .
+      target: web
+    image: ${IMAGE_PREFIX:-answerbit-geo}-web:${APP_VERSION:-local-compose}
+    restart: unless-stopped
+    environment:
+      <<: *runtime-environment
+      DB_APPLICATION_NAME: answerbit-geo-web
+      REDIS_URL: ${REDIS_URL:?REDIS_URL is required}
+      REDIS_CONNECT_TIMEOUT_MS: ${REDIS_CONNECT_TIMEOUT_MS:-5000}
+      APP_URL: ${APP_URL:?APP_URL is required}
+      BETTER_AUTH_URL: ${BETTER_AUTH_URL:?BETTER_AUTH_URL is required}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET is required}
+      BETTER_AUTH_TRUSTED_ORIGINS: ${BETTER_AUTH_TRUSTED_ORIGINS:?BETTER_AUTH_TRUSTED_ORIGINS is required}
+    ports:
+      - "${WEB_BIND_ADDRESS:-127.0.0.1}:${WEB_PORT:-3000}:3000"
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=128m
+    networks: [backend]
+    logging: *service-logging
+
+  worker:
+    <<: *service-security
+    build:
+      context: .
+      target: worker
+    image: ${IMAGE_PREFIX:-answerbit-geo}-worker:${APP_VERSION:-local-compose}
+    restart: unless-stopped
+    environment:
+      <<: *runtime-environment
+      DB_APPLICATION_NAME: answerbit-geo-worker
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    networks: [backend]
+    logging: *service-logging
+
+networks:
+  backend:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:

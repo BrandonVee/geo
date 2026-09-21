@@ -1,0 +1,80 @@
+# API 约定
+
+本文定义 AnswerBit GEO 自有 HTTP API 的统一资源路径、认证、请求校验、响应、错误和幂等约定；每个端点的字段与方法以同目录 OpenAPI 为准。
+
+## 路径与版本
+
+- 健康检查位于 `/api/health/live` 与 `/api/health/ready`，不纳入业务版本；
+- Better Auth 端点位于 `/api/auth/*`；
+- 业务 API 统一位于 `/api/v1/*`；
+- URL 使用资源名而非动作名，集合与成员通过 HTTP 方法区分；
+- 管理端全局资源置于 `/api/v1/admin/*`，租户资源在参数或请求体中明确 `organizationId`。
+
+## 认证与授权
+
+除健康检查和首次初始化状态/创建外，业务 API 依赖 Better Auth Session Cookie。Route 先解析 Session，再由 Service 验证平台权限、企业成员权限和品牌范围。认证通过不表示已授权；返回资源前必须完成对象级组织与品牌检查。
+
+固定 Tencent TeamID 与统一 API Key 是系统业务就绪的全局前置条件。除平台腾讯配置读取/写入外，所有业务 API 在 Session 校验后确认统一配置状态为 `active`；未完成接入时返回 `422 PLATFORM_TENCENT_CONNECTION_REQUIRED`。腾讯配置 `PUT` 会在一次请求中完成上游验证、目录导入和企业投影；日常目录一致性由 Worker 自动维护，`POST /api/v1/admin/answerbit-enterprise-syncs` 只保留为运维诊断和兼容调用。平台监控品牌扩容由 `POST /api/v1/answerbit/metering/quota-purchases` 调用腾讯官方写接口，只有腾讯返回成功后才响应成功。
+
+浏览器写请求受 Better Auth trusted origins 约束。部署到新域名时同时配置 `APP_URL`、`BETTER_AUTH_URL` 与 `BETTER_AUTH_TRUSTED_ORIGINS`。
+
+## 请求与校验
+
+JSON 请求使用 `Content-Type: application/json`。共享输入 Schema 放在 `packages/contracts`，Route 使用 Zod `safeParse`，校验失败返回 `400 VALIDATION_ERROR` 和可选 `details`。日期、分页、枚举、整数金额和 ID 的约束应由契约层表达，Service 不重复接受未校验的任意对象。
+
+列表筛选显式传递 `organizationId`、`teamBindingId`、`brandId` 等范围参数。调用方不得用前端隐藏选项代替服务端范围校验。
+
+## 响应格式
+
+成功响应：
+
+```json
+{
+  "data": {},
+  "requestId": "REQUEST_ID"
+}
+```
+
+失败响应：
+
+```json
+{
+  "error": {
+    "code": "STABLE_ERROR_CODE",
+    "message": "可展示的信息",
+    "details": []
+  },
+  "requestId": "REQUEST_ID"
+}
+```
+
+`requestId` 用于日志、上游调用和故障关联。创建资源通常返回 `201`；无响应体操作可返回 `204`；客户端不得只依据错误文案分支，应使用稳定 `error.code`。
+
+## 状态码语义
+
+| 状态码            | 语义                                                         |
+| ----------------- | ------------------------------------------------------------ |
+| `200`             | 查询或更新成功                                               |
+| `201`             | 资源创建成功                                                 |
+| `204`             | 操作成功且无响应体                                           |
+| `400`             | 请求结构、类型或业务输入格式错误                             |
+| `401`             | 缺少有效 Session                                             |
+| `402`             | 腾讯能力积分不足，外部调用未执行                             |
+| `403`             | 已认证但缺少权限或数据范围                                   |
+| `404`             | 资源不存在或对当前范围不可见                                 |
+| `409`             | 初始化、唯一键或状态机并发冲突                               |
+| `410`             | 已弃用且不再接受写入的兼容资源                               |
+| `422`             | 请求格式正确但业务前置条件不满足，例如腾讯尚未接入或余额不足 |
+| `429`             | 认证或接口限流                                               |
+| `500`             | 未分类服务端错误                                             |
+| `502`/`503`/`504` | 上游错误、系统依赖未就绪或上游超时                           |
+
+## 幂等与并发
+
+人工入账、品牌划拨、发布下单以及外部计费请求需要调用方提供或服务端生成稳定幂等键。相同企业范围内重复提交同一键应返回首次结果，而不是重复产生副作用。状态机更新以数据库当前状态为前置条件，失败使用 `409` 而非静默覆盖。
+
+GET、PUT、DELETE 按 HTTP 语义保持幂等；POST 中具有财务或外部副作用的端点必须在契约中显式包含幂等语义。腾讯监控品牌扩容的上游契约未提供幂等键：明确返回 429 表示请求被拒绝，可按 `Retry-After` 有限退避；超时或 5xx 的结果不确定，服务端不自动重放，管理员应先刷新积分、配额和流水再决定是否再次提交。
+
+## OpenAPI 维护
+
+[OpenAPI 定义](./openapi.yaml) 是客户端生成和接口联调入口。新增、重命名或删除 API 时，同一变更必须更新 Route、共享契约、OpenAPI 与相关领域/集成文档。OpenAPI 中应包含安全方案、参数范围、成功响应和主要错误响应。

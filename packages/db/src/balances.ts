@@ -1,0 +1,602 @@
+import {
+  and,
+  desc,
+  eq,
+  getTableColumns,
+  gte,
+  inArray,
+  isNull,
+  lt,
+  or,
+  sql,
+} from "drizzle-orm";
+import { db } from "./client";
+import {
+  featurePointCosts,
+  balanceAccounts,
+  balanceTransactions,
+  organizations,
+  users,
+} from "./schema";
+
+export type BalanceAsset = "answerbit_points" | "publication_cny";
+export type BalanceOperation =
+  | "grant"
+  | "allocate"
+  | "consume"
+  | "restore"
+  | "adjust";
+export type BalanceTransactionFilters = {
+  organizationId?: string;
+  userId?: string;
+  asset?: BalanceAsset;
+  operation?: BalanceOperation;
+};
+
+export type BrandPointUsageFilters = {
+  organizationId: string;
+  brandId: string;
+  beginAt: Date;
+  endAtExclusive: Date;
+  operation?: "consume" | "restore";
+  page: number;
+  pageSize: number;
+};
+
+const accountWhere = (
+  organizationId: string,
+  asset: BalanceAsset,
+  brandId?: string,
+) =>
+  and(
+    eq(balanceAccounts.organizationId, organizationId),
+    eq(balanceAccounts.asset, asset),
+    brandId
+      ? eq(balanceAccounts.brandId, brandId)
+      : isNull(balanceAccounts.brandId),
+  );
+
+async function ensureAccount(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  organizationId: string,
+  asset: BalanceAsset,
+  brandId?: string,
+) {
+  await tx
+    .insert(balanceAccounts)
+    .values({ organizationId, asset, brandId })
+    .onConflictDoNothing();
+  const [account] = await tx
+    .select()
+    .from(balanceAccounts)
+    .where(accountWhere(organizationId, asset, brandId))
+    .limit(1);
+  if (!account) throw new Error("BALANCE_ACCOUNT_NOT_FOUND");
+  return account;
+}
+
+async function lockIdempotencyKey(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  organizationId: string,
+  idempotencyKey: string,
+) {
+  await tx.execute(
+    sql`select pg_advisory_xact_lock(hashtext(${organizationId}), hashtext(${idempotencyKey}))`,
+  );
+}
+
+// @project-doc docs/domains/balance_and_publication.md#balance_invariants
+export async function grantBalance(input: {
+  organizationId: string;
+  asset: BalanceAsset;
+  amount: number;
+  reason: string;
+  idempotencyKey: string;
+  actorUserId: string;
+}) {
+  return db.transaction(async (tx) => {
+    await lockIdempotencyKey(tx, input.organizationId, input.idempotencyKey);
+    const [replay] = await tx
+      .select()
+      .from(balanceTransactions)
+      .where(
+        and(
+          eq(balanceTransactions.organizationId, input.organizationId),
+          eq(balanceTransactions.idempotencyKey, input.idempotencyKey),
+        ),
+      )
+      .limit(1);
+    if (replay) return { transaction: replay, replayed: true as const };
+    const account = await ensureAccount(tx, input.organizationId, input.asset);
+    const [updated] = await tx
+      .update(balanceAccounts)
+      .set({
+        balance: sql`${balanceAccounts.balance} + ${input.amount}`,
+        updatedAt: new Date(),
+      })
+      .where(eq(balanceAccounts.id, account.id))
+      .returning();
+    const [transaction] = await tx
+      .insert(balanceTransactions)
+      .values({
+        organizationId: input.organizationId,
+        asset: input.asset,
+        operation: "grant",
+        amount: input.amount,
+        targetAccountId: account.id,
+        targetBalanceAfter: updated!.balance,
+        referenceType: "manual_grant",
+        referenceId: input.idempotencyKey,
+        idempotencyKey: input.idempotencyKey,
+        reason: input.reason,
+        actorUserId: input.actorUserId,
+      })
+      .returning();
+    return { transaction: transaction!, replayed: false as const };
+  });
+}
+
+// @project-doc docs/domains/identity_and_access.md#agent_quotas
+export async function allocateBalance(input: {
+  organizationId: string;
+  brandId: string;
+  asset: BalanceAsset;
+  amount: number;
+  reason: string;
+  idempotencyKey: string;
+  actorUserId: string;
+}) {
+  return db.transaction(async (tx) => {
+    await lockIdempotencyKey(tx, input.organizationId, input.idempotencyKey);
+    const [replay] = await tx
+      .select()
+      .from(balanceTransactions)
+      .where(
+        and(
+          eq(balanceTransactions.organizationId, input.organizationId),
+          eq(balanceTransactions.idempotencyKey, input.idempotencyKey),
+        ),
+      )
+      .limit(1);
+    if (replay)
+      return {
+        ok: true as const,
+        transaction: replay,
+        replayed: true as const,
+      };
+    if (input.asset === "answerbit_points") {
+      const [actor] = await tx
+        .select({
+          accountType: users.accountType,
+          limit: users.agentAnswerbitPointsLimit,
+        })
+        .from(users)
+        .where(eq(users.id, input.actorUserId))
+        .for("update")
+        .limit(1);
+      if (actor?.accountType === "agent" && actor.limit !== null) {
+        const [usage] = await tx
+          .select({
+            value: sql<number>`coalesce(sum(${balanceTransactions.amount}), 0)::int`,
+          })
+          .from(balanceTransactions)
+          .where(
+            and(
+              eq(balanceTransactions.actorUserId, input.actorUserId),
+              eq(balanceTransactions.asset, "answerbit_points"),
+              eq(balanceTransactions.operation, "allocate"),
+            ),
+          );
+        if ((usage?.value ?? 0) + input.amount > actor.limit)
+          return {
+            ok: false as const,
+            code: "AGENT_ANSWERBIT_POINTS_QUOTA_EXCEEDED" as const,
+          };
+      }
+    }
+    const source = await ensureAccount(tx, input.organizationId, input.asset);
+    const target = await ensureAccount(
+      tx,
+      input.organizationId,
+      input.asset,
+      input.brandId,
+    );
+    const [debited] = await tx
+      .update(balanceAccounts)
+      .set({
+        balance: sql`${balanceAccounts.balance} - ${input.amount}`,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(balanceAccounts.id, source.id),
+          sql`${balanceAccounts.balance} >= ${input.amount}`,
+        ),
+      )
+      .returning();
+    if (!debited)
+      return { ok: false as const, code: "INSUFFICIENT_BALANCE" as const };
+    const [credited] = await tx
+      .update(balanceAccounts)
+      .set({
+        balance: sql`${balanceAccounts.balance} + ${input.amount}`,
+        updatedAt: new Date(),
+      })
+      .where(eq(balanceAccounts.id, target.id))
+      .returning();
+    const [transaction] = await tx
+      .insert(balanceTransactions)
+      .values({
+        organizationId: input.organizationId,
+        asset: input.asset,
+        operation: "allocate",
+        amount: input.amount,
+        sourceAccountId: source.id,
+        targetAccountId: target.id,
+        sourceBalanceAfter: debited.balance,
+        targetBalanceAfter: credited!.balance,
+        referenceType: "brand_allocation",
+        referenceId: input.brandId,
+        idempotencyKey: input.idempotencyKey,
+        reason: input.reason,
+        actorUserId: input.actorUserId,
+      })
+      .returning();
+    return {
+      ok: true as const,
+      transaction: transaction!,
+      replayed: false as const,
+    };
+  });
+}
+
+export async function consumeBalance(input: {
+  organizationId: string;
+  brandId?: string;
+  asset: BalanceAsset;
+  amount: number;
+  referenceType: string;
+  referenceId: string;
+  idempotencyKey: string;
+  reason: string;
+  actorUserId?: string;
+}) {
+  if (input.amount === 0) return { ok: true as const, skipped: true as const };
+  return db.transaction(async (tx) => {
+    await lockIdempotencyKey(tx, input.organizationId, input.idempotencyKey);
+    const [replay] = await tx
+      .select()
+      .from(balanceTransactions)
+      .where(
+        and(
+          eq(balanceTransactions.organizationId, input.organizationId),
+          eq(balanceTransactions.idempotencyKey, input.idempotencyKey),
+        ),
+      )
+      .limit(1);
+    if (replay)
+      return {
+        ok: true as const,
+        transaction: replay,
+        replayed: true as const,
+      };
+    const account = await ensureAccount(
+      tx,
+      input.organizationId,
+      input.asset,
+      input.brandId,
+    );
+    const [updated] = await tx
+      .update(balanceAccounts)
+      .set({
+        balance: sql`${balanceAccounts.balance} - ${input.amount}`,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(balanceAccounts.id, account.id),
+          sql`${balanceAccounts.balance} >= ${input.amount}`,
+        ),
+      )
+      .returning();
+    if (!updated)
+      return { ok: false as const, code: "INSUFFICIENT_BALANCE" as const };
+    const [transaction] = await tx
+      .insert(balanceTransactions)
+      .values({
+        organizationId: input.organizationId,
+        asset: input.asset,
+        operation: "consume",
+        amount: input.amount,
+        sourceAccountId: account.id,
+        sourceBalanceAfter: updated.balance,
+        referenceType: input.referenceType,
+        referenceId: input.referenceId,
+        idempotencyKey: input.idempotencyKey,
+        reason: input.reason,
+        actorUserId: input.actorUserId,
+      })
+      .returning();
+    return {
+      ok: true as const,
+      transaction: transaction!,
+      replayed: false as const,
+    };
+  });
+}
+
+export async function restoreBalance(input: {
+  organizationId: string;
+  brandId?: string;
+  asset: BalanceAsset;
+  amount: number;
+  referenceType: string;
+  referenceId: string;
+  idempotencyKey: string;
+  reason: string;
+  actorUserId?: string;
+}) {
+  return db.transaction(async (tx) => {
+    await lockIdempotencyKey(tx, input.organizationId, input.idempotencyKey);
+    const [replay] = await tx
+      .select()
+      .from(balanceTransactions)
+      .where(
+        and(
+          eq(balanceTransactions.organizationId, input.organizationId),
+          eq(balanceTransactions.idempotencyKey, input.idempotencyKey),
+        ),
+      )
+      .limit(1);
+    if (replay) return replay;
+    const account = await ensureAccount(
+      tx,
+      input.organizationId,
+      input.asset,
+      input.brandId,
+    );
+    const [updated] = await tx
+      .update(balanceAccounts)
+      .set({
+        balance: sql`${balanceAccounts.balance} + ${input.amount}`,
+        updatedAt: new Date(),
+      })
+      .where(eq(balanceAccounts.id, account.id))
+      .returning();
+    const [transaction] = await tx
+      .insert(balanceTransactions)
+      .values({
+        organizationId: input.organizationId,
+        asset: input.asset,
+        operation: "restore",
+        amount: input.amount,
+        targetAccountId: account.id,
+        targetBalanceAfter: updated!.balance,
+        referenceType: input.referenceType,
+        referenceId: input.referenceId,
+        idempotencyKey: input.idempotencyKey,
+        reason: input.reason,
+        actorUserId: input.actorUserId,
+      })
+      .returning();
+    return transaction!;
+  });
+}
+
+export function listBalances(organizationId: string) {
+  return db
+    .select()
+    .from(balanceAccounts)
+    .where(eq(balanceAccounts.organizationId, organizationId))
+    .orderBy(balanceAccounts.asset, balanceAccounts.brandId);
+}
+export function listAllBalances() {
+  return db
+    .select()
+    .from(balanceAccounts)
+    .orderBy(
+      balanceAccounts.organizationId,
+      balanceAccounts.asset,
+      balanceAccounts.brandId,
+    );
+}
+const balanceTransactionWhere = (input: BalanceTransactionFilters) =>
+  and(
+    input.organizationId
+      ? eq(balanceTransactions.organizationId, input.organizationId)
+      : undefined,
+    input.userId
+      ? eq(balanceTransactions.actorUserId, input.userId)
+      : undefined,
+    input.asset ? eq(balanceTransactions.asset, input.asset) : undefined,
+    input.operation
+      ? eq(balanceTransactions.operation, input.operation)
+      : undefined,
+  );
+
+const balanceTransactionSelection = {
+  ...getTableColumns(balanceTransactions),
+  organizationName: organizations.name,
+  actorName: users.name,
+  actorUsername: users.username,
+};
+
+export function listBalanceTransactions(
+  input: BalanceTransactionFilters & { limit?: number },
+) {
+  return db
+    .select(balanceTransactionSelection)
+    .from(balanceTransactions)
+    .innerJoin(
+      organizations,
+      eq(organizations.id, balanceTransactions.organizationId),
+    )
+    .leftJoin(users, eq(users.id, balanceTransactions.actorUserId))
+    .where(balanceTransactionWhere(input))
+    .orderBy(desc(balanceTransactions.createdAt))
+    .limit(input.limit ?? 100);
+}
+
+export async function listAllBalanceTransactions(
+  input: BalanceTransactionFilters & { page: number; pageSize: number },
+) {
+  const where = balanceTransactionWhere(input);
+  const [list, [count]] = await Promise.all([
+    db
+      .select(balanceTransactionSelection)
+      .from(balanceTransactions)
+      .innerJoin(
+        organizations,
+        eq(organizations.id, balanceTransactions.organizationId),
+      )
+      .leftJoin(users, eq(users.id, balanceTransactions.actorUserId))
+      .where(where)
+      .orderBy(desc(balanceTransactions.createdAt))
+      .limit(input.pageSize)
+      .offset((input.page - 1) * input.pageSize),
+    db
+      .select({ value: sql<number>`count(*)::int` })
+      .from(balanceTransactions)
+      .where(where),
+  ]);
+  const total = count?.value ?? 0;
+  return {
+    list,
+    pagination: {
+      page: input.page,
+      pageSize: input.pageSize,
+      total,
+      pages: Math.ceil(total / input.pageSize),
+    },
+  };
+}
+
+export async function getBrandPointUsage(input: BrandPointUsageFilters) {
+  const [brandAccount] = await db
+    .select()
+    .from(balanceAccounts)
+    .where(
+      and(
+        eq(balanceAccounts.organizationId, input.organizationId),
+        eq(balanceAccounts.brandId, input.brandId),
+        eq(balanceAccounts.asset, "answerbit_points"),
+      ),
+    )
+    .limit(1);
+  const [organizationAccount] = await db
+    .select()
+    .from(balanceAccounts)
+    .where(
+      and(
+        eq(balanceAccounts.organizationId, input.organizationId),
+        isNull(balanceAccounts.brandId),
+        eq(balanceAccounts.asset, "answerbit_points"),
+      ),
+    )
+    .limit(1);
+  if (!brandAccount)
+    return {
+      balance: 0,
+      organizationBalance: organizationAccount?.balance ?? 0,
+      summary: { consumed: 0, restored: 0, transactionCount: 0 },
+      list: [],
+      pagination: {
+        page: input.page,
+        pageSize: input.pageSize,
+        total: 0,
+        pages: 0,
+      },
+    };
+
+  const periodWhere = and(
+    eq(balanceTransactions.organizationId, input.organizationId),
+    eq(balanceTransactions.asset, "answerbit_points"),
+    or(
+      eq(balanceTransactions.sourceAccountId, brandAccount.id),
+      eq(balanceTransactions.targetAccountId, brandAccount.id),
+    ),
+    inArray(balanceTransactions.operation, ["consume", "restore"]),
+    gte(balanceTransactions.createdAt, input.beginAt),
+    lt(balanceTransactions.createdAt, input.endAtExclusive),
+  );
+  const listWhere = and(
+    periodWhere,
+    input.operation
+      ? eq(balanceTransactions.operation, input.operation)
+      : undefined,
+  );
+  const [[summary], list, [count]] = await Promise.all([
+    db
+      .select({
+        consumed: sql<number>`coalesce(sum(case when ${balanceTransactions.operation} = 'consume' then ${balanceTransactions.amount} else 0 end), 0)::int`,
+        restored: sql<number>`coalesce(sum(case when ${balanceTransactions.operation} = 'restore' then ${balanceTransactions.amount} else 0 end), 0)::int`,
+        transactionCount: sql<number>`count(*)::int`,
+      })
+      .from(balanceTransactions)
+      .where(periodWhere),
+    db
+      .select(balanceTransactionSelection)
+      .from(balanceTransactions)
+      .innerJoin(
+        organizations,
+        eq(organizations.id, balanceTransactions.organizationId),
+      )
+      .leftJoin(users, eq(users.id, balanceTransactions.actorUserId))
+      .where(listWhere)
+      .orderBy(desc(balanceTransactions.createdAt))
+      .limit(input.pageSize)
+      .offset((input.page - 1) * input.pageSize),
+    db
+      .select({ value: sql<number>`count(*)::int` })
+      .from(balanceTransactions)
+      .where(listWhere),
+  ]);
+  const total = count?.value ?? 0;
+  return {
+    balance: brandAccount.balance,
+    organizationBalance: organizationAccount?.balance ?? 0,
+    summary: summary ?? { consumed: 0, restored: 0, transactionCount: 0 },
+    list,
+    pagination: {
+      page: input.page,
+      pageSize: input.pageSize,
+      total,
+      pages: Math.ceil(total / input.pageSize),
+    },
+  };
+}
+export async function getFeaturePointCost(featureCode: string) {
+  const [row] = await db
+    .select()
+    .from(featurePointCosts)
+    .where(eq(featurePointCosts.featureCode, featureCode))
+    .limit(1);
+  return row?.points ?? 0;
+}
+export async function setFeaturePointCost(input: {
+  featureCode: string;
+  points: number;
+  description: string;
+  updatedBy: string;
+}) {
+  const [row] = await db
+    .insert(featurePointCosts)
+    .values(input)
+    .onConflictDoUpdate({
+      target: featurePointCosts.featureCode,
+      set: {
+        points: input.points,
+        description: input.description,
+        updatedBy: input.updatedBy,
+        updatedAt: new Date(),
+      },
+    })
+    .returning();
+  return row!;
+}
+export function listFeaturePointCosts() {
+  return db
+    .select()
+    .from(featurePointCosts)
+    .orderBy(featurePointCosts.featureCode);
+}

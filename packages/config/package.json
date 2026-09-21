@@ -1,0 +1,22 @@
+{
+  "name": "@geo/config",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "exports": {
+    ".": "./src/env.ts"
+  },
+  "dependencies": {
+    "zod": "latest"
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "lint": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.0"
+  }
+}
