@@ -176,7 +176,7 @@ function Trend({
       xField="date"
       yField="value"
       colorField="series"
-      height={screens.md ? 250 : 220}
+      height={screens.md ? 220 : 196}
       shapeField="smooth"
       axis={{
         y: {
@@ -198,13 +198,14 @@ function SectionTitle({
   description?: string;
 }) {
   return (
-    <Flex gap={2} vertical>
-      <Typography.Text className="overview-section-title" strong>
+    <Flex className="overview-section-heading" gap={2} vertical>
+      <Typography.Text className="overview-section-title" strong title={title}>
         {title}
       </Typography.Text>
       {description ? (
         <Typography.Text
           className="overview-section-description"
+          title={description}
           type="secondary"
         >
           {description}
