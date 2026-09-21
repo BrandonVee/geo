@@ -3848,6 +3848,8 @@ html[data-theme="dark"] .admin-publication-flow-step > small {
   --dashboard-accent: #6366f1;
   --dashboard-accent-strong: #4f46e5;
   --dashboard-accent-soft: #eef0ff;
+  --dashboard-text-strong: #172033;
+  --dashboard-text-muted: #6b7280;
   min-height: 100vh;
   height: 100vh;
   overflow: hidden;
@@ -3861,6 +3863,8 @@ html[data-theme="dark"] .dashboard-shell {
   --dashboard-accent: #818cf8;
   --dashboard-accent-strong: #a5b4fc;
   --dashboard-accent-soft: rgba(129, 140, 248, 0.16);
+  --dashboard-text-strong: #f3f4f6;
+  --dashboard-text-muted: #9ca3af;
 }
 .dashboard-sidebar {
   position: sticky !important;
@@ -4102,9 +4106,48 @@ html[data-theme="dark"] .dashboard-shell {
 }
 .overview-insight-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.45fr) minmax(340px, 0.8fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
   align-items: stretch;
+}
+.overview-recon-workspace {
+  display: grid;
+  gap: 16px;
+}
+.overview-recon-intro {
+  display: flex;
+  gap: 16px;
+  align-items: flex-end;
+  justify-content: space-between;
+}
+.overview-recon-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+.overview-recon-summary > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--overview-border);
+  border-radius: 8px;
+  background: var(--dashboard-soft-bg);
+}
+.overview-recon-summary > div > strong {
+  color: var(--dashboard-text-strong);
+  font-size: 22px;
+  line-height: 1.25;
+}
+.overview-recon-summary small {
+  overflow: hidden;
+  color: var(--dashboard-text-muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.overview-card-wide {
+  grid-column: 1 / -1;
 }
 .overview-panel {
   min-width: 0;
@@ -4287,6 +4330,12 @@ html[data-theme="dark"] .dashboard-shell {
   .overview-insight-grid {
     grid-template-columns: 1fr;
   }
+  .overview-card-wide {
+    grid-column: auto;
+  }
+  .overview-recon-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
   .overview-action-grid {
     grid-template-columns: 1fr;
   }
@@ -4302,6 +4351,9 @@ html[data-theme="dark"] .dashboard-shell {
   .overview-scope-copy {
     display: grid;
     justify-content: normal;
+  }
+  .overview-recon-intro {
+    display: grid;
   }
   .overview-metric-cell {
     gap: 5px;
@@ -4357,6 +4409,9 @@ html[data-theme="dark"] .dashboard-shell {
   }
   .overview-rank-summary > div {
     padding: 10px;
+  }
+  .overview-recon-summary {
+    grid-template-columns: 1fr;
   }
 }
 

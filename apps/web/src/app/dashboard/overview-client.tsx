@@ -53,7 +53,13 @@ import {
   ModelLabel,
   modelSelectOptions,
 } from "./model-display";
-import { buildExposureTrendData } from "./overview-trend";
+import {
+  buildAverageRankTrendData,
+  buildExposureTrendData,
+  buildScoreTrendData,
+  buildTaskCountTrendData,
+  type OverviewTrendPoint,
+} from "./overview-trend";
 import {
   readStoredBrandId,
   readStoredOrganizationId,
@@ -94,12 +100,35 @@ type ExposureTrends = {
     }[];
   }[];
 };
+type ScoreTrends = {
+  brand_statistics: {
+    date: string;
+    name?: string;
+    score: number;
+    task_count: number;
+  }[];
+  competitor_statistics: {
+    competitor_id: string;
+    name: string;
+    statistics: {
+      date: string;
+      score: number;
+      task_count: number;
+    }[];
+  }[];
+};
 type Rank = {
   competitor_id: string;
   competitor_name: string;
   exposure: number;
   fluctuation: number;
   avg_rank: Metric;
+};
+type ScoreRank = {
+  competitor_id: string;
+  competitor_name: string;
+  score: number;
+  fluctuation: number;
 };
 type OverviewTab = "trend" | "competition" | "actions";
 
@@ -122,28 +151,39 @@ const format = (value?: number) =>
       ? String(value)
       : value.toFixed(1);
 
-function Trend({ data }: { data: ExposureTrends | null }) {
+function Trend({
+  data,
+  suffix,
+  emptyDescription,
+}: {
+  data: OverviewTrendPoint[];
+  suffix?: string;
+  emptyDescription: string;
+}) {
   const screens = Grid.useBreakpoint();
   const { mode } = useThemeMode();
-  const chartData = useMemo(() => buildExposureTrendData(data), [data]);
 
-  if (!chartData.length)
+  if (!data.length)
     return (
       <Empty
         image={Empty.PRESENTED_IMAGE_SIMPLE}
-        description="选择品牌后加载趋势"
+        description={emptyDescription}
       />
     );
   return (
     <Line
-      data={chartData}
+      data={data}
       xField="date"
-      yField="exposure"
+      yField="value"
       colorField="series"
-      height={screens.md ? 280 : 236}
+      height={screens.md ? 250 : 220}
       shapeField="smooth"
-      axis={{ y: { labelFormatter: (value: number) => `${value}%` } }}
-      style={{ lineWidth: 3 }}
+      axis={{
+        y: {
+          labelFormatter: (value: number) => `${value}${suffix ?? ""}`,
+        },
+      }}
+      style={{ lineWidth: 2.5 }}
       legend={{ color: { position: "top" } }}
       theme={mode === "dark" ? "classicDark" : "classic"}
     />
@@ -249,7 +289,9 @@ export function OverviewClient({
   const [competitors, setCompetitors] = useState<Competitor[]>([]);
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [trends, setTrends] = useState<ExposureTrends | null>(null);
+  const [scoreTrends, setScoreTrends] = useState<ScoreTrends | null>(null);
   const [ranks, setRanks] = useState<Rank[]>([]);
+  const [scoreRanks, setScoreRanks] = useState<ScoreRank[]>([]);
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<OverviewTab>("trend");
   const [competitorQuery, setCompetitorQuery] = useState("");
@@ -265,7 +307,9 @@ export function OverviewClient({
     setCompetitors([]);
     setMetrics(null);
     setTrends(null);
+    setScoreTrends(null);
     setRanks([]);
+    setScoreRanks([]);
     setLastSyncedAt(null);
     setLoading(false);
   }, []);
@@ -402,17 +446,31 @@ export function OverviewClient({
       const all = comparison
         ? { ...common, competitorIds: comparison }
         : common;
-      const [nextMetrics, nextTrends, nextRanks] = await Promise.all([
+      const [
+        nextMetrics,
+        nextTrends,
+        nextRanks,
+        nextScoreTrends,
+        nextScoreRanks,
+      ] = await Promise.all([
         getApiData<Metrics>(`/answerbit/dashboard?${qs(common)}`),
         getApiData<ExposureTrends>(
           `/answerbit/dashboard/exposure-trends?${qs(all)}`,
         ),
         getApiData<Rank[]>(`/answerbit/dashboard/exposure-rank?${qs(all)}`),
+        getApiData<ScoreTrends>(
+          `/answerbit/dashboard/score-trends?${qs(all)}`,
+        ).catch(() => null),
+        getApiData<ScoreRank[]>(
+          `/answerbit/dashboard/score-rank?${qs(all)}`,
+        ).catch(() => []),
       ]);
       if (analyticsRequestIdRef.current !== requestId) return;
       setMetrics(nextMetrics);
       setTrends(nextTrends);
+      setScoreTrends(nextScoreTrends);
       setRanks(nextRanks);
+      setScoreRanks(nextScoreRanks);
       setLastSyncedAt(new Date());
     } catch (error) {
       if (analyticsRequestIdRef.current !== requestId) return;
@@ -421,7 +479,9 @@ export function OverviewClient({
       );
       setMetrics(null);
       setTrends(null);
+      setScoreTrends(null);
       setRanks([]);
+      setScoreRanks([]);
     } finally {
       if (analyticsRequestIdRef.current === requestId) setLoading(false);
     }
@@ -481,6 +541,40 @@ export function OverviewClient({
 
   const rankRows = [...ranks].sort((a, b) => b.exposure - a.exposure);
   const topRank = rankRows[0];
+  const exposureTrendPoints = useMemo(
+    () =>
+      buildExposureTrendData(trends).map((point) => ({
+        date: point.date,
+        series: point.series,
+        value: point.exposure,
+      })),
+    [trends],
+  );
+  const scoreTrendPoints = useMemo(
+    () => buildScoreTrendData(scoreTrends),
+    [scoreTrends],
+  );
+  const averageRankTrendPoints = useMemo(
+    () => buildAverageRankTrendData(trends),
+    [trends],
+  );
+  const taskCountTrendPoints = useMemo(
+    () => buildTaskCountTrendData(trends),
+    [trends],
+  );
+  const totalTaskCount =
+    trends?.brand_statistics.reduce(
+      (total, point) => total + point.task_count,
+      0,
+    ) ?? 0;
+  const activeObservationDays =
+    trends?.brand_statistics.filter((point) => point.task_count > 0).length ??
+    0;
+  const scoreRankById = new Map(
+    scoreRanks.map((item) => [item.competitor_id, item]),
+  );
+  const modelScopeCount =
+    selectedPlatforms.length || Object.keys(platforms).length;
   const filteredCompetitors = competitors.filter((item) => {
     const keyword = competitorQuery.trim().toLocaleLowerCase();
     return (
@@ -543,11 +637,14 @@ export function OverviewClient({
       >
         <div className="overview-scope-layout">
           <div className="overview-scope-copy">
-            <Typography.Text strong style={{ fontSize: 17 }}>
-              分析范围
-            </Typography.Text>
+            <Space size={8}>
+              <Typography.Text strong style={{ fontSize: 17 }}>
+                自动侦察范围
+              </Typography.Text>
+              <Badge status="processing" text="自动分析" />
+            </Space>
             <Typography.Text type="secondary">
-              企业、品牌与时间窗口
+              默认读取当前品牌与近 30 天，调整范围后自动重算
             </Typography.Text>
           </div>
           <div className="overview-filter-grid">
@@ -626,13 +723,12 @@ export function OverviewClient({
             </label>
             <Button
               className="overview-refresh-button"
-              type="primary"
               icon={<ReloadOutlined />}
               loading={loading}
               disabled={!scopeReady}
               onClick={() => void loadAnalytics()}
             >
-              刷新数据
+              重新同步
             </Button>
           </div>
         </div>
@@ -669,97 +765,224 @@ export function OverviewClient({
                 </Space>
               ),
               children: (
-                <div className="overview-tab-panel overview-insight-grid">
-                  <Card
-                    className="overview-inner-card"
-                    styles={{ body: { padding: compact ? 12 : 20 } }}
-                    title={
-                      <SectionTitle
-                        description={`共 ${rangeDays} 天 · ${beginDate} 至 ${endDate}`}
-                        title="提及率走势"
-                      />
-                    }
-                  >
-                    <Trend data={trends} />
-                  </Card>
-                  <Card
-                    className="overview-inner-card"
-                    styles={{ body: { padding: compact ? 12 : 20 } }}
-                    title={
-                      <SectionTitle
-                        description="按品牌提及率由高到低"
-                        title="竞争位次"
-                      />
-                    }
-                  >
-                    <div className="overview-rank-summary">
-                      <div>
-                        <Typography.Text type="secondary">
-                          对比对象
-                        </Typography.Text>
-                        <Typography.Text strong>
-                          {rankRows.length}
-                        </Typography.Text>
-                      </div>
-                      <div>
-                        <Typography.Text type="secondary">
-                          最高提及率
-                        </Typography.Text>
-                        <Typography.Text strong>
-                          {topRank ? `${topRank.exposure.toFixed(1)}%` : "—"}
-                        </Typography.Text>
-                      </div>
-                    </div>
-                    <Table<Rank>
-                      key={`rank-${organizationId}-${brandId}`}
-                      dataSource={rankRows}
-                      loading={loading}
-                      pagination={{
-                        defaultPageSize: 5,
-                        hideOnSinglePage: rankRows.length <= 5,
-                        showSizeChanger: false,
-                      }}
-                      rowKey="competitor_id"
-                      size="small"
-                      tableLayout="fixed"
-                      columns={[
-                        {
-                          title: "品牌",
-                          dataIndex: "competitor_name",
-                          ellipsis: true,
-                        },
-                        {
-                          title: "提及率",
-                          dataIndex: "exposure",
-                          align: "right",
-                          width: 88,
-                          sorter: (a, b) => a.exposure - b.exposure,
-                          render: (value: number) => (
-                            <Typography.Text strong>
-                              {value.toFixed(1)}%
-                            </Typography.Text>
-                          ),
-                        },
-                        {
-                          title: "平均排名",
-                          dataIndex: ["avg_rank", "value"],
-                          align: "right",
-                          responsive: ["sm" as const],
-                          width: 100,
-                          sorter: (a, b) => a.avg_rank.value - b.avg_rank.value,
-                          render: (value: number) => value.toFixed(1),
-                        },
-                      ]}
-                      locale={{
-                        emptyText: (
-                          <Empty
-                            image={Empty.PRESENTED_IMAGE_SIMPLE}
-                            description="暂无排行数据"
-                          />
-                        ),
-                      }}
+                <div className="overview-tab-panel overview-recon-workspace">
+                  <div className="overview-recon-intro">
+                    <SectionTitle
+                      description="系统按当前范围自动读取多组指标，不需要先提交筛选条件"
+                      title="数据侦察"
                     />
-                  </Card>
+                    <Space size={[6, 6]} wrap>
+                      <Tag>{selectedBrand?.name || "等待品牌"}</Tag>
+                      <Tag>{rangeDays} 天窗口</Tag>
+                      <Tag>
+                        {selectedPlatforms.length
+                          ? `${selectedPlatforms.length} 个指定模型`
+                          : `全部 ${modelScopeCount} 个模型`}
+                      </Tag>
+                    </Space>
+                  </div>
+
+                  <div className="overview-recon-summary">
+                    <div>
+                      <Typography.Text type="secondary">
+                        侦察任务样本
+                      </Typography.Text>
+                      <Typography.Text strong>
+                        {totalTaskCount.toLocaleString()}
+                      </Typography.Text>
+                      <small>当前品牌累计监测任务</small>
+                    </div>
+                    <div>
+                      <Typography.Text type="secondary">
+                        有效监测天数
+                      </Typography.Text>
+                      <Typography.Text strong>
+                        {activeObservationDays}/{rangeDays}
+                      </Typography.Text>
+                      <small>有任务数据的日期覆盖</small>
+                    </div>
+                    <div>
+                      <Typography.Text type="secondary">
+                        竞争观察对象
+                      </Typography.Text>
+                      <Typography.Text strong>
+                        {competitors.length}
+                      </Typography.Text>
+                      <small>自动加入趋势和位次对比</small>
+                    </div>
+                    <div>
+                      <Typography.Text type="secondary">
+                        模型侦察范围
+                      </Typography.Text>
+                      <Typography.Text strong>
+                        {modelScopeCount}
+                      </Typography.Text>
+                      <small>
+                        {selectedPlatforms.length
+                          ? "当前指定模型"
+                          : "全部可用模型"}
+                      </small>
+                    </div>
+                  </div>
+
+                  <div className="overview-insight-grid">
+                    <Card
+                      className="overview-inner-card overview-card-wide"
+                      styles={{ body: { padding: compact ? 12 : 20 } }}
+                      title={
+                        <SectionTitle
+                          description={`品牌与竞品的提及率变化 · ${beginDate} 至 ${endDate}`}
+                          title="提及率走势"
+                        />
+                      }
+                    >
+                      <Trend
+                        data={exposureTrendPoints}
+                        emptyDescription="暂无提及率趋势数据"
+                        suffix="%"
+                      />
+                    </Card>
+
+                    <Card
+                      className="overview-inner-card"
+                      styles={{ body: { padding: compact ? 12 : 20 } }}
+                      title={
+                        <SectionTitle
+                          description="综合衡量回答表现与品牌可见度"
+                          title="曝光效果走势"
+                        />
+                      }
+                    >
+                      <Trend
+                        data={scoreTrendPoints}
+                        emptyDescription="暂无曝光效果趋势数据"
+                      />
+                    </Card>
+
+                    <Card
+                      className="overview-inner-card"
+                      styles={{ body: { padding: compact ? 12 : 20 } }}
+                      title={
+                        <SectionTitle
+                          description="数值越低代表平均出现位置越靠前"
+                          title="平均排名走势"
+                        />
+                      }
+                    >
+                      <Trend
+                        data={averageRankTrendPoints}
+                        emptyDescription="暂无平均排名趋势数据"
+                      />
+                    </Card>
+
+                    <Card
+                      className="overview-inner-card"
+                      styles={{ body: { padding: compact ? 12 : 20 } }}
+                      title={
+                        <SectionTitle
+                          description="每日任务量用于判断趋势样本是否充分"
+                          title="监测任务量"
+                        />
+                      }
+                    >
+                      <Trend
+                        data={taskCountTrendPoints}
+                        emptyDescription="暂无任务量数据"
+                      />
+                    </Card>
+
+                    <Card
+                      className="overview-inner-card"
+                      styles={{ body: { padding: compact ? 12 : 20 } }}
+                      title={
+                        <SectionTitle
+                          description="同时比较提及率、排名与曝光效果"
+                          title="竞争位次"
+                        />
+                      }
+                    >
+                      <div className="overview-rank-summary">
+                        <div>
+                          <Typography.Text type="secondary">
+                            对比对象
+                          </Typography.Text>
+                          <Typography.Text strong>
+                            {rankRows.length}
+                          </Typography.Text>
+                        </div>
+                        <div>
+                          <Typography.Text type="secondary">
+                            最高提及率
+                          </Typography.Text>
+                          <Typography.Text strong>
+                            {topRank ? `${topRank.exposure.toFixed(1)}%` : "—"}
+                          </Typography.Text>
+                        </div>
+                      </div>
+                      <Table<Rank>
+                        key={`rank-${organizationId}-${brandId}`}
+                        columns={[
+                          {
+                            title: "品牌",
+                            dataIndex: "competitor_name",
+                            ellipsis: true,
+                          },
+                          {
+                            title: "提及率",
+                            dataIndex: "exposure",
+                            align: "right",
+                            width: 82,
+                            sorter: (a, b) => a.exposure - b.exposure,
+                            render: (value: number) => (
+                              <Typography.Text strong>
+                                {value.toFixed(1)}%
+                              </Typography.Text>
+                            ),
+                          },
+                          {
+                            title: "排名",
+                            dataIndex: ["avg_rank", "value"],
+                            align: "right",
+                            responsive: ["sm" as const],
+                            width: 70,
+                            sorter: (a, b) =>
+                              a.avg_rank.value - b.avg_rank.value,
+                            render: (value: number) => value.toFixed(1),
+                          },
+                          {
+                            title: "效果",
+                            align: "right",
+                            responsive: ["md" as const],
+                            width: 72,
+                            render: (_: unknown, row: Rank) => {
+                              const score = scoreRankById.get(
+                                row.competitor_id,
+                              );
+                              return score ? score.score.toFixed(1) : "—";
+                            },
+                          },
+                        ]}
+                        dataSource={rankRows}
+                        loading={loading}
+                        locale={{
+                          emptyText: (
+                            <Empty
+                              description="暂无排行数据"
+                              image={Empty.PRESENTED_IMAGE_SIMPLE}
+                            />
+                          ),
+                        }}
+                        pagination={{
+                          defaultPageSize: 5,
+                          hideOnSinglePage: rankRows.length <= 5,
+                          showSizeChanger: false,
+                        }}
+                        rowKey="competitor_id"
+                        size="small"
+                        tableLayout="fixed"
+                      />
+                    </Card>
+                  </div>
                 </div>
               ),
             },
