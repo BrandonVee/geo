@@ -1145,8 +1145,17 @@ export const publicationChannelQuerySchema = z
     q: z.string().trim().max(200).optional(),
     mediaType: z.enum(["website", "wemedia", "manual"]).optional(),
     maxPriceAmount: queryInteger(0, 0, 1_000_000_000).optional(),
+    field1: z.string().trim().max(160).optional(),
+    field2: z.string().trim().max(160).optional(),
+    field3: z.string().trim().max(160).optional(),
+    field4: z.string().trim().max(160).optional(),
+    field5: z.string().trim().max(160).optional(),
+    field6: z.string().trim().max(160).optional(),
+    field7: z.string().trim().max(160).optional(),
+    field8: z.string().trim().max(160).optional(),
+    field9: z.string().trim().max(160).optional(),
     sort: z
-      .enum(["recommended", "priceAsc", "rateDesc", "speedAsc"])
+      .enum(["recommended", "priceAsc", "priceDesc", "rateDesc", "speedAsc"])
       .default("recommended"),
   })
   .strict();

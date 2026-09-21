@@ -803,14 +803,20 @@ describe("发布渠道分页契约", () => {
         pageSize: "12",
         mediaType: "wemedia",
         maxPriceAmount: "5000",
-        sort: "rateDesc",
+        field1: "IT科技",
+        field3: "北京",
+        field9: "可发GEO排名",
+        sort: "priceDesc",
       }),
     ).toMatchObject({
       page: 2,
       pageSize: 12,
       mediaType: "wemedia",
       maxPriceAmount: 5000,
-      sort: "rateDesc",
+      field1: "IT科技",
+      field3: "北京",
+      field9: "可发GEO排名",
+      sort: "priceDesc",
     });
     expect(
       publicationChannelQuerySchema.safeParse({ pageSize: "200" }).success,

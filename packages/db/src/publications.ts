@@ -120,7 +120,16 @@ export async function listPublicationChannelsPage(input: {
   provider?: "frog_media" | "manual";
   mediaType?: "website" | "wemedia" | "manual";
   maxPriceAmount?: number;
-  sort?: "recommended" | "priceAsc" | "rateDesc" | "speedAsc";
+  field1?: string;
+  field2?: string;
+  field3?: string;
+  field4?: string;
+  field5?: string;
+  field6?: string;
+  field7?: string;
+  field8?: string;
+  field9?: string;
+  sort?: "recommended" | "priceAsc" | "priceDesc" | "rateDesc" | "speedAsc";
   category?: string;
   pricingTier?: PricingTier;
   includeTierPrices?: boolean;
@@ -164,6 +173,24 @@ export async function listPublicationChannelsPage(input: {
     conditions.push(eq(publicationChannels.category, input.category));
   if (input.maxPriceAmount !== undefined)
     conditions.push(lte(effectivePrice, input.maxPriceAmount));
+  const metadataFields = [
+    input.field1,
+    input.field2,
+    input.field3,
+    input.field4,
+    input.field5,
+    input.field6,
+    input.field7,
+    input.field8,
+    input.field9,
+  ];
+  metadataFields.forEach((value, index) => {
+    if (!value) return;
+    const fieldKey = `field_${index + 1}`;
+    conditions.push(
+      sql`coalesce(${publicationChannels.providerMetadata}->'fieldTitles'->${fieldKey}, '[]'::jsonb) @> ${JSON.stringify([value])}::jsonb`,
+    );
+  });
   if (input.q) {
     const pattern = `%${input.q}%`;
     conditions.push(
@@ -179,17 +206,22 @@ export async function listPublicationChannelsPage(input: {
   const orderBy =
     input.sort === "priceAsc"
       ? [asc(effectivePrice), asc(publicationChannels.name)]
-      : input.sort === "rateDesc"
-        ? [
-            sql`case when ${publicationChannels.providerMetadata}->>'publishRate' ~ '^[0-9]+(?:\\.[0-9]+)?$' then (${publicationChannels.providerMetadata}->>'publishRate')::numeric end desc nulls last`,
-            asc(publicationChannels.name),
-          ]
-        : input.sort === "speedAsc"
+      : input.sort === "priceDesc"
+        ? [desc(effectivePrice), asc(publicationChannels.name)]
+        : input.sort === "rateDesc"
           ? [
-              sql`case when ${publicationChannels.providerMetadata}->>'publishTimeSeconds' ~ '^[0-9]+$' then (${publicationChannels.providerMetadata}->>'publishTimeSeconds')::bigint end asc nulls last`,
+              sql`case when ${publicationChannels.providerMetadata}->>'publishRate' ~ '^[0-9]+(?:\\.[0-9]+)?$' then (${publicationChannels.providerMetadata}->>'publishRate')::numeric end desc nulls last`,
               asc(publicationChannels.name),
             ]
-          : [asc(publicationChannels.category), asc(publicationChannels.name)];
+          : input.sort === "speedAsc"
+            ? [
+                sql`case when ${publicationChannels.providerMetadata}->>'publishTimeSeconds' ~ '^[0-9]+$' then (${publicationChannels.providerMetadata}->>'publishTimeSeconds')::bigint end asc nulls last`,
+                asc(publicationChannels.name),
+              ]
+            : [
+                asc(publicationChannels.category),
+                asc(publicationChannels.name),
+              ];
   const [{ total }] = await db
     .select({ total: count() })
     .from(publicationChannels)

@@ -43,6 +43,10 @@ type Account = {
   balance: number;
 };
 type Channel = PublicationChannel;
+type PageData<T> = {
+  list: T[];
+  pagination: { page: number; pageSize: number; total: number; pages: number };
+};
 type PublicationOrder = {
   order: {
     id: string;
@@ -113,8 +117,15 @@ function BillingWorkspace({
   const attempt = useRef(new PublicationAttempt());
   const submitting = useRef(false);
   const readVersion = useRef(0);
+  const channelSearchVersion = useRef(0);
+  const channelSearchTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
+    undefined,
+  );
   const [loading, setLoading] = useState(false);
+  const [channelLoading, setChannelLoading] = useState(false);
+  const [channelSearchError, setChannelSearchError] = useState("");
   const [brandAccounts, setBrandAccounts] = useState<Account[]>([]);
+  const [channelOptions, setChannelOptions] = useState<Channel[]>([]);
   const [selectedChannel, setSelectedChannel] = useState<Channel>();
   const [orders, setOrders] = useState<PublicationOrder[]>([]);
   const [message, setMessage] = useState("");
@@ -134,7 +145,7 @@ function BillingWorkspace({
           teamBindingId: scope.teamBindingId,
           brandId: scope.brandId,
         });
-        const [brand, nextOrders, channel] = await Promise.all([
+        const [brand, nextOrders, channel, channelPage] = await Promise.all([
           api<Account[]>(`/api/v1/balances?${brandQuery}`, { signal }),
           view === "orders"
             ? api<PublicationOrder[]>(
@@ -148,12 +159,25 @@ function BillingWorkspace({
                 { signal },
               )
             : Promise.resolve(undefined),
+          view === "new"
+            ? api<PageData<Channel>>(
+                "/api/v1/publication-channels?page=1&pageSize=20&sort=recommended",
+                { cache: "no-store", signal },
+              )
+            : Promise.resolve(undefined),
         ]);
         if (signal?.aborted || version !== readVersion.current) return;
         setBrandAccounts(brand);
         setOrders(nextOrders);
-        setSelectedChannel(channel);
+        if (channelPage) {
+          setChannelOptions(
+            channel && !channelPage.list.some((item) => item.id === channel.id)
+              ? [channel, ...channelPage.list]
+              : channelPage.list,
+          );
+        }
         if (channel) {
+          setSelectedChannel(channel);
           publicationForm.setFieldValue("channelId", channel.id);
         }
       } catch (error) {
@@ -194,6 +218,56 @@ function BillingWorkspace({
       window.removeEventListener("online", refresh);
     };
   }, [load]);
+  const searchChannels = useCallback(
+    async (keyword: string) => {
+      const version = ++channelSearchVersion.current;
+      const params = new URLSearchParams({
+        page: "1",
+        pageSize: "20",
+        sort: "recommended",
+      });
+      if (keyword.trim()) params.set("q", keyword.trim());
+      setChannelLoading(true);
+      setChannelSearchError("");
+      try {
+        const page = await api<PageData<Channel>>(
+          `/api/v1/publication-channels?${params}`,
+          { cache: "no-store" },
+        );
+        if (version !== channelSearchVersion.current) return;
+        setChannelOptions((current) => {
+          const currentId = publicationForm.getFieldValue("channelId");
+          const currentChannel = current.find((item) => item.id === currentId);
+          return currentChannel &&
+            !page.list.some((item) => item.id === currentChannel.id)
+            ? [currentChannel, ...page.list]
+            : page.list;
+        });
+      } catch (error) {
+        if (version === channelSearchVersion.current)
+          setChannelSearchError(
+            error instanceof Error ? error.message : "发布渠道搜索失败",
+          );
+      } finally {
+        if (version === channelSearchVersion.current) setChannelLoading(false);
+      }
+    },
+    [publicationForm],
+  );
+  function queueChannelSearch(keyword: string) {
+    if (channelSearchTimer.current) clearTimeout(channelSearchTimer.current);
+    channelSearchTimer.current = setTimeout(
+      () => void searchChannels(keyword),
+      250,
+    );
+  }
+  useEffect(
+    () => () => {
+      if (channelSearchTimer.current) clearTimeout(channelSearchTimer.current);
+      channelSearchVersion.current += 1;
+    },
+    [],
+  );
   async function createOrder(values: PublicationForm) {
     if (submitting.current) return;
     submitting.current = true;
@@ -489,65 +563,15 @@ function BillingWorkspace({
       ) : null}
 
       {view === "new" ? (
-        <Card id="publication" title="发布内容与要求">
-          {selectedChannel ? (
-            <Card
-              extra={
-                <Button href={channelLibraryHref} icon={<GlobalOutlined />}>
-                  更换渠道
-                </Button>
-              }
-              size="small"
-              style={{ marginBottom: 20 }}
-              title="已选发布渠道"
-            >
-              <Row align="middle" gutter={[16, 12]} justify="space-between">
-                <Col>
-                  <Space direction="vertical" size={2}>
-                    <Space wrap>
-                      <Typography.Text strong>
-                        {selectedChannel.name}
-                      </Typography.Text>
-                      <Tag>
-                        {selectedChannel.provider === "frog_media"
-                          ? "聚合渠道"
-                          : "人工渠道"}
-                      </Tag>
-                      <Typography.Text type="secondary">
-                        {selectedChannel.category}
-                      </Typography.Text>
-                    </Space>
-                    <Typography.Text type="secondary">
-                      {selectedChannel.remarks || "暂无额外发布要求"}
-                    </Typography.Text>
-                  </Space>
-                </Col>
-                <Col>
-                  <Statistic
-                    formatter={() => money(selectedChannel.priceAmount)}
-                    title="本次发布"
-                    value={selectedChannel.priceAmount}
-                  />
-                </Col>
-              </Row>
-            </Card>
-          ) : (
-            <Alert
-              action={
-                <Button
-                  href={channelLibraryHref}
-                  icon={<GlobalOutlined />}
-                  type="primary"
-                >
-                  打开媒体渠道库
-                </Button>
-              }
-              message="请先在媒体渠道库筛选并选择发布渠道"
-              showIcon
-              style={{ marginBottom: 20 }}
-              type="info"
-            />
-          )}
+        <Card
+          extra={
+            <Button href={channelLibraryHref} icon={<GlobalOutlined />}>
+              浏览完整渠道库
+            </Button>
+          }
+          id="publication"
+          title="发布内容与要求"
+        >
           <Form<PublicationForm>
             form={publicationForm}
             initialValues={{
@@ -558,9 +582,74 @@ function BillingWorkspace({
             disabled={!scope.canWrite || Boolean(busy)}
             onFinish={(values) => void createOrder(values)}
           >
-            <Form.Item hidden name="channelId">
-              <Input />
+            <Form.Item
+              extra={
+                channelSearchError ||
+                "可直接搜索媒体名称、行业或发布要求；更多筛选条件请进入完整渠道库"
+              }
+              label="发布渠道"
+              name="channelId"
+              rules={[{ required: true, message: "请选择发布渠道" }]}
+              validateStatus={channelSearchError ? "error" : undefined}
+            >
+              <Select
+                allowClear
+                filterOption={false}
+                loading={channelLoading || loading}
+                notFoundContent={
+                  channelLoading ? "正在搜索渠道…" : "没有匹配的发布渠道"
+                }
+                onChange={(channelId?: string) =>
+                  setSelectedChannel(
+                    channelOptions.find((item) => item.id === channelId),
+                  )
+                }
+                onSearch={queueChannelSearch}
+                options={channelOptions.map((channel) => ({
+                  label: `${channel.name} · ${channel.category} · ${money(channel.priceAmount)}`,
+                  value: channel.id,
+                }))}
+                placeholder="输入媒体名称或行业，搜索并选择渠道"
+                showSearch
+              />
             </Form.Item>
+            {selectedChannel ? (
+              <Card
+                size="small"
+                style={{ marginBottom: 20 }}
+                title="渠道报价与要求"
+              >
+                <Row align="middle" gutter={[16, 12]} justify="space-between">
+                  <Col>
+                    <Space direction="vertical" size={2}>
+                      <Space wrap>
+                        <Typography.Text strong>
+                          {selectedChannel.name}
+                        </Typography.Text>
+                        <Tag>
+                          {selectedChannel.provider === "frog_media"
+                            ? "聚合渠道"
+                            : "人工渠道"}
+                        </Tag>
+                        <Typography.Text type="secondary">
+                          {selectedChannel.category}
+                        </Typography.Text>
+                      </Space>
+                      <Typography.Text type="secondary">
+                        {selectedChannel.remarks || "暂无额外发布要求"}
+                      </Typography.Text>
+                    </Space>
+                  </Col>
+                  <Col>
+                    <Statistic
+                      formatter={() => money(selectedChannel.priceAmount)}
+                      title="本次发布"
+                      value={selectedChannel.priceAmount}
+                    />
+                  </Col>
+                </Row>
+              </Card>
+            ) : null}
             <Form.Item
               label="内容标题"
               name="title"
