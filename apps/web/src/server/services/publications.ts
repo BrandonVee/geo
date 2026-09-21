@@ -146,6 +146,16 @@ export const publicationService = {
       provider: client.configured ? "frog_media" : "manual",
     });
   },
+  async channel(channelId: string, userId: string) {
+    if (!userId) throw new ApiError(401, "UNAUTHORIZED", "请先登录");
+    const channel = await publicationRepository.findChannelForUser(
+      channelId,
+      userId,
+    );
+    return channel?.status === "active" && channel.providerStatus === "active"
+      ? channel
+      : undefined;
+  },
   async list(
     organizationId: string,
     teamBindingId: string | undefined,

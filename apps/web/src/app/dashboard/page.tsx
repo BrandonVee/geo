@@ -14,7 +14,13 @@ export default async function DashboardPage() {
     (session.user as { accountType?: "admin" | "agent" | "customer" })
       .accountType ?? "customer";
   return (
-    <DashboardShell userName={session.user.name} active="overview">
+    <DashboardShell
+      userName={session.user.name}
+      active="overview"
+      canManageBalances={organizations.some(
+        (item) => item.role === "tenant_admin",
+      )}
+    >
       <DashboardPageHeader
         eyebrow={`品牌可见度 · 欢迎回来，${session.user.name}`}
         status="每日更新"

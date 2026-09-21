@@ -818,7 +818,7 @@ export function DocumentLibrary({
                 </Button>
                 {detail.status === "ready" ? (
                   <Button
-                    href={`/dashboard/billing?${new URLSearchParams({ title: detail.title, sourceDocumentId: detail.id }).toString()}#publication`}
+                    href={`/dashboard/publication/new?${new URLSearchParams({ title: detail.title, sourceDocumentId: detail.id }).toString()}`}
                     icon={<SendOutlined />}
                     type="primary"
                   >

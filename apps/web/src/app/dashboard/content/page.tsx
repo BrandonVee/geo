@@ -21,7 +21,13 @@ export default async function ContentPage({
     ]);
   const query = await searchParams;
   return (
-    <DashboardShell userName={session.user.name} active="content">
+    <DashboardShell
+      userName={session.user.name}
+      active="content"
+      canManageBalances={organizations.some(
+        (item) => item.role === "tenant_admin",
+      )}
+    >
       <DashboardPageHeader eyebrow="内容 / AI 创作" title="AI 内容生成" />
       <ContentClient
         featurePointCosts={{

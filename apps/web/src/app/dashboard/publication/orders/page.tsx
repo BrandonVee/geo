@@ -3,26 +3,28 @@ import { redirect } from "next/navigation";
 import { auth } from "@/server/auth/auth";
 import { hasActiveUserAccess } from "@/server/auth/user-access";
 import { organizationService } from "@/server/services/organizations";
-import { DashboardPageHeader, DashboardShell } from "../dashboard-shell";
-import { MonitoringClient } from "./monitoring-client";
-export default async function MonitoringPage() {
+import { BillingClient } from "../../billing/billing-client";
+import { DashboardPageHeader, DashboardShell } from "../../dashboard-shell";
+
+export default async function PublicationOrdersPage() {
   const session = await auth.api.getSession({ headers: await headers() });
   if (!session || !hasActiveUserAccess(session.user)) redirect("/sign-in");
   const organizations = await organizationService.list(session.user.id);
   return (
     <DashboardShell
-      userName={session.user.name}
-      active="monitoring"
+      active="publication_orders"
       canManageBalances={organizations.some(
         (item) => item.role === "tenant_admin",
       )}
+      userName={session.user.name}
     >
       <DashboardPageHeader
-        eyebrow="品牌 / 监控"
-        status="AnswerBit 同步"
-        title="监控问题库"
+        eyebrow="发布 / 履约跟踪"
+        status="每分钟刷新"
+        title="发布订单"
       />
-      <MonitoringClient
+      <BillingClient
+        initialPublication={{ title: "", note: "" }}
         organizations={organizations.map(
           ({ id, name, role, teamBindingId }) => ({
             id,
@@ -31,6 +33,7 @@ export default async function MonitoringPage() {
             teamBindingId,
           }),
         )}
+        view="orders"
       />
     </DashboardShell>
   );

@@ -10,7 +10,7 @@
   border: 1px dashed #91b9a5;
   border-radius: 14px;
   color: #18342b;
-  cursor: pointer;
+  cursor: default;
   display: grid;
   gap: 14px;
   grid-template-columns: auto 1fr auto;
@@ -195,7 +195,7 @@
   border: 1px solid #e5e9e7;
   border-radius: 13px;
   color: inherit;
-  cursor: pointer;
+  cursor: default;
   height: auto;
   min-height: 246px;
   padding: 15px;
@@ -205,6 +205,12 @@
     box-shadow 160ms ease,
     transform 160ms ease;
   white-space: normal;
+  display: flex;
+  flex-direction: column;
+}
+
+.channelCard > a:last-child {
+  margin-top: auto;
 }
 
 .channelCard:hover,

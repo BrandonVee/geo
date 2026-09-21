@@ -10,7 +10,13 @@ export default async function AnswersPage() {
   if (!session || !hasActiveUserAccess(session.user)) redirect("/sign-in");
   const organizations = await organizationService.list(session.user.id);
   return (
-    <DashboardShell userName={session.user.name} active="citations">
+    <DashboardShell
+      userName={session.user.name}
+      active="citations"
+      canManageBalances={organizations.some(
+        (item) => item.role === "tenant_admin",
+      )}
+    >
       <DashboardPageHeader
         eyebrow="回答 / 引用"
         status="证据链"

@@ -29,7 +29,13 @@ export default async function MemberSettingsPage({ searchParams }: PageProps) {
     organizations[0];
 
   return (
-    <DashboardShell userName={session.user.name} active="members">
+    <DashboardShell
+      userName={session.user.name}
+      active="members"
+      canManageBalances={memberships.some(
+        (item) => item.role === "tenant_admin",
+      )}
+    >
       <SettingsFrame
         active="members"
         description="把平台已创建的账号加入企业，并以角色和品牌范围控制最小访问权限。"

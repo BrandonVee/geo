@@ -1005,7 +1005,7 @@ export function ContentClient({
               </Typography.Paragraph>
               <Button
                 href={
-                  "/dashboard/billing?" +
+                  "/dashboard/publication/new?" +
                   new URLSearchParams({
                     title: selectedJob.articleTitle ?? "AnswerBit 生成内容",
                     sourceJobId: selectedJob.id,

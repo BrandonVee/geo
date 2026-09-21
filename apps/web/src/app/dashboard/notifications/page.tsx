@@ -11,7 +11,13 @@ export default async function NotificationsPage() {
   if (!session || !hasActiveUserAccess(session.user)) redirect("/sign-in");
   const organizations = await organizationService.list(session.user.id);
   return (
-    <DashboardShell userName={session.user.name} active="notifications">
+    <DashboardShell
+      userName={session.user.name}
+      active="notifications"
+      canManageBalances={organizations.some(
+        (item) => item.role === "tenant_admin",
+      )}
+    >
       <DashboardPageHeader
         eyebrow="站内通知 / 阈值规则"
         status="每 15 分钟评估"

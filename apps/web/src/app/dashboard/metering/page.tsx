@@ -11,7 +11,13 @@ export default async function MeteringPage() {
   if (!session || !hasActiveUserAccess(session.user)) redirect("/sign-in");
   const organizations = await organizationService.list(session.user.id);
   return (
-    <DashboardShell userName={session.user.name} active="metering">
+    <DashboardShell
+      userName={session.user.name}
+      active="metering"
+      canManageBalances={organizations.some(
+        (item) => item.role === "tenant_admin",
+      )}
+    >
       <DashboardPageHeader
         eyebrow="积分 / 用量"
         status="本系统积分账本"

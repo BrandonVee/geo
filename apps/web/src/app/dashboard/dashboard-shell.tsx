@@ -6,13 +6,16 @@ import {
   BookOutlined,
   DashboardOutlined,
   DatabaseOutlined,
+  GlobalOutlined,
   MenuUnfoldOutlined,
   RadarChartOutlined,
   SafetyCertificateOutlined,
+  SendOutlined,
   SettingOutlined,
+  SwapOutlined,
   SyncOutlined,
   TeamOutlined,
-  WalletOutlined,
+  UnorderedListOutlined,
 } from "@ant-design/icons";
 import {
   Avatar,
@@ -67,10 +70,28 @@ const items = [
     icon: <DatabaseOutlined />,
   },
   {
-    key: "billing",
-    path: "/dashboard/billing",
-    label: "余额与发布",
-    icon: <WalletOutlined />,
+    key: "publication_channels",
+    path: "/dashboard/publication/channels",
+    label: "媒体渠道",
+    icon: <GlobalOutlined />,
+  },
+  {
+    key: "publication_new",
+    path: "/dashboard/publication/new",
+    label: "提交发布",
+    icon: <SendOutlined />,
+  },
+  {
+    key: "publication_orders",
+    path: "/dashboard/publication/orders",
+    label: "发布订单",
+    icon: <UnorderedListOutlined />,
+  },
+  {
+    key: "balances",
+    path: "/dashboard/balances",
+    label: "资产划拨",
+    icon: <SwapOutlined />,
   },
   {
     key: "notifications",
@@ -95,20 +116,25 @@ const items = [
 const navigationGroups = [
   { label: "分析", keys: ["overview", "monitoring", "citations"] },
   { label: "生成", keys: ["content"] },
-  { label: "发布", keys: ["billing"] },
+  {
+    label: "发布",
+    keys: ["publication_channels", "publication_new", "publication_orders"],
+  },
   {
     label: "工作空间",
-    keys: ["metering", "notifications", "answerbit", "members"],
+    keys: ["metering", "balances", "notifications", "answerbit", "members"],
   },
 ] as const;
 
 export function DashboardShell({
   userName,
   active,
+  canManageBalances = false,
   children,
 }: {
   userName: string;
   active: string;
+  canManageBalances?: boolean;
   children: ReactNode;
 }) {
   const router = useRouter();
@@ -134,10 +160,12 @@ export function DashboardShell({
         key: group.label,
         label: group.label,
         type: "group" as const,
-        children: group.keys.map((key) => {
-          const item = items.find((candidate) => candidate.key === key)!;
-          return { key: item.key, label: item.label, icon: item.icon };
-        }),
+        children: group.keys
+          .filter((key) => key !== "balances" || canManageBalances)
+          .map((key) => {
+            const item = items.find((candidate) => candidate.key === key)!;
+            return { key: item.key, label: item.label, icon: item.icon };
+          }),
       }))}
       mode="inline"
       onClick={({ key }) => {

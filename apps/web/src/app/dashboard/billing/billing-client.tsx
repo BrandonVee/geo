@@ -1,6 +1,10 @@
 "use client";
 
-import { ReloadOutlined, SendOutlined } from "@ant-design/icons";
+import {
+  GlobalOutlined,
+  ReloadOutlined,
+  SendOutlined,
+} from "@ant-design/icons";
 import {
   Alert,
   Button,
@@ -9,7 +13,6 @@ import {
   Empty,
   Form,
   Input,
-  InputNumber,
   Modal,
   Popconfirm,
   Row,
@@ -20,7 +23,7 @@ import {
   Typography,
   type TableColumnsType,
 } from "antd";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AccessibleTable } from "../../accessible-table";
 import {
   ScopeFields,
@@ -30,11 +33,7 @@ import {
 } from "../use-answerbit-scope";
 
 import { PublicationAttempt } from "./publication-attempt";
-import {
-  PublicationChannelPicker,
-  type PublicationChannel,
-  type PublicationChannelQuery,
-} from "./publication-channel-picker";
+import { type PublicationChannel } from "./publication-channel";
 
 type Asset = "answerbit_points" | "publication_cny";
 type Account = {
@@ -42,17 +41,6 @@ type Account = {
   brandId: string | null;
   asset: Asset;
   balance: number;
-};
-type Transaction = {
-  id: string;
-  actorUserId: string | null;
-  actorName: string | null;
-  actorUsername: string | null;
-  asset: Asset;
-  operation: string;
-  amount: number;
-  reason: string;
-  createdAt: string;
 };
 type Channel = PublicationChannel;
 type PublicationOrder = {
@@ -70,7 +58,6 @@ type PublicationOrder = {
   };
   channel: Channel;
 };
-type AllocationForm = { asset: Asset; amount: number; reason: string };
 type PublicationForm = {
   channelId: string;
   title: string;
@@ -79,11 +66,6 @@ type PublicationForm = {
   note?: string;
 };
 type AppealForm = { reason: 1 | 2 | 3 | 4; detail?: string };
-type PageData<T> = {
-  list: T[];
-  pagination: { page: number; pageSize: number; total: number; pages: number };
-};
-
 const money = (amount: number) =>
   new Intl.NumberFormat("zh-CN", { style: "currency", currency: "CNY" }).format(
     amount / 100,
@@ -96,6 +78,8 @@ async function api<T>(url: string, init?: RequestInit) {
 }
 type BillingProps = {
   organizations: ScopeOrganization[];
+  view: "orders" | "new";
+  selectedChannelId?: string;
   initialPublication: {
     title: string;
     sourceJobId?: string;
@@ -116,7 +100,9 @@ export function BillingClient(props: BillingProps) {
 function BillingWorkspace({
   organizations,
   initialPublication,
+  selectedChannelId,
   scope,
+  view,
 }: BillingProps & { scope: ReturnType<typeof useAnswerBitScope> }) {
   const [sourceJobId, setSourceJobId] = useState(
     initialPublication.sourceJobId,
@@ -129,28 +115,13 @@ function BillingWorkspace({
   const readVersion = useRef(0);
   const [loading, setLoading] = useState(false);
   const [brandAccounts, setBrandAccounts] = useState<Account[]>([]);
-  const [organizationAccounts, setOrganizationAccounts] = useState<Account[]>(
-    [],
-  );
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [transactionUserId, setTransactionUserId] = useState<string>();
-  const [channels, setChannels] = useState<Channel[]>([]);
-  const [channelTotal, setChannelTotal] = useState(0);
-  const [channelLoading, setChannelLoading] = useState(false);
   const [selectedChannel, setSelectedChannel] = useState<Channel>();
   const [orders, setOrders] = useState<PublicationOrder[]>([]);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState("");
-  const [allocationAsset, setAllocationAsset] =
-    useState<Asset>("answerbit_points");
-  const [allocationForm] = Form.useForm<AllocationForm>();
   const [publicationForm] = Form.useForm<PublicationForm>();
   const [appealForm] = Form.useForm<AppealForm>();
   const [appealOrderId, setAppealOrderId] = useState<string>();
-  const organization = organizations.find(
-    (item) => item.id === scope.organizationId,
-  );
-  const canAllocate = organization?.role === "tenant_admin";
   const load = useCallback(
     async (signal?: AbortSignal) => {
       if (!scope.organizationId || !scope.teamBindingId || !scope.brandId)
@@ -163,35 +134,27 @@ function BillingWorkspace({
           teamBindingId: scope.teamBindingId,
           brandId: scope.brandId,
         });
-        const [brand, nextChannels, nextOrders] = await Promise.all([
+        const [brand, nextOrders, channel] = await Promise.all([
           api<Account[]>(`/api/v1/balances?${brandQuery}`, { signal }),
-          api<PageData<Channel>>(
-            "/api/v1/publication-channels?page=1&pageSize=12",
-            { signal },
-          ),
-          api<PublicationOrder[]>(`/api/v1/publication-orders?${brandQuery}`, {
-            signal,
-          }),
+          view === "orders"
+            ? api<PublicationOrder[]>(
+                `/api/v1/publication-orders?${brandQuery}`,
+                { signal },
+              )
+            : Promise.resolve([]),
+          view === "new" && selectedChannelId
+            ? api<Channel>(
+                `/api/v1/publication-channels/${selectedChannelId}`,
+                { signal },
+              )
+            : Promise.resolve(undefined),
         ]);
         if (signal?.aborted || version !== readVersion.current) return;
         setBrandAccounts(brand);
-        setChannels(nextChannels.list);
-        setChannelTotal(nextChannels.pagination.total);
         setOrders(nextOrders);
-        if (canAllocate) {
-          const [pool, ledger] = await Promise.all([
-            api<Account[]>(
-              `/api/v1/balances?organizationId=${scope.organizationId}`,
-              { signal },
-            ),
-            api<Transaction[]>(
-              `/api/v1/balance-transactions?organizationId=${scope.organizationId}`,
-              { signal },
-            ),
-          ]);
-          if (signal?.aborted || version !== readVersion.current) return;
-          setOrganizationAccounts(pool.filter((item) => item.brandId === null));
-          setTransactions(ledger);
+        setSelectedChannel(channel);
+        if (channel) {
+          publicationForm.setFieldValue("channelId", channel.id);
         }
       } catch (error) {
         if (!signal?.aborted && version === readVersion.current)
@@ -201,7 +164,14 @@ function BillingWorkspace({
           setLoading(false);
       }
     },
-    [scope.organizationId, scope.teamBindingId, scope.brandId, canAllocate],
+    [
+      publicationForm,
+      scope.organizationId,
+      scope.teamBindingId,
+      scope.brandId,
+      selectedChannelId,
+      view,
+    ],
   );
   useEffect(() => {
     const controller = new AbortController();
@@ -224,59 +194,6 @@ function BillingWorkspace({
       window.removeEventListener("online", refresh);
     };
   }, [load]);
-  useEffect(() => {
-    setTransactionUserId(undefined);
-  }, [scope.organizationId]);
-  const queryChannels = useCallback(async (query: PublicationChannelQuery) => {
-    const params = new URLSearchParams({
-      page: String(query.page),
-      pageSize: String(query.pageSize),
-      sort: query.sort,
-    });
-    if (query.q) params.set("q", query.q);
-    if (query.mediaType) params.set("mediaType", query.mediaType);
-    if (query.maxPriceAmount !== undefined)
-      params.set("maxPriceAmount", String(query.maxPriceAmount));
-    setChannelLoading(true);
-    try {
-      const result = await api<PageData<Channel>>(
-        `/api/v1/publication-channels?${params.toString()}`,
-      );
-      setChannels(result.list);
-      setChannelTotal(result.pagination.total);
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "发布渠道查询失败");
-    } finally {
-      setChannelLoading(false);
-    }
-  }, []);
-  async function allocate(values: AllocationForm) {
-    const { asset, amount: quantity, reason } = values;
-    setBusy("allocate");
-    try {
-      await api("/api/v1/balance-allocations", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          organizationId: scope.organizationId,
-          brandId: scope.brandId,
-          asset,
-          amount:
-            asset === "publication_cny" ? Math.round(quantity * 100) : quantity,
-          reason,
-          idempotencyKey: crypto.randomUUID(),
-        }),
-      });
-      allocationForm.resetFields();
-      allocationForm.setFieldValue("asset", allocationAsset);
-      await load();
-      setMessage("余额已划分到当前品牌");
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "余额划分失败");
-    } finally {
-      setBusy("");
-    }
-  }
   async function createOrder(values: PublicationForm) {
     if (submitting.current) return;
     submitting.current = true;
@@ -379,32 +296,21 @@ function BillingWorkspace({
       setBusy("");
     }
   }
-  const brandPoints =
-    brandAccounts.find((item) => item.asset === "answerbit_points")?.balance ??
-    0;
   const brandMoney =
     brandAccounts.find((item) => item.asset === "publication_cny")?.balance ??
     0;
   const publicationBalanceInsufficient = Boolean(
     selectedChannel && selectedChannel.priceAmount > brandMoney,
   );
-  const transactionUsers = useMemo(
-    () =>
-      [
-        ...new Map(
-          transactions
-            .filter((item) => item.actorUserId)
-            .map((item) => [item.actorUserId!, item]),
-        ).values(),
-      ].map((item) => ({
-        label: `${item.actorName ?? "未知用户"}${item.actorUsername ? ` (@${item.actorUsername})` : ""}`,
-        value: item.actorUserId!,
-      })),
-    [transactions],
-  );
-  const visibleTransactions = transactionUserId
-    ? transactions.filter((item) => item.actorUserId === transactionUserId)
-    : transactions;
+  const channelLibraryParams = new URLSearchParams();
+  if (initialPublication.title)
+    channelLibraryParams.set("title", initialPublication.title);
+  if (sourceJobId) channelLibraryParams.set("sourceJobId", sourceJobId);
+  if (sourceDocumentId)
+    channelLibraryParams.set("sourceDocumentId", sourceDocumentId);
+  if (initialPublication.note)
+    channelLibraryParams.set("note", initialPublication.note);
+  const channelLibraryHref = `/dashboard/publication/channels${channelLibraryParams.size ? `?${channelLibraryParams}` : ""}`;
   const orderColumns: TableColumnsType<PublicationOrder> = [
     {
       title: "提交时间",
@@ -512,54 +418,6 @@ function BillingWorkspace({
     },
   ];
 
-  const transactionColumns: TableColumnsType<Transaction> = [
-    {
-      title: "发生时间",
-      dataIndex: "createdAt",
-      width: 180,
-      render: (value: string) => new Date(value).toLocaleString(),
-    },
-    { title: "操作", dataIndex: "operation", width: 140 },
-    {
-      title: "操作用户",
-      key: "actor",
-      width: 180,
-      render: (_, item) =>
-        item.actorUserId ? (
-          <Space direction="vertical" size={0}>
-            <Typography.Text>{item.actorName ?? "未知用户"}</Typography.Text>
-            {item.actorUsername ? (
-              <Typography.Text type="secondary">
-                @{item.actorUsername}
-              </Typography.Text>
-            ) : null}
-          </Space>
-        ) : (
-          <Typography.Text type="secondary">
-            系统任务 / 历史记录
-          </Typography.Text>
-        ),
-    },
-    {
-      title: "资产",
-      dataIndex: "asset",
-      width: 150,
-      render: (value: Asset) =>
-        value === "answerbit_points" ? "腾讯能力积分" : "发布人民币余额",
-    },
-    { title: "说明", dataIndex: "reason" },
-    {
-      title: "数量",
-      dataIndex: "amount",
-      align: "right",
-      width: 140,
-      render: (value: number, item) =>
-        item.asset === "answerbit_points"
-          ? value.toLocaleString()
-          : money(value),
-    },
-  ];
-
   return (
     <Space
       direction="vertical"
@@ -569,46 +427,16 @@ function BillingWorkspace({
       <Row gutter={[16, 16]}>
         <Col lg={8} sm={12} xs={24}>
           <Card>
-            <Statistic title="腾讯能力积分" value={brandPoints} />
+            <Statistic
+              formatter={() => money(brandMoney)}
+              title="当前品牌发布余额"
+              value={brandMoney}
+            />
             <Typography.Text type="secondary">
-              调用成功后按规则扣减
+              提交订单时扣减，失败或确认取消后返还
             </Typography.Text>
           </Card>
         </Col>
-        <Col lg={8} sm={12} xs={24}>
-          <Card>
-            <Statistic
-              formatter={() => money(brandMoney)}
-              title="发布人民币余额"
-              value={brandMoney}
-            />
-            <Typography.Text type="secondary">仅用于媒体发布</Typography.Text>
-          </Card>
-        </Col>
-        {canAllocate
-          ? organizationAccounts.map((item) => (
-              <Col key={item.id} lg={8} sm={12} xs={24}>
-                <Card>
-                  <Statistic
-                    formatter={() =>
-                      item.asset === "answerbit_points"
-                        ? item.balance.toLocaleString()
-                        : money(item.balance)
-                    }
-                    title={
-                      item.asset === "answerbit_points"
-                        ? "企业可分配积分"
-                        : "企业可分配发布余额"
-                    }
-                    value={item.balance}
-                  />
-                  <Typography.Text type="secondary">
-                    由企业管理员划分
-                  </Typography.Text>
-                </Card>
-              </Col>
-            ))
-          : null}
       </Row>
 
       <Card title="业务范围">
@@ -628,287 +456,211 @@ function BillingWorkspace({
         />
       ) : null}
 
-      <Card
-        extra={
-          <Button
-            loading={loading}
-            icon={<ReloadOutlined />}
-            onClick={() => void load()}
-          >
-            刷新
-          </Button>
-        }
-        title="发布订单"
-      >
-        <AccessibleTable<PublicationOrder>
-          columns={orderColumns}
-          dataSource={orders}
-          locale={{
-            emptyText: (
-              <Empty
-                description="暂无发布订单"
-                image={Empty.PRESENTED_IMAGE_SIMPLE}
-              />
-            ),
-          }}
-          pagination={false}
-          rowKey={(item) => item.order.id}
-          scroll={{ x: 800 }}
-          scrollRegionLabel="发布订单，可横向滚动"
-        />
-      </Card>
-
-      {canAllocate ? (
+      {view === "orders" ? (
         <Card
           extra={
-            <Select
-              allowClear
-              aria-label="按操作用户筛选余额流水"
-              onChange={setTransactionUserId}
-              options={transactionUsers}
-              placeholder="全部用户"
-              showSearch
-              style={{ minWidth: 220 }}
-              value={transactionUserId}
-            />
+            <Button
+              loading={loading}
+              icon={<ReloadOutlined />}
+              onClick={() => void load()}
+            >
+              刷新
+            </Button>
           }
-          title="余额流水"
+          title="发布订单"
         >
-          <AccessibleTable<Transaction>
-            columns={transactionColumns}
-            dataSource={visibleTransactions}
+          <AccessibleTable<PublicationOrder>
+            columns={orderColumns}
+            dataSource={orders}
             locale={{
               emptyText: (
                 <Empty
-                  description="暂无余额流水"
+                  description="暂无发布订单"
                   image={Empty.PRESENTED_IMAGE_SIMPLE}
                 />
               ),
             }}
-            pagination={{ pageSize: 10, hideOnSinglePage: true }}
-            rowKey="id"
-            scroll={{ x: 760 }}
-            scrollRegionLabel="余额流水，可横向滚动"
+            pagination={false}
+            rowKey={(item) => item.order.id}
+            scroll={{ x: 800 }}
+            scrollRegionLabel="发布订单，可横向滚动"
           />
         </Card>
       ) : null}
-      <Row align="stretch" gutter={[16, 16]}>
-        {canAllocate ? (
-          <Col lg={10} xs={24}>
-            <Card title="向当前品牌划分余额">
-              <Form<AllocationForm>
-                form={allocationForm}
-                initialValues={{ asset: "answerbit_points" }}
-                layout="vertical"
-                onFinish={(values) => void allocate(values)}
-              >
-                <Form.Item
-                  htmlFor="billing-allocation-asset"
-                  label="余额类型（必选）"
-                  name="asset"
-                  rules={[
-                    {
-                      validator: (_, value) =>
-                        value
-                          ? Promise.resolve()
-                          : Promise.reject(new Error("请选择余额类型")),
-                    },
-                  ]}
-                >
-                  <Select
-                    id="billing-allocation-asset"
-                    onChange={(value: Asset) => setAllocationAsset(value)}
-                    options={[
-                      {
-                        label: "腾讯能力积分",
-                        value: "answerbit_points",
-                      },
-                      {
-                        label: "发布人民币余额（元）",
-                        value: "publication_cny",
-                      },
-                    ]}
+
+      {view === "new" ? (
+        <Card id="publication" title="发布内容与要求">
+          {selectedChannel ? (
+            <Card
+              extra={
+                <Button href={channelLibraryHref} icon={<GlobalOutlined />}>
+                  更换渠道
+                </Button>
+              }
+              size="small"
+              style={{ marginBottom: 20 }}
+              title="已选发布渠道"
+            >
+              <Row align="middle" gutter={[16, 12]} justify="space-between">
+                <Col>
+                  <Space direction="vertical" size={2}>
+                    <Space wrap>
+                      <Typography.Text strong>
+                        {selectedChannel.name}
+                      </Typography.Text>
+                      <Tag>
+                        {selectedChannel.provider === "frog_media"
+                          ? "聚合渠道"
+                          : "人工渠道"}
+                      </Tag>
+                      <Typography.Text type="secondary">
+                        {selectedChannel.category}
+                      </Typography.Text>
+                    </Space>
+                    <Typography.Text type="secondary">
+                      {selectedChannel.remarks || "暂无额外发布要求"}
+                    </Typography.Text>
+                  </Space>
+                </Col>
+                <Col>
+                  <Statistic
+                    formatter={() => money(selectedChannel.priceAmount)}
+                    title="本次发布"
+                    value={selectedChannel.priceAmount}
                   />
-                </Form.Item>
-                <Form.Item
-                  label="数量"
-                  name="amount"
-                  rules={[{ required: true, message: "请输入划分数量" }]}
-                >
-                  <InputNumber
-                    min={allocationAsset === "publication_cny" ? 0.01 : 1}
-                    precision={allocationAsset === "publication_cny" ? 2 : 0}
-                    step={allocationAsset === "publication_cny" ? 0.01 : 1}
-                    style={{ width: "100%" }}
-                  />
-                </Form.Item>
-                <Form.Item
-                  label="划分说明"
-                  name="reason"
-                  rules={[
-                    { required: true, message: "请输入划分说明" },
-                    { min: 4, message: "至少输入 4 个字符" },
-                  ]}
-                >
-                  <Input />
-                </Form.Item>
+                </Col>
+              </Row>
+            </Card>
+          ) : (
+            <Alert
+              action={
                 <Button
-                  block
-                  htmlType="submit"
-                  loading={busy === "allocate"}
+                  href={channelLibraryHref}
+                  icon={<GlobalOutlined />}
                   type="primary"
                 >
-                  确认划分
+                  打开媒体渠道库
                 </Button>
-              </Form>
-            </Card>
-          </Col>
-        ) : null}
-
-        <Col lg={canAllocate ? 14 : 24} xs={24}>
-          <Card
-            extra={
-              <Tag color="green">
-                已接入 {channelTotal.toLocaleString()} 个渠道
-              </Tag>
-            }
-            id="publication"
-            title="提交媒体发布"
+              }
+              message="请先在媒体渠道库筛选并选择发布渠道"
+              showIcon
+              style={{ marginBottom: 20 }}
+              type="info"
+            />
+          )}
+          <Form<PublicationForm>
+            form={publicationForm}
+            initialValues={{
+              title: initialPublication.title,
+              note: initialPublication.note,
+            }}
+            layout="vertical"
+            disabled={!scope.canWrite || Boolean(busy)}
+            onFinish={(values) => void createOrder(values)}
           >
-            <Form<PublicationForm>
-              form={publicationForm}
-              initialValues={{
-                title: initialPublication.title,
-                note: initialPublication.note,
-              }}
-              layout="vertical"
-              disabled={!scope.canWrite || Boolean(busy)}
-              onFinish={(values) => void createOrder(values)}
+            <Form.Item hidden name="channelId">
+              <Input />
+            </Form.Item>
+            <Form.Item
+              label="内容标题"
+              name="title"
+              rules={[
+                { required: true, message: "请输入内容标题" },
+                { min: 2, max: 255 },
+              ]}
             >
+              <Input />
+            </Form.Item>
+            <Form.Item
+              label="内容链接"
+              name="contentUrl"
+              rules={[{ type: "url" }]}
+            >
+              <Input placeholder="https://" />
+            </Form.Item>
+            {sourceJobId || sourceDocumentId ? (
+              <Alert
+                message={
+                  sourceDocumentId
+                    ? "将使用文档库中已定稿的正文投稿"
+                    : "将使用已审核生成任务的 HTML 正文投稿"
+                }
+                action={
+                  <Button
+                    onClick={() => {
+                      setSourceJobId(undefined);
+                      setSourceDocumentId(undefined);
+                    }}
+                  >
+                    改用手动正文
+                  </Button>
+                }
+                showIcon
+                style={{ marginBottom: 20 }}
+                type="success"
+              />
+            ) : (
               <Form.Item
-                htmlFor="billing-publication-channel"
-                label="发布渠道（必选）"
-                name="channelId"
+                label="HTML 正文"
+                name="contentHtml"
                 rules={[
                   {
-                    validator: (_, value) =>
-                      value
-                        ? Promise.resolve()
-                        : Promise.reject(new Error("请选择发布渠道")),
+                    required: selectedChannel?.provider === "frog_media",
+                    message: "请输入 HTML 正文，或从已完成的生成任务进入发布",
                   },
                 ]}
               >
-                <PublicationChannelPicker
-                  channels={channels}
-                  total={channelTotal}
-                  loading={channelLoading}
-                  disabled={!scope.canWrite || Boolean(busy)}
-                  id="billing-publication-channel"
-                  onQuery={queryChannels}
-                  onSelect={setSelectedChannel}
-                  selectedChannel={selectedChannel}
-                />
-              </Form.Item>
-              <Form.Item
-                label="内容标题"
-                name="title"
-                rules={[
-                  { required: true, message: "请输入内容标题" },
-                  { min: 2, max: 255 },
-                ]}
-              >
-                <Input />
-              </Form.Item>
-              <Form.Item
-                label="内容链接"
-                name="contentUrl"
-                rules={[{ type: "url" }]}
-              >
-                <Input placeholder="https://" />
-              </Form.Item>
-              {sourceJobId || sourceDocumentId ? (
-                <Alert
-                  message={
-                    sourceDocumentId
-                      ? "将使用文档库中已定稿的正文投稿"
-                      : "将使用已审核生成任务的 HTML 正文投稿"
-                  }
-                  action={
-                    <Button
-                      onClick={() => {
-                        setSourceJobId(undefined);
-                        setSourceDocumentId(undefined);
-                      }}
-                    >
-                      改用手动正文
-                    </Button>
-                  }
-                  showIcon
-                  style={{ marginBottom: 20 }}
-                  type="success"
-                />
-              ) : (
-                <Form.Item
-                  label="HTML 正文"
-                  name="contentHtml"
-                  rules={[
-                    {
-                      required: selectedChannel?.provider === "frog_media",
-                      message: "请输入 HTML 正文，或从已完成的生成任务进入发布",
-                    },
-                  ]}
-                >
-                  <Input.TextArea
-                    placeholder="<p>请输入待发布正文</p>"
-                    rows={10}
-                  />
-                </Form.Item>
-              )}
-              <Form.Item label="发布要求" name="note">
                 <Input.TextArea
-                  maxLength={2000}
-                  placeholder="可填写频道、来源、署名、图片处理等补充要求"
-                  rows={4}
-                  showCount
+                  placeholder="<p>请输入待发布正文</p>"
+                  rows={10}
                 />
               </Form.Item>
-              {publicationBalanceInsufficient ? (
-                <Alert
-                  message={`当前发布余额 ${money(brandMoney)}，不足以支付 ${money(selectedChannel!.priceAmount)}`}
-                  showIcon
-                  style={{ marginBottom: 16 }}
-                  type="warning"
-                />
-              ) : null}
-              <Row align="middle" gutter={[12, 12]} justify="space-between">
-                <Col>
-                  <Typography.Text type="secondary">
-                    {selectedChannel
-                      ? `提交后扣除 ${money(selectedChannel.priceAmount)}；失败或确认取消自动退回`
-                      : "选择渠道后显示实时价格与履约指标"}
-                  </Typography.Text>
-                </Col>
-                <Col>
-                  <Button
-                    disabled={
-                      !scope.brandId ||
-                      !scope.canWrite ||
-                      publicationBalanceInsufficient
-                    }
-                    htmlType="submit"
-                    icon={<SendOutlined />}
-                    loading={busy === "publication"}
-                    size="large"
-                    type="primary"
-                  >
-                    确认并提交发布
-                  </Button>
-                </Col>
-              </Row>
-            </Form>
-          </Card>
-        </Col>
-      </Row>
+            )}
+            <Form.Item label="发布要求" name="note">
+              <Input.TextArea
+                maxLength={2000}
+                placeholder="可填写频道、来源、署名、图片处理等补充要求"
+                rows={4}
+                showCount
+              />
+            </Form.Item>
+            {publicationBalanceInsufficient ? (
+              <Alert
+                message={`当前发布余额 ${money(brandMoney)}，不足以支付 ${money(selectedChannel!.priceAmount)}`}
+                showIcon
+                style={{ marginBottom: 16 }}
+                type="warning"
+              />
+            ) : null}
+            <Row align="middle" gutter={[12, 12]} justify="space-between">
+              <Col>
+                <Typography.Text type="secondary">
+                  {selectedChannel
+                    ? `提交后扣除 ${money(selectedChannel.priceAmount)}；失败或确认取消自动退回`
+                    : "选择渠道后显示实时价格与履约指标"}
+                </Typography.Text>
+              </Col>
+              <Col>
+                <Button
+                  disabled={
+                    !scope.brandId ||
+                    !scope.canWrite ||
+                    !selectedChannel ||
+                    publicationBalanceInsufficient
+                  }
+                  htmlType="submit"
+                  icon={<SendOutlined />}
+                  loading={busy === "publication"}
+                  size="large"
+                  type="primary"
+                >
+                  确认并提交发布
+                </Button>
+              </Col>
+            </Row>
+          </Form>
+        </Card>
+      ) : null}
 
       <Modal
         forceRender

@@ -31,7 +31,13 @@ export default async function AnswerBitSettingsPage({
     organizations[0];
 
   return (
-    <DashboardShell userName={session.user.name} active="answerbit">
+    <DashboardShell
+      userName={session.user.name}
+      active="answerbit"
+      canManageBalances={memberships.some(
+        (item) => item.role === "tenant_admin",
+      )}
+    >
       <SettingsFrame
         active="answerbit"
         description="查看平台腾讯服务状态和本企业对应的腾讯品牌范围。"
