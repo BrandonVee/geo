@@ -10,6 +10,7 @@ import {
   Button,
   Card,
   Col,
+  Divider,
   Empty,
   Form,
   Input,
@@ -34,6 +35,7 @@ import {
 
 import { PublicationAttempt } from "./publication-attempt";
 import { type PublicationChannel } from "./publication-channel";
+import styles from "./publication-form.module.css";
 
 type Asset = "answerbit_points" | "publication_cny";
 type Account = {
@@ -127,6 +129,7 @@ function BillingWorkspace({
   const [brandAccounts, setBrandAccounts] = useState<Account[]>([]);
   const [channelOptions, setChannelOptions] = useState<Channel[]>([]);
   const [selectedChannel, setSelectedChannel] = useState<Channel>();
+  const [channelEditing, setChannelEditing] = useState(false);
   const [orders, setOrders] = useState<PublicationOrder[]>([]);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState("");
@@ -178,6 +181,7 @@ function BillingWorkspace({
         }
         if (channel) {
           setSelectedChannel(channel);
+          setChannelEditing(false);
           publicationForm.setFieldValue("channelId", channel.id);
         }
       } catch (error) {
@@ -260,6 +264,12 @@ function BillingWorkspace({
       () => void searchChannels(keyword),
       250,
     );
+  }
+  function chooseChannel(channelId?: string) {
+    const channel = channelOptions.find((item) => item.id === channelId);
+    setSelectedChannel(channel);
+    publicationForm.setFieldValue("channelId", channel?.id);
+    if (channel) setChannelEditing(false);
   }
   useEffect(
     () => () => {
@@ -498,20 +508,22 @@ function BillingWorkspace({
       size="large"
       style={{ padding: 24, width: "100%" }}
     >
-      <Row gutter={[16, 16]}>
-        <Col lg={8} sm={12} xs={24}>
-          <Card>
-            <Statistic
-              formatter={() => money(brandMoney)}
-              title="当前品牌发布余额"
-              value={brandMoney}
-            />
-            <Typography.Text type="secondary">
-              提交订单时扣减，失败或确认取消后返还
-            </Typography.Text>
-          </Card>
-        </Col>
-      </Row>
+      {view === "orders" ? (
+        <Row gutter={[16, 16]}>
+          <Col lg={8} sm={12} xs={24}>
+            <Card>
+              <Statistic
+                formatter={() => money(brandMoney)}
+                title="当前品牌发布余额"
+                value={brandMoney}
+              />
+              <Typography.Text type="secondary">
+                提交订单时扣减，失败或确认取消后返还
+              </Typography.Text>
+            </Card>
+          </Col>
+        </Row>
+      ) : null}
 
       <Card title="业务范围">
         <ScopeFields organizations={organizations} scope={scope} />
@@ -563,70 +575,156 @@ function BillingWorkspace({
       ) : null}
 
       {view === "new" ? (
-        <Card
-          extra={
-            <Button href={channelLibraryHref} icon={<GlobalOutlined />}>
-              浏览完整渠道库
-            </Button>
-          }
-          id="publication"
-          title="发布内容与要求"
+        <Form<PublicationForm>
+          disabled={!scope.canWrite || Boolean(busy)}
+          form={publicationForm}
+          initialValues={{
+            title: initialPublication.title,
+            note: initialPublication.note,
+          }}
+          layout="vertical"
+          onFinish={(values) => void createOrder(values)}
         >
-          <Form<PublicationForm>
-            form={publicationForm}
-            initialValues={{
-              title: initialPublication.title,
-              note: initialPublication.note,
-            }}
-            layout="vertical"
-            disabled={!scope.canWrite || Boolean(busy)}
-            onFinish={(values) => void createOrder(values)}
+          <Form.Item
+            hidden
+            name="channelId"
+            rules={[{ required: true, message: "请选择发布渠道" }]}
           >
-            <Form.Item
-              extra={
-                channelSearchError ||
-                "可直接搜索媒体名称、行业或发布要求；更多筛选条件请进入完整渠道库"
-              }
-              label="发布渠道"
-              name="channelId"
-              rules={[{ required: true, message: "请选择发布渠道" }]}
-              validateStatus={channelSearchError ? "error" : undefined}
-            >
-              <Select
-                allowClear
-                filterOption={false}
-                loading={channelLoading || loading}
-                notFoundContent={
-                  channelLoading ? "正在搜索渠道…" : "没有匹配的发布渠道"
-                }
-                onChange={(channelId?: string) =>
-                  setSelectedChannel(
-                    channelOptions.find((item) => item.id === channelId),
-                  )
-                }
-                onSearch={queueChannelSearch}
-                options={channelOptions.map((channel) => ({
-                  label: `${channel.name} · ${channel.category} · ${money(channel.priceAmount)}`,
-                  value: channel.id,
-                }))}
-                placeholder="输入媒体名称或行业，搜索并选择渠道"
-                showSearch
-              />
-            </Form.Item>
-            {selectedChannel ? (
+            <Input />
+          </Form.Item>
+          <Row align="top" gutter={[24, 24]}>
+            <Col lg={15} xl={16} xs={24}>
               <Card
-                size="small"
-                style={{ marginBottom: 20 }}
-                title="渠道报价与要求"
+                id="publication"
+                title={
+                  <div className={styles.cardTitle}>
+                    <span>发布内容与要求</span>
+                    <small>整理需要交付给媒体的内容和补充说明</small>
+                  </div>
+                }
               >
-                <Row align="middle" gutter={[16, 12]} justify="space-between">
-                  <Col>
-                    <Space direction="vertical" size={2}>
-                      <Space wrap>
-                        <Typography.Text strong>
-                          {selectedChannel.name}
-                        </Typography.Text>
-                        <Tag>
+                <Form.Item
+                  label="内容标题"
+                  name="title"
+                  rules={[
+                    { required: true, message: "请输入内容标题" },
+                    { min: 2, max: 255 },
+                  ]}
+                >
+                  <Input placeholder="请输入本次发布的内容标题" />
+                </Form.Item>
+                <Form.Item
+                  label="内容链接"
+                  name="contentUrl"
+                  rules={[{ type: "url" }]}
+                >
+                  <Input placeholder="https://（选填）" />
+                </Form.Item>
+                {sourceJobId || sourceDocumentId ? (
+                  <Alert
+                    action={
+                      <Button
+                        onClick={() => {
+                          setSourceJobId(undefined);
+                          setSourceDocumentId(undefined);
+                        }}
+                      >
+                        改用手动正文
+                      </Button>
+                    }
+                    message={
+                      sourceDocumentId
+                        ? "将使用文档库中已定稿的正文投稿"
+                        : "将使用已审核生成任务的 HTML 正文投稿"
+                    }
+                    showIcon
+                    style={{ marginBottom: 20 }}
+                    type="success"
+                  />
+                ) : (
+                  <Form.Item
+                    label="HTML 正文"
+                    name="contentHtml"
+                    rules={[
+                      {
+                        required: selectedChannel?.provider === "frog_media",
+                        message:
+                          "请输入 HTML 正文，或从已完成的生成任务进入发布",
+                      },
+                    ]}
+                  >
+                    <Input.TextArea
+                      placeholder="<p>请输入待发布正文</p>"
+                      rows={12}
+                    />
+                  </Form.Item>
+                )}
+                <Form.Item label="发布要求" name="note">
+                  <Input.TextArea
+                    maxLength={2000}
+                    placeholder="可填写频道、来源、署名、图片处理等补充要求"
+                    rows={4}
+                    showCount
+                  />
+                </Form.Item>
+              </Card>
+            </Col>
+
+            <Col lg={9} xl={8} xs={24}>
+              <div className={styles.publishSidebar}>
+                <Card
+                  title={
+                    <div className={styles.cardTitle}>
+                      <span>发布配置</span>
+                      <small>确认媒体渠道、费用和可用余额</small>
+                    </div>
+                  }
+                >
+                  <div className={styles.configHeading}>
+                    <Typography.Text strong>媒体渠道</Typography.Text>
+                    {selectedChannel ? (
+                      <Button
+                        onClick={() => setChannelEditing((current) => !current)}
+                        size="small"
+                        type="link"
+                      >
+                        {channelEditing ? "取消更换" : "更换"}
+                      </Button>
+                    ) : null}
+                  </div>
+
+                  {!selectedChannel || channelEditing ? (
+                    <div className={styles.channelSelector}>
+                      <Select
+                        allowClear
+                        filterOption={false}
+                        loading={channelLoading || loading}
+                        notFoundContent={
+                          channelLoading
+                            ? "正在搜索渠道…"
+                            : "没有匹配的发布渠道"
+                        }
+                        onChange={chooseChannel}
+                        onSearch={queueChannelSearch}
+                        options={channelOptions.map((channel) => ({
+                          label: `${channel.name} · ${channel.category} · ${money(channel.priceAmount)}`,
+                          value: channel.id,
+                        }))}
+                        placeholder="搜索媒体名称或行业"
+                        showSearch
+                        value={selectedChannel?.id}
+                      />
+                      <Typography.Text
+                        className={styles.selectorHint}
+                        type={channelSearchError ? "danger" : "secondary"}
+                      >
+                        {channelSearchError || "选择后显示渠道要求和实时价格"}
+                      </Typography.Text>
+                    </div>
+                  ) : (
+                    <div className={styles.selectedChannel}>
+                      <div className={styles.selectedChannelHeader}>
+                        <Tag bordered={false} color="blue">
                           {selectedChannel.provider === "frog_media"
                             ? "聚合渠道"
                             : "人工渠道"}
@@ -634,121 +732,85 @@ function BillingWorkspace({
                         <Typography.Text type="secondary">
                           {selectedChannel.category}
                         </Typography.Text>
-                      </Space>
-                      <Typography.Text type="secondary">
+                      </div>
+                      <Typography.Title level={5}>
+                        {selectedChannel.name}
+                      </Typography.Title>
+                      <Typography.Paragraph
+                        ellipsis={{ rows: 3 }}
+                        type="secondary"
+                      >
                         {selectedChannel.remarks || "暂无额外发布要求"}
-                      </Typography.Text>
-                    </Space>
-                  </Col>
-                  <Col>
-                    <Statistic
-                      formatter={() => money(selectedChannel.priceAmount)}
-                      title="本次发布"
-                      value={selectedChannel.priceAmount}
-                    />
-                  </Col>
-                </Row>
-              </Card>
-            ) : null}
-            <Form.Item
-              label="内容标题"
-              name="title"
-              rules={[
-                { required: true, message: "请输入内容标题" },
-                { min: 2, max: 255 },
-              ]}
-            >
-              <Input />
-            </Form.Item>
-            <Form.Item
-              label="内容链接"
-              name="contentUrl"
-              rules={[{ type: "url" }]}
-            >
-              <Input placeholder="https://" />
-            </Form.Item>
-            {sourceJobId || sourceDocumentId ? (
-              <Alert
-                message={
-                  sourceDocumentId
-                    ? "将使用文档库中已定稿的正文投稿"
-                    : "将使用已审核生成任务的 HTML 正文投稿"
-                }
-                action={
+                      </Typography.Paragraph>
+                    </div>
+                  )}
+
                   <Button
-                    onClick={() => {
-                      setSourceJobId(undefined);
-                      setSourceDocumentId(undefined);
-                    }}
+                    block
+                    href={channelLibraryHref}
+                    icon={<GlobalOutlined />}
+                    className={styles.libraryButton}
                   >
-                    改用手动正文
+                    进入渠道库精细筛选
                   </Button>
-                }
-                showIcon
-                style={{ marginBottom: 20 }}
-                type="success"
-              />
-            ) : (
-              <Form.Item
-                label="HTML 正文"
-                name="contentHtml"
-                rules={[
-                  {
-                    required: selectedChannel?.provider === "frog_media",
-                    message: "请输入 HTML 正文，或从已完成的生成任务进入发布",
-                  },
-                ]}
-              >
-                <Input.TextArea
-                  placeholder="<p>请输入待发布正文</p>"
-                  rows={10}
-                />
-              </Form.Item>
-            )}
-            <Form.Item label="发布要求" name="note">
-              <Input.TextArea
-                maxLength={2000}
-                placeholder="可填写频道、来源、署名、图片处理等补充要求"
-                rows={4}
-                showCount
-              />
-            </Form.Item>
-            {publicationBalanceInsufficient ? (
-              <Alert
-                message={`当前发布余额 ${money(brandMoney)}，不足以支付 ${money(selectedChannel!.priceAmount)}`}
-                showIcon
-                style={{ marginBottom: 16 }}
-                type="warning"
-              />
-            ) : null}
-            <Row align="middle" gutter={[12, 12]} justify="space-between">
-              <Col>
-                <Typography.Text type="secondary">
-                  {selectedChannel
-                    ? `提交后扣除 ${money(selectedChannel.priceAmount)}；失败或确认取消自动退回`
-                    : "选择渠道后显示实时价格与履约指标"}
-                </Typography.Text>
-              </Col>
-              <Col>
-                <Button
-                  disabled={
-                    !scope.brandId ||
-                    !scope.canWrite ||
-                    !selectedChannel ||
-                    publicationBalanceInsufficient
-                  }
-                  htmlType="submit"
-                  icon={<SendOutlined />}
-                  loading={busy === "publication"}
-                  size="large"
-                  type="primary"
-                >
-                  确认并提交发布
-                </Button>
-              </Col>
-            </Row>
-          </Form>
-        </Card>
+
+                  <Divider />
+
+                  <div className={styles.costSummary}>
+                    <div>
+                      <Typography.Text type="secondary">
+                        本次发布费用
+                      </Typography.Text>
+                      <Typography.Text strong>
+                        {selectedChannel
+                          ? money(selectedChannel.priceAmount)
+                          : "待选择"}
+                      </Typography.Text>
+                    </div>
+                    <div>
+                      <Typography.Text type="secondary">
+                        当前品牌余额
+                      </Typography.Text>
+                      <Typography.Text strong>
+                        {money(brandMoney)}
+                      </Typography.Text>
+                    </div>
+                  </div>
+
+                  {publicationBalanceInsufficient ? (
+                    <Alert message="当前发布余额不足" showIcon type="warning" />
+                  ) : null}
+
+                  <Button
+                    block
+                    className={styles.submitButton}
+                    disabled={
+                      !scope.brandId ||
+                      !scope.canWrite ||
+                      !selectedChannel ||
+                      publicationBalanceInsufficient
+                    }
+                    htmlType="submit"
+                    icon={<SendOutlined />}
+                    loading={busy === "publication"}
+                    size="large"
+                    type="primary"
+                  >
+                    确认并提交发布
+                  </Button>
+                  <Typography.Paragraph
+                    className={styles.submitHint}
+                    type="secondary"
+                  >
+                    {selectedChannel
+                      ? `提交后扣除 ${money(selectedChannel.priceAmount)}，失败或确认取消后自动退回`
+                      : "选择媒体渠道后即可提交发布"}
+                  </Typography.Paragraph>
+                </Card>
+              </div>
+            </Col>
+          </Row>
+        </Form>
       ) : null}
 
       <Modal

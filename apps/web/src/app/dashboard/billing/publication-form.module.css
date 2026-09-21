@@ -1,0 +1,151 @@
+.cardTitle {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-block: 3px;
+}
+
+.cardTitle > span {
+  color: #17251f;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 24px;
+}
+
+.cardTitle > small {
+  color: #78837e;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 18px;
+}
+
+.publishSidebar {
+  position: sticky;
+  top: 88px;
+}
+
+.configHeading {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.configHeading :global(.ant-btn) {
+  height: auto;
+  padding: 0;
+}
+
+.channelSelector {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.channelSelector :global(.ant-select) {
+  width: 100%;
+}
+
+.selectorHint {
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.selectedChannel {
+  background: #f6f9f7;
+  border: 1px solid #e1e9e5;
+  border-radius: 10px;
+  padding: 14px;
+}
+
+.selectedChannelHeader {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+}
+
+.selectedChannel :global(.ant-typography h5),
+.selectedChannel :global(h5.ant-typography) {
+  margin: 10px 0 5px;
+}
+
+.selectedChannel :global(.ant-typography) {
+  overflow-wrap: anywhere;
+}
+
+.selectedChannel :global(p.ant-typography) {
+  font-size: 12px;
+  line-height: 1.6;
+  margin-bottom: 0;
+}
+
+.libraryButton {
+  margin-top: 10px;
+}
+
+.costSummary {
+  display: grid;
+  gap: 1px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: 16px;
+  overflow: hidden;
+}
+
+.costSummary > div {
+  background: #f6f8f7;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 11px 12px;
+}
+
+.costSummary > div:first-child {
+  border-radius: 9px 0 0 9px;
+}
+
+.costSummary > div:last-child {
+  border-radius: 0 9px 9px 0;
+}
+
+.costSummary :global(.ant-typography) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.costSummary :global(strong.ant-typography) {
+  color: #18392d;
+  font-size: 16px;
+}
+
+.submitButton {
+  margin-top: 16px;
+}
+
+.submitHint {
+  font-size: 12px;
+  line-height: 18px;
+  margin: 8px 2px 0 !important;
+  text-align: center;
+}
+
+@media (max-width: 991px) {
+  .publishSidebar {
+    position: static;
+  }
+}
+
+@media (max-width: 480px) {
+  .costSummary {
+    grid-template-columns: 1fr;
+  }
+
+  .costSummary > div:first-child {
+    border-radius: 9px 9px 0 0;
+  }
+
+  .costSummary > div:last-child {
+    border-radius: 0 0 9px 9px;
+  }
+}
