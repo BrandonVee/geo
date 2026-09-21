@@ -85,8 +85,8 @@ export function Providers({ children }: { children: ReactNode }) {
             opacityLoading: 1,
             fontFamily:
               '"PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif',
-            borderRadius: 12,
-            borderRadiusLG: 16,
+            borderRadius: 7,
+            borderRadiusLG: 10,
             controlHeight: 36,
             fontSize: 15,
           },

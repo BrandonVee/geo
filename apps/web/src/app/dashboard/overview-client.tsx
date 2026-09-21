@@ -926,47 +926,41 @@ export function OverviewClient({
                     </div>
                   </div>
                   <div className="overview-action-grid">
-                    <Card className="overview-action-card" size="small">
-                      <Typography.Text type="secondary">
-                        01 · 诊断
-                      </Typography.Text>
-                      <Typography.Title level={3}>
-                        找到高价值问题
-                      </Typography.Title>
-                      <Typography.Paragraph type="secondary">
-                        查看用户真实提问、启停状态和近期表现，定位品牌缺席的主题。
-                      </Typography.Paragraph>
-                      <Button href="/dashboard/monitoring">进入用户提问</Button>
-                    </Card>
-                    <Card className="overview-action-card" size="small">
-                      <Typography.Text type="secondary">
-                        02 · 取证
-                      </Typography.Text>
-                      <Typography.Title level={3}>
-                        拆解回答与引用
-                      </Typography.Title>
-                      <Typography.Paragraph type="secondary">
-                        对照模型回答、引用域名与文章来源，确认竞品领先原因。
-                      </Typography.Paragraph>
-                      <Button href="/dashboard/answers">查看回答证据</Button>
-                    </Card>
-                    <Card className="overview-action-card" size="small">
-                      <Typography.Text type="secondary">
-                        03 · 增长
-                      </Typography.Text>
-                      <Typography.Title level={3}>
-                        生成优化内容
-                      </Typography.Title>
-                      <Typography.Paragraph type="secondary">
-                        将已确认的内容机会推进到 AI 生成，形成分析到发布的闭环。
-                      </Typography.Paragraph>
+                    <div className="overview-action-row">
+                      <span>01</span>
+                      <div>
+                        <Typography.Text strong>检查高价值问题</Typography.Text>
+                        <Typography.Text type="secondary">
+                          定位品牌缺席或排名下降的主题
+                        </Typography.Text>
+                      </div>
+                      <Button href="/dashboard/monitoring">查看问题</Button>
+                    </div>
+                    <div className="overview-action-row">
+                      <span>02</span>
+                      <div>
+                        <Typography.Text strong>核对回答证据</Typography.Text>
+                        <Typography.Text type="secondary">
+                          对比模型回答、引用域名与文章来源
+                        </Typography.Text>
+                      </div>
+                      <Button href="/dashboard/answers">查看证据</Button>
+                    </div>
+                    <div className="overview-action-row">
+                      <span>03</span>
+                      <div>
+                        <Typography.Text strong>推进内容生产</Typography.Text>
+                        <Typography.Text type="secondary">
+                          把已确认机会转成可审核的内容任务
+                        </Typography.Text>
+                      </div>
                       <Button
                         href="/dashboard/content?stage=generate"
                         type="primary"
                       >
-                        开始生成内容
+                        生成内容
                       </Button>
-                    </Card>
+                    </div>
                   </div>
                 </div>
               ),

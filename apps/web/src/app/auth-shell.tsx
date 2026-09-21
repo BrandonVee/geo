@@ -67,13 +67,12 @@ export function AuthShell({
             {mode === "setup" ? "可信初始化" : "安全访问"}
           </span>
           <Typography.Text className={styles.storyTitle}>
-            让品牌成为
-            <br />
-            AI 答案的一部分
+            {mode === "setup" ? "初始化企业平台" : "企业 GEO 运营工作台"}
           </Typography.Text>
           <Typography.Paragraph className={styles.storyDescription}>
-            从洞察、持续监测到内容生产与发布，使用同一套企业权限和品牌数据范围完成
-            GEO 运营闭环。
+            {mode === "setup"
+              ? "创建首个平台管理员，完成后即可配置腾讯接入、企业成员与业务权限。"
+              : "统一处理品牌监测、回答证据、内容生产与发布履约，所有操作都在企业权限和品牌范围内完成。"}
           </Typography.Paragraph>
 
           <div className={styles.signals}>

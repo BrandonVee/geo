@@ -155,10 +155,10 @@ export function DashboardShell({
     <div className="dashboard-sidebar-panel">
       <div className="dashboard-brand-block">
         <Typography.Text className="dashboard-wordmark" strong>
-          Answerbit
+          Answerbit GEO
         </Typography.Text>
         <Typography.Text className="dashboard-brand-caption" type="secondary">
-          AI 品牌增长平台
+          企业运营工作台
         </Typography.Text>
         <div className="dashboard-workspace-chip">
           <Avatar className="dashboard-workspace-avatar" size={24}>
@@ -166,10 +166,10 @@ export function DashboardShell({
           </Avatar>
           <div>
             <Typography.Text ellipsis strong>
-              GEO 工作空间
+              分析 · 生成 · 发布
             </Typography.Text>
             <Typography.Text ellipsis type="secondary">
-              品牌可见度中心
+              统一企业与品牌范围
             </Typography.Text>
           </div>
         </div>
@@ -235,7 +235,7 @@ export function DashboardShell({
           className="dashboard-sidebar"
           theme="light"
           trigger={null}
-          width={280}
+          width={248}
         >
           {sidebar}
         </Layout.Sider>
