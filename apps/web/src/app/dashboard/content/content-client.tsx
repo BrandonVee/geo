@@ -813,7 +813,7 @@ export function ContentClient({
                   loading={loading}
                   onClick={() => void load()}
                 >
-                  同步追踪数据
+                  查询追踪数据
                 </Button>
                 <Button
                   disabled={!scope.canWrite || !scope.brandId}

@@ -221,7 +221,7 @@ function MetricTrend({
   if (!metric)
     return (
       <Typography.Text className="overview-metric-trend" type="secondary">
-        等待同步
+        等待数据
       </Typography.Text>
     );
   const neutral = metric.fluctuation === 0;
@@ -728,7 +728,7 @@ export function OverviewClient({
               disabled={!scopeReady}
               onClick={() => void loadAnalytics()}
             >
-              重新同步
+              重新查询
             </Button>
           </div>
         </div>
@@ -752,7 +752,7 @@ export function OverviewClient({
             <Typography.Text className="overview-sync-time" type="secondary">
               {lastSyncedAt
                 ? `更新于 ${lastSyncedAt.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`
-                : "尚未同步"}
+                : "尚未查询"}
             </Typography.Text>
           }
           items={[
@@ -1084,7 +1084,7 @@ export function OverviewClient({
                                   </Button>
                                   <Popconfirm
                                     cancelText="取消"
-                                    description="该操作会同步到 AnswerBit"
+                                    description="该操作会更新 AnswerBit 中的竞品数据"
                                     okButtonProps={{ danger: true }}
                                     okText="删除"
                                     onConfirm={() => removeCompetitor(row.id)}

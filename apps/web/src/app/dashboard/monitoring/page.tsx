@@ -19,7 +19,7 @@ export default async function MonitoringPage() {
     >
       <DashboardPageHeader
         eyebrow="品牌 / 监控"
-        status="AnswerBit 同步"
+        status="AnswerBit 数据"
         title="监控问题库"
       />
       <MonitoringClient

@@ -510,7 +510,7 @@ export function PublicationChannelsClient({ draft }: { draft: DraftContext }) {
       </Card>
 
       <Typography.Text type="secondary">
-        <ClockCircleOutlined /> 渠道采购状态和履约指标由平台定时同步。
+        <ClockCircleOutlined /> 渠道采购状态和履约指标由平台定时更新。
       </Typography.Text>
     </Space>
   );

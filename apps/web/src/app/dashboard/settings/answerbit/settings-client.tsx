@@ -1,10 +1,6 @@
 "use client";
 
-import {
-  ApiOutlined,
-  BankOutlined,
-  CloudSyncOutlined,
-} from "@ant-design/icons";
+import { ApiOutlined, BankOutlined, CloudOutlined } from "@ant-design/icons";
 import {
   Alert,
   Badge,
@@ -140,12 +136,12 @@ export function AnswerBitSettings({
         <Col lg={8} sm={24} xs={24}>
           <Card>
             <Statistic
-              prefix={<CloudSyncOutlined />}
+              prefix={<CloudOutlined />}
               title="腾讯品牌"
-              value={brand?.brandName ?? "尚未同步"}
+              value={brand?.brandName ?? "尚未关联"}
             />
             <Typography.Text type="secondary">
-              {brand ? `BrandID ${brand.brandId}` : "等待平台同步品牌"}
+              {brand ? `BrandID ${brand.brandId}` : "等待平台关联品牌"}
             </Typography.Text>
           </Card>
         </Col>
@@ -183,7 +179,7 @@ export function AnswerBitSettings({
             {
               key: "brand",
               label: "腾讯品牌",
-              children: brand?.brandName ?? "尚未同步",
+              children: brand?.brandName ?? "尚未关联",
             },
             {
               key: "brandId",
@@ -203,14 +199,14 @@ export function AnswerBitSettings({
             },
             {
               key: "synced",
-              label: "最近同步",
+              label: "最近更新",
               children: formatTime(brand?.syncedAt ?? null),
             },
           ]}
         />
         {!configuration?.configured ? (
           <Alert
-            description="请联系平台管理员完成腾讯接入并同步本企业对应的腾讯品牌。"
+            description="请联系平台管理员完成腾讯接入并关联本企业对应的腾讯品牌。"
             message="腾讯服务尚未开通"
             showIcon
             style={{ marginTop: 16 }}
