@@ -3,7 +3,7 @@ info:
   title: AnswerBit GEO SaaS API
   version: 1.0.0
   description: >-
-    除认证、初始化和平台腾讯配置外，业务 API 要求固定 TeamID 与统一 API Key 已完成验证；前置接入未完成时返回 `422 PLATFORM_TENCENT_CONNECTION_REQUIRED`。所有 API 响应统一返回 `Cache-Control: no-store, max-age=0` 和 `X-Request-ID`；自有 API 的响应头标识与 JSON envelope 一致，Better Auth 保留原生响应体。自有业务 API 的 JSON 请求体上限为 4 MiB，超限返回 `413 PAYLOAD_TOO_LARGE`。
+    除认证、初始化和平台腾讯配置外，业务 API 要求固定 TeamID 与统一 API Key 已完成验证；前置接入未完成时返回 `422 PLATFORM_TENCENT_CONNECTION_REQUIRED`。所有 API 响应统一返回 `Cache-Control: no-store, max-age=0` 和 `X-Request-ID`；自有 API 的响应头标识与 JSON envelope 一致，Better Auth 保留原生响应体。自有业务 API 的 JSON 请求体上限为 4 MiB，超限返回 `413 PAYLOAD_TOO_LARGE`。业务写入统一校验浏览器 Origin，未登记来源返回 `403 UNTRUSTED_ORIGIN`。
 servers:
   - url: /api
 paths:

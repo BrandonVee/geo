@@ -1,5 +1,6 @@
 import { bootstrapAdminSchema } from "@geo/contracts";
 import { createRequestId } from "@geo/core";
+import { assertTrustedWriteOrigin } from "@/server/auth/trusted-origins";
 import { noStoreJson, withNoStore } from "@/server/http/cache";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { identityService } from "@/server/modules/identity/identity.service";
@@ -25,6 +26,7 @@ export async function POST(request: Request) {
   const requestId = createRequestId();
 
   try {
+    assertTrustedWriteOrigin(request);
     const parsed = bootstrapAdminSchema.safeParse(await readJsonBody(request));
     if (!parsed.success) {
       throw new ApiError(

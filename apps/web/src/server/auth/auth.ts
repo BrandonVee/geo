@@ -8,20 +8,11 @@ import { username } from "better-auth/plugins";
 import { identityService } from "@/server/modules/identity/identity.service";
 import { redisSecondaryStorage } from "@/server/redis";
 import { getServerEnv } from "../env";
+import { getTrustedOrigins } from "./trusted-origins";
 import { getUserAccessState } from "./user-access";
 
 const runtimeEnv = getServerEnv();
-const trustedOrigins = Array.from(
-  new Set(
-    [
-      runtimeEnv.APP_URL,
-      runtimeEnv.BETTER_AUTH_URL,
-      ...runtimeEnv.BETTER_AUTH_TRUSTED_ORIGINS.split(",").map((origin) =>
-        origin.trim(),
-      ),
-    ].filter((origin): origin is string => Boolean(origin)),
-  ),
-);
+const trustedOrigins = Array.from(getTrustedOrigins());
 
 export const auth = betterAuth({
   appName: "AnswerBit GEO",

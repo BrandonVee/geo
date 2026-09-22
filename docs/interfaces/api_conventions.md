@@ -16,7 +16,7 @@
 
 固定 Tencent TeamID 与统一 API Key 是系统业务就绪的全局前置条件。除平台腾讯配置读取/写入外，所有业务 API 在 Session 校验后确认统一配置状态为 `active`；未完成接入时返回 `422 PLATFORM_TENCENT_CONNECTION_REQUIRED`。腾讯配置 `PUT` 会在一次请求中完成上游验证、目录导入和企业投影；日常目录一致性由 Worker 自动维护，`POST /api/v1/admin/answerbit-enterprise-syncs` 只保留为运维诊断和兼容调用。平台监控品牌扩容由 `POST /api/v1/answerbit/metering/quota-purchases` 调用腾讯官方写接口，只有腾讯返回成功后才响应成功。
 
-浏览器写请求受 Better Auth trusted origins 约束。部署到新域名时同时配置 `APP_URL`、`BETTER_AUTH_URL` 与 `BETTER_AUTH_TRUSTED_ORIGINS`。
+浏览器 `POST`、`PUT`、`PATCH`、`DELETE` 请求在 Session 查询和正文解析前统一校验 Origin；`APP_URL`、`BETTER_AUTH_URL` 或 `BETTER_AUTH_TRUSTED_ORIGINS` 中未登记的来源返回 `403 UNTRUSTED_ORIGIN`。显式登记的跨站前端可以写入；携带 `same-site`/`cross-site` 浏览器信号却缺少 Origin 的请求同样拒绝。没有 Origin 与 Fetch Metadata 的服务端调用继续使用 Session 和权限校验。部署到新域名时同时配置上述三项，不能通过放宽 Cookie 或代理改写来源绕过门禁。
 
 ## 请求与校验
 

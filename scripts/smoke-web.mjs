@@ -123,7 +123,10 @@ if (
 const oversizedPath = "/api/v1/system/bootstrap (oversized JSON)";
 const oversizedResponse = await request("/api/v1/system/bootstrap", {
   method: "POST",
-  headers: { "Content-Type": "application/json" },
+  headers: {
+    "Content-Type": "application/json",
+    Origin: baseUrl.origin,
+  },
   body: JSON.stringify({ payload: "x".repeat(4 * 1024 * 1024) }),
 });
 assertStatus(oversizedResponse, 413, oversizedPath);
@@ -132,6 +135,25 @@ const oversized = await readJson(oversizedResponse, oversizedPath);
 if (oversized?.error?.code !== "PAYLOAD_TOO_LARGE")
   throw new Error("oversized JSON returned an unexpected error");
 assertRequestId(oversizedResponse, oversized, oversizedPath);
+
+const untrustedOriginPath = "/api/v1/system/bootstrap (untrusted Origin)";
+const untrustedOriginResponse = await request("/api/v1/system/bootstrap", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    Origin: "https://untrusted.example",
+  },
+  body: "{}",
+});
+assertStatus(untrustedOriginResponse, 403, untrustedOriginPath);
+assertNoStore(untrustedOriginResponse, untrustedOriginPath);
+const untrustedOrigin = await readJson(
+  untrustedOriginResponse,
+  untrustedOriginPath,
+);
+if (untrustedOrigin?.error?.code !== "UNTRUSTED_ORIGIN")
+  throw new Error("untrusted browser origin returned an unexpected error");
+assertRequestId(untrustedOriginResponse, untrustedOrigin, untrustedOriginPath);
 
 const unauthorizedResponse = await request("/api/v1/organizations");
 assertStatus(unauthorizedResponse, 401, "/api/v1/organizations");

@@ -230,4 +230,33 @@ describe("OpenAPI 路由覆盖", () => {
       "JSON 请求契约缺少 PAYLOAD_TOO_LARGE 响应",
     ).toEqual([]);
   });
+
+  it("每个业务写入 Route 都经过可信浏览器来源校验", async () => {
+    const routeFiles = await listRouteFiles(apiRoot);
+    const missingOriginChecks = (
+      await Promise.all(
+        routeFiles
+          .filter((file) => relative(apiRoot, file).startsWith("v1/"))
+          .map(async (file) => {
+            const source = await readFile(file, "utf8");
+            return [
+              ...source.matchAll(
+                /export async function (POST|PUT|PATCH|DELETE)\b([\s\S]*?)(?=\nexport async function |$)/g,
+              ),
+            ]
+              .filter(
+                ([, , handler]) =>
+                  !handler.includes("requireUser(request") &&
+                  !handler.includes("assertTrustedWriteOrigin(request"),
+              )
+              .map(
+                ([, method]) =>
+                  `${method} /${relative(apiRoot, file).replace(/\/route\.ts$/, "")}`,
+              );
+          }),
+      )
+    ).flat();
+
+    expect(missingOriginChecks, "业务写入绕过了可信 Origin 校验").toEqual([]);
+  });
 });
