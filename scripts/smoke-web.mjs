@@ -136,6 +136,30 @@ if (oversized?.error?.code !== "PAYLOAD_TOO_LARGE")
   throw new Error("oversized JSON returned an unexpected error");
 assertRequestId(oversizedResponse, oversized, oversizedPath);
 
+const unsupportedMediaTypePath =
+  "/api/v1/system/bootstrap (unsupported media type)";
+const unsupportedMediaTypeResponse = await request("/api/v1/system/bootstrap", {
+  method: "POST",
+  headers: {
+    "Content-Type": "text/plain",
+    Origin: baseUrl.origin,
+  },
+  body: "{}",
+});
+assertStatus(unsupportedMediaTypeResponse, 415, unsupportedMediaTypePath);
+assertNoStore(unsupportedMediaTypeResponse, unsupportedMediaTypePath);
+const unsupportedMediaType = await readJson(
+  unsupportedMediaTypeResponse,
+  unsupportedMediaTypePath,
+);
+if (unsupportedMediaType?.error?.code !== "UNSUPPORTED_MEDIA_TYPE")
+  throw new Error("non-JSON request returned an unexpected error");
+assertRequestId(
+  unsupportedMediaTypeResponse,
+  unsupportedMediaType,
+  unsupportedMediaTypePath,
+);
+
 const untrustedOriginPath = "/api/v1/system/bootstrap (untrusted Origin)";
 const untrustedOriginResponse = await request("/api/v1/system/bootstrap", {
   method: "POST",

@@ -3,7 +3,7 @@ info:
   title: AnswerBit GEO SaaS API
   version: 1.0.0
   description: >-
-    除认证、初始化和平台腾讯配置外，业务 API 要求固定 TeamID 与统一 API Key 已完成验证；前置接入未完成时返回 `422 PLATFORM_TENCENT_CONNECTION_REQUIRED`。所有 API 响应统一返回 `Cache-Control: no-store, max-age=0` 和 `X-Request-ID`；自有 API 的响应头标识与 JSON envelope 一致，Better Auth 保留原生响应体。自有业务 API 的 JSON 请求体上限为 4 MiB，超限返回 `413 PAYLOAD_TOO_LARGE`。业务写入统一校验浏览器 Origin，未登记来源返回 `403 UNTRUSTED_ORIGIN`。
+    除认证、初始化和平台腾讯配置外，业务 API 要求固定 TeamID 与统一 API Key 已完成验证；前置接入未完成时返回 `422 PLATFORM_TENCENT_CONNECTION_REQUIRED`。所有 API 响应统一返回 `Cache-Control: no-store, max-age=0` 和 `X-Request-ID`；自有 API 的响应头标识与 JSON envelope 一致，Better Auth 保留原生响应体。自有业务 API 只接受 `application/json` 或 `application/*+json` 的 UTF-8 JSON 正文，其他媒体类型返回 `415 UNSUPPORTED_MEDIA_TYPE`；请求体上限为 4 MiB，超限返回 `413 PAYLOAD_TOO_LARGE`。业务写入统一校验浏览器 Origin，未登记来源返回 `403 UNTRUSTED_ORIGIN`。
 servers:
   - url: /api
 paths:
@@ -134,6 +134,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "201":
           description: 管理员创建成功
         "409":
@@ -282,6 +284,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "403":
           description: 平台统一管理 AnswerBit API Key
   /v1/answerbit/connections/{connectionId}:
@@ -316,6 +320,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "403":
           description: 平台统一管理 AnswerBit API Key
     delete:
@@ -389,6 +395,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "201":
           description: 已绑定账号并立即生效；品牌角色自动使用本企业 Tencent BrandID
         "422":
@@ -418,6 +426,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "200":
           description: 状态已更新
         "409":
@@ -459,6 +469,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "201":
           description: 本企业品牌权限已生效
         "422":
@@ -579,6 +591,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "201":
           description: 竞品创建成功
         "403":
@@ -608,6 +622,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "200":
           description: 竞品更新成功
         "403":
@@ -786,6 +802,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "201":
           description: 分类创建成功
         "403":
@@ -813,6 +831,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "200":
           description: 分类更新成功
     delete:
@@ -895,6 +915,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "201":
           description: 问题创建成功
   /v1/answerbit/prompts/batch:
@@ -948,6 +970,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "201":
           description: 批量创建成功
     delete:
@@ -989,6 +1013,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "204":
           description: 批量删除成功
   /v1/answerbit/prompts/{promptId}:
@@ -1043,6 +1069,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "200":
           description: 问题更新成功
     delete:
@@ -1100,6 +1128,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "200":
           description: 分类关系已替换
   /v1/answerbit/answers:
@@ -1314,6 +1344,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "201":
           description: 文章已加入追踪
         "403":
@@ -1432,6 +1464,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "202":
           description: 任务已进入队列
         "200":
@@ -1534,6 +1568,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "201":
           description: 文档及首个版本已保存
   /v1/content-documents/{documentId}:
@@ -1580,6 +1616,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "200":
           description: 文档已更新并递增版本号
     delete:
@@ -1630,6 +1668,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "200":
           description: 历史内容已另存为新版本
   /v1/content-folders:
@@ -1661,6 +1701,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "201":
           description: 文件夹已创建
         "409":
@@ -1688,6 +1730,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "200":
           description: 文件夹已重命名
     delete:
@@ -1886,6 +1930,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "200":
           description: 腾讯已确认扩容请求
         "400":
@@ -2003,6 +2049,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "200":
           description: 企业状态已更新并审计
         "404":
@@ -2071,6 +2119,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "201":
           description: 成员关系或本企业品牌权限已创建
         "409":
@@ -2115,6 +2165,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "200":
           description: 成员状态已更新
         "409":
@@ -2239,6 +2291,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "201":
           description: 账户创建成功
         "409":
@@ -2324,6 +2378,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "200":
           description: 用户状态、类型、有效期、额度或企业功能范围已更新；类型切换与停用会撤销现有 Session
         "409":
@@ -2399,6 +2455,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "200":
           description: 统一配置已加密保存，并刷新腾讯目录及自动生成对应平台企业
         "400":
@@ -2533,6 +2591,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "201":
           description: 腾讯品牌及对应平台企业已创建，Location 指向返回 BrandID 的平台目录资源
         "400":
@@ -2639,6 +2699,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "200":
           description: 腾讯企业及平台投影均已更新
         "400":
@@ -2738,6 +2800,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "200":
           description: Logo 已更新，返回 Tencent BrandID 和腾讯图片地址
         "400":
@@ -2787,6 +2851,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "400":
           $ref: "#/components/responses/BadRequest"
         "403":
@@ -2812,6 +2878,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "400":
           $ref: "#/components/responses/BadRequest"
         "403":
@@ -2892,6 +2960,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "201":
           description: 保存视图已创建
         "409":
@@ -2929,6 +2999,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "200":
           description: 保存视图已更新
     delete:
@@ -2951,6 +3023,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "204":
           description: 保存视图已删除
   /v1/report-exports:
@@ -2989,6 +3063,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "201":
           description: 导出任务已创建
         "200":
@@ -3059,6 +3135,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "201":
           description: 通知规则已创建
         "409":
@@ -3086,6 +3164,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "200":
           description: 通知规则已更新
         "404":
@@ -3110,6 +3190,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "204":
           description: 通知规则已停用
   /v1/notifications:
@@ -3161,6 +3243,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "200":
           description: 已读状态已更新
         "404":
@@ -3324,6 +3408,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "201":
           description: 划分成功
         "200":
@@ -3345,6 +3431,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "201":
           description: 入账成功
         "200":
@@ -3374,6 +3462,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "200":
           description: 计费规则已更新
   /v1/admin/pricing-tier-rules:
@@ -3401,6 +3491,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "200":
           description: 等级价格规则已更新
   /v1/publication-channels:
@@ -3501,6 +3593,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "201":
           description: 已提交并扣减品牌发布余额
         "200":
@@ -3538,6 +3632,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "200":
           description: 订单已取消并返还余额
         "409":
@@ -3564,6 +3660,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "200":
           description: 申诉已提交到聚合发布上游，已有售后状态时返回原订单
         "409":
@@ -3595,6 +3693,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "200":
           description: 配置已验证并加密保存
         "422":
@@ -3690,6 +3790,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "201":
           description: 渠道已创建
   /v1/admin/publication-orders:
@@ -3724,6 +3826,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "200":
           description: 状态已更新
         "409":
@@ -3827,6 +3931,8 @@ paths:
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "200":
           description: 渠道已更新
         "404":
@@ -5347,6 +5453,15 @@ components:
       schema:
         type: string
   responses:
+    UnsupportedMediaType:
+      description: 请求正文不是受支持的 UTF-8 JSON 媒体类型
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
     PayloadTooLarge:
       description: JSON 请求体超过 4 MiB 上限
       headers:

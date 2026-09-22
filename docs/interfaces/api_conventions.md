@@ -20,7 +20,7 @@
 
 ## 请求与校验
 
-JSON 请求使用 `Content-Type: application/json`。自有业务 API 通过共享流式解析器读取正文，按 UTF-8 实际接收字节统一限制为 4 MiB；声明长度或实际正文超限均返回 `413 PAYLOAD_TOO_LARGE`，不会继续缓冲剩余正文。共享输入 Schema 放在 `packages/contracts`，Route 使用 Zod `safeParse`，校验失败返回 `400 VALIDATION_ERROR` 和可选 `details`。日期、分页、枚举、整数金额和 ID 的约束应由契约层表达，Service 不重复接受未校验的任意对象。
+JSON 请求使用 `Content-Type: application/json`；允许标准的 `application/*+json` 结构化后缀和可选 UTF-8 charset，其他媒体类型或非 UTF-8 charset 返回 `415 UNSUPPORTED_MEDIA_TYPE`。自有业务 API 通过共享流式解析器读取正文，按 UTF-8 实际接收字节统一限制为 4 MiB；声明长度或实际正文超限均返回 `413 PAYLOAD_TOO_LARGE`，不会继续缓冲剩余正文。共享输入 Schema 放在 `packages/contracts`，Route 使用 Zod `safeParse`，校验失败返回 `400 VALIDATION_ERROR` 和可选 `details`。日期、分页、枚举、整数金额和 ID 的约束应由契约层表达，Service 不重复接受未校验的任意对象。
 
 列表筛选显式传递 `organizationId`、`teamBindingId`、`brandId` 等范围参数。调用方不得用前端隐藏选项代替服务端范围校验。
 
@@ -65,6 +65,7 @@ JSON 请求使用 `Content-Type: application/json`。自有业务 API 通过共�
 | `409`             | 初始化、唯一键或状态机并发冲突                               |
 | `410`             | 已弃用且不再接受写入的兼容资源                               |
 | `413`             | JSON 请求体超过 4 MiB 上限（`PAYLOAD_TOO_LARGE`）            |
+| `415`             | 正文不是受支持的 UTF-8 JSON 媒体类型                         |
 | `422`             | 请求格式正确但业务前置条件不满足，例如腾讯尚未接入或余额不足 |
 | `429`             | 认证或接口限流                                               |
 | `500`             | 未分类服务端错误                                             |

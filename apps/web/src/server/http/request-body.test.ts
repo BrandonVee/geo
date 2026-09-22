@@ -7,6 +7,7 @@ describe("JSON request body", () => {
       readJsonBody(
         new Request("http://localhost/resource", {
           method: "POST",
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ name: "value" }),
         }),
       ),
@@ -20,17 +21,60 @@ describe("JSON request body", () => {
       readJsonBody(
         new Request("http://localhost/resource", {
           method: "POST",
+          headers: { "Content-Type": "application/json" },
           body: "{invalid",
         }),
       ),
     ).resolves.toBeNull();
   });
 
+  it("接受标准 JSON、UTF-8 参数和结构化 JSON 媒体类型", async () => {
+    for (const contentType of [
+      "application/json",
+      "application/json; charset=UTF-8",
+      'application/vnd.api+json; charset="utf-8"',
+    ]) {
+      await expect(
+        readJsonBody(
+          new Request("http://localhost/resource", {
+            method: "POST",
+            headers: { "Content-Type": contentType },
+            body: "{}",
+          }),
+        ),
+      ).resolves.toEqual({});
+    }
+  });
+
+  it.each([
+    ["缺少 Content-Type", undefined],
+    ["非 JSON 媒体类型", "text/plain"],
+    ["非 UTF-8 JSON", "application/json; charset=iso-8859-1"],
+    ["伪造 JSON 后缀", "text/vnd.api+json"],
+  ])("拒绝%s", async (_name, contentType) => {
+    const headers = contentType ? { "Content-Type": contentType } : undefined;
+    await expect(
+      readJsonBody(
+        new Request("http://localhost/resource", {
+          method: "POST",
+          headers,
+          body: "{}",
+        }),
+      ),
+    ).rejects.toMatchObject({
+      status: 415,
+      code: "UNSUPPORTED_MEDIA_TYPE",
+    });
+  });
+
   it("在读取前拒绝声明长度超限的请求", async () => {
     const result = readJsonBody(
       new Request("http://localhost/resource", {
         method: "POST",
-        headers: { "Content-Length": "5" },
+        headers: {
+          "Content-Length": "5",
+          "Content-Type": "application/json",
+        },
         body: "{}",
       }),
       4,
@@ -54,7 +98,10 @@ describe("JSON request body", () => {
     const result = readJsonBody(
       new Request("http://localhost/resource", {
         method: "POST",
-        headers: { "Content-Length": "2" },
+        headers: {
+          "Content-Length": "2",
+          "Content-Type": "application/json",
+        },
         body,
         duplex: "half",
       } as RequestInit & { duplex: "half" }),
@@ -70,10 +117,12 @@ describe("JSON request body", () => {
   it("按 UTF-8 字节而不是字符数执行上限", async () => {
     const exact = new Request("http://localhost/resource", {
       method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: '"é"',
     });
     const excessive = new Request("http://localhost/resource", {
       method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: '"é"',
     });
 

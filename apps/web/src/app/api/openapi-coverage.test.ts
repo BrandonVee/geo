@@ -194,7 +194,7 @@ describe("OpenAPI 路由覆盖", () => {
     ).toEqual([]);
   });
 
-  it("自有 JSON 请求统一使用有限解析器并声明 413 响应", async () => {
+  it("自有 JSON 请求统一使用受限解析器并声明媒体类型与大小错误", async () => {
     const [routeFiles, specification] = await Promise.all([
       listRouteFiles(apiRoot),
       readFile(openApiPath, "utf8"),
@@ -222,12 +222,15 @@ describe("OpenAPI 路由覆盖", () => {
           ({ path, source }) =>
             path.startsWith("/v1/") &&
             source.includes("      requestBody:") &&
-            !source.includes(
+            (!source.includes(
               '        "413":\n          $ref: "#/components/responses/PayloadTooLarge"',
-            ),
+            ) ||
+              !source.includes(
+                '        "415":\n          $ref: "#/components/responses/UnsupportedMediaType"',
+              )),
         )
         .map(({ method, path }) => `${method} ${path}`),
-      "JSON 请求契约缺少 PAYLOAD_TOO_LARGE 响应",
+      "JSON 请求契约缺少 PAYLOAD_TOO_LARGE 或 UNSUPPORTED_MEDIA_TYPE 响应",
     ).toEqual([]);
   });
 
