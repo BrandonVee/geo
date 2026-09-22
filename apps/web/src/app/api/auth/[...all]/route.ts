@@ -1,5 +1,6 @@
 import { createRequestId } from "@geo/core";
 import { auth } from "@/server/auth/auth";
+import { errorResponse } from "@/server/http/errors";
 import { normalizeRetryAfterHeader } from "@/server/http/rate-limit";
 import { withRequestId } from "@/server/http/response";
 import { toNextJsHandler } from "better-auth/next-js";
@@ -10,10 +11,14 @@ const handle = async (
   request: Request,
 ) => {
   const requestId = createRequestId();
-  return withRequestId(
-    normalizeRetryAfterHeader(await handler(request)),
-    requestId,
-  );
+  try {
+    return withRequestId(
+      normalizeRetryAfterHeader(await handler(request)),
+      requestId,
+    );
+  } catch (error) {
+    return errorResponse(error, requestId);
+  }
 };
 
 export const GET = (request: Request) => handle(handlers.GET, request);
