@@ -129,6 +129,8 @@ const signInFailureResponse = await request("/api/auth/sign-in/username", {
 });
 assertStatus(signInFailureResponse, 401, "/api/auth/sign-in/username");
 assertNoStore(signInFailureResponse, "/api/auth/sign-in/username");
+if (!signInFailureResponse.headers.get("x-request-id"))
+  throw new Error("authentication response is missing X-Request-ID");
 
 const setupResponse = await request("/setup");
 const signInResponse = await request("/sign-in");

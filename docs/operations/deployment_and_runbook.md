@@ -85,7 +85,7 @@ docker run --rm \
 - `GET /api/health/ready`：依次校验完整 Web 运行配置、执行 `select 1` 检查数据库、执行 Redis `PING`，再以平台只读角色确认 `system_release_state` 的 schema 与 seed 修订不低于应用要求；配置无效返回 `503 CONFIGURATION_INVALID`，数据库或 Redis 不可用返回 `503 DEPENDENCY_UNAVAILABLE`，迁移缺失/版本过低/发布状态不可读返回 `503 DATABASE_SCHEMA_NOT_READY`，种子版本过低返回 `503 DATABASE_SEED_NOT_READY`，所有错误均不返回敏感字段或原始校验详情；
 - 所有 `/api/*` 响应均返回 `Cache-Control: no-store, max-age=0`，覆盖 live、ready、首次初始化、认证以及全部业务成功/错误响应；负载均衡器、CDN 和反向代理不得缓存或重写该策略，避免跨用户数据泄漏和陈旧状态；
 - Web 容器的 Docker healthcheck 调用 readiness；负载均衡器与编排平台也应使用 readiness 接流，不能仅以容器进程存活作为可服务依据；
-- Web 自有 API 的成功、失败、空响应与文件下载均返回 `X-Request-ID`，JSON 响应头与 envelope 中的 `requestId` 一致；结构化错误日志、上游调用和审计使用同一标识；
+- Web API 的成功、失败、限流、空响应与文件下载均返回 `X-Request-ID`；自有 JSON 响应头与 envelope 中的 `requestId` 一致，并由结构化错误日志、上游调用和审计复用，Better Auth 响应由 catch-all 适配层生成独立标识；
 - `database.pool-error` 记录业务连接池空闲连接异常，`job-database.error` 记录 pg-boss 数据库异常；两者只输出稳定事件、组件和数据库错误码，不输出连接串；
 - `answerbit_api_calls` 提供企业、操作用户、operation、成功/失败/超时、上游状态和耗时；
 - `answerbit-api-call.log-failed` 表示调用结果日志未落库；`feature-usage.restore-failed` 表示完整功能失败后的即时积分返还未落库，必须分别按 requestId 或功能 referenceId 告警。计费维护会继续扫描失败或取消的文章任务并按原扣款幂等补还，运维仍应核对最终账本；

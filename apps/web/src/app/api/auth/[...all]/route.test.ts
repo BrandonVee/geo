@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/server/auth/auth", () => ({ auth: {} }));
+vi.mock("@geo/core", () => ({ createRequestId: () => "auth-request-1" }));
 vi.mock("better-auth/next-js", () => ({
   toNextJsHandler: () => ({ GET: mocks.get, POST: mocks.post }),
 }));
@@ -32,6 +33,7 @@ describe("Better Auth route", () => {
 
     expect(mocks.post).toHaveBeenCalledWith(request);
     expect(response.status).toBe(429);
+    expect(response.headers.get("X-Request-ID")).toBe("auth-request-1");
     expect(response.headers.get("Retry-After")).toBe("60");
     expect(await response.json()).toEqual({ code: "TOO_MANY_REQUESTS" });
   });

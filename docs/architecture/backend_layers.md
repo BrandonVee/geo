@@ -27,7 +27,7 @@ Shared contracts/core/config/db/publication packages <- applications
 
 ## 请求与错误边界
 
-Route 为每个请求生成 `requestId`，使用 Zod 契约验证输入，把可预期业务失败转换为 `ApiError`。成功响应采用 `{ data, requestId }`；失败响应采用 `{ error: { code, message, details? }, requestId }`。JSON Route 统一通过 `apiJson` 返回，空响应通过 `emptyResponse` 返回，文件等自定义响应显式写入 `X-Request-ID`；响应头标识必须与响应体、日志和上游调用使用同一个 requestId。未知错误仅在服务端结构化记录，客户端收到统一 `INTERNAL_ERROR`。
+Route 为每个请求生成 `requestId`，使用 Zod 契约验证输入，把可预期业务失败转换为 `ApiError`。成功响应采用 `{ data, requestId }`；失败响应采用 `{ error: { code, message, details? }, requestId }`。JSON Route 统一通过 `apiJson` 返回，空响应通过 `emptyResponse` 返回，文件等自定义响应显式写入 `X-Request-ID`；响应头标识必须与响应体、日志和上游调用使用同一个 requestId。Better Auth catch-all 由适配层为成功、失败和限流响应补充独立 `X-Request-ID`，不改写其原生响应体。未知错误仅在服务端结构化记录，客户端收到统一 `INTERNAL_ERROR`。
 
 Service 使用稳定业务错误码表达可恢复分支，例如初始化冲突、余额不足和资源不存在。Repository 可返回明确的结果联合类型或抛出不可恢复的数据异常，不泄露驱动错误到 HTTP 层。
 

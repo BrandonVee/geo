@@ -3,7 +3,7 @@ info:
   title: AnswerBit GEO SaaS API
   version: 1.0.0
   description: >-
-    除认证、初始化和平台腾讯配置外，业务 API 要求固定 TeamID 与统一 API Key 已完成验证；前置接入未完成时返回 `422 PLATFORM_TENCENT_CONNECTION_REQUIRED`。所有 API 响应统一返回 `Cache-Control: no-store, max-age=0`；除 Better Auth 自有响应外均通过 `X-Request-ID` 返回日志关联标识。
+    除认证、初始化和平台腾讯配置外，业务 API 要求固定 TeamID 与统一 API Key 已完成验证；前置接入未完成时返回 `422 PLATFORM_TENCENT_CONNECTION_REQUIRED`。所有 API 响应统一返回 `Cache-Control: no-store, max-age=0` 和 `X-Request-ID`；自有 API 的响应头标识与 JSON envelope 一致，Better Auth 保留原生响应体。
 servers:
   - url: /api
 paths:
@@ -69,15 +69,26 @@ paths:
       responses:
         "200":
           description: 登录成功并创建 Session
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestId"
         "401":
           description: 账号或密码错误
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestId"
         "403":
           description: 账户已停用
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestId"
         "429":
           description: 请求频率过高
           headers:
             Retry-After:
               $ref: "#/components/headers/RetryAfter"
+            X-Request-ID:
+              $ref: "#/components/headers/RequestId"
   /v1/system/bootstrap:
     get:
       summary: 查询系统是否已完成初始化
