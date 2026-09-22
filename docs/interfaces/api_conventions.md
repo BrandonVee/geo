@@ -77,4 +77,4 @@ GET、PUT、DELETE 按 HTTP 语义保持幂等；POST 中具有财务或外部�
 
 ## OpenAPI 维护
 
-[OpenAPI 定义](./openapi.yaml) 是客户端生成和接口联调入口。新增、重命名或删除 API 时，同一变更必须更新 Route、共享契约、OpenAPI 与相关领域/集成文档。OpenAPI 中应包含安全方案、参数范围、成功响应和主要错误响应。Web 测试会双向比对 `apps/web/src/app/api` 的 Route 与 OpenAPI 路径；Better Auth 由单一 catch-all Route 承载多个已公开认证路径，是唯一允许的路径映射例外。
+[OpenAPI 定义](./openapi.yaml) 是客户端生成和接口联调入口。新增、重命名或删除 API 时，同一变更必须更新 Route、共享契约、OpenAPI 与相关领域/集成文档。OpenAPI 中应包含安全方案、参数范围、成功响应和主要错误响应。Web 测试会双向比对 `apps/web/src/app/api` 的 Route、HTTP 方法与 OpenAPI；Better Auth 由单一 catch-all Route 承载多个已公开认证路径，是唯一允许的路径映射例外。
