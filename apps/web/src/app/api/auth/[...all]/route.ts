@@ -1,5 +1,6 @@
 import { createRequestId } from "@geo/core";
 import { auth } from "@/server/auth/auth";
+import { assertTrustedWriteOrigin } from "@/server/auth/trusted-origins";
 import { errorResponse } from "@/server/http/errors";
 import { normalizeRetryAfterHeader } from "@/server/http/rate-limit";
 import { withBoundedRequestBody } from "@/server/http/request-body";
@@ -14,9 +15,11 @@ const handle = async (
 ) => {
   const requestId = createRequestId();
   try {
-    const forwardedRequest = boundBody
-      ? await withBoundedRequestBody(request)
-      : request;
+    let forwardedRequest = request;
+    if (boundBody) {
+      assertTrustedWriteOrigin(request);
+      forwardedRequest = await withBoundedRequestBody(request);
+    }
     return withRequestId(
       normalizeRetryAfterHeader(await handler(forwardedRequest)),
       requestId,

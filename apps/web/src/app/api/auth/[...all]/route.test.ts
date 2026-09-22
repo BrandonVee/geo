@@ -6,6 +6,13 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/server/auth/auth", () => ({ auth: {} }));
+vi.mock("@/server/env", () => ({
+  getServerEnv: () => ({
+    APP_URL: "https://geo.test",
+    BETTER_AUTH_URL: "https://geo.test",
+    BETTER_AUTH_TRUSTED_ORIGINS: "",
+  }),
+}));
 vi.mock("@geo/core", () => ({ createRequestId: () => "auth-request-1" }));
 vi.mock("better-auth/next-js", () => ({
   toNextJsHandler: () => ({ GET: mocks.get, POST: mocks.post }),
@@ -76,6 +83,28 @@ describe("Better Auth route", () => {
     expect(response.headers.get("X-Request-ID")).toBe("auth-request-1");
     expect(await response.json()).toEqual({
       error: { code: "PAYLOAD_TOO_LARGE", message: "请求体不能超过 4 MiB" },
+      requestId: "auth-request-1",
+    });
+  });
+
+  it("在读取正文前拒绝不可信的浏览器来源", async () => {
+    const request = new Request("https://geo.test/api/auth/sign-in/username", {
+      method: "POST",
+      headers: {
+        "Content-Length": String(4 * 1024 * 1024 + 1),
+        "Content-Type": "application/json",
+        Origin: "https://untrusted.example",
+      },
+      body: "{}",
+    });
+
+    const response = await POST(request);
+
+    expect(mocks.post).not.toHaveBeenCalled();
+    expect(response.status).toBe(403);
+    expect(response.headers.get("X-Request-ID")).toBe("auth-request-1");
+    expect(await response.json()).toEqual({
+      error: { code: "UNTRUSTED_ORIGIN", message: "请求来源不受信任" },
       requestId: "auth-request-1",
     });
   });

@@ -80,7 +80,7 @@ paths:
             X-Request-ID:
               $ref: "#/components/headers/RequestId"
         "403":
-          description: 账户已停用
+          description: 账户已停用，或浏览器来源不受信任（UNTRUSTED_ORIGIN）
           headers:
             X-Request-ID:
               $ref: "#/components/headers/RequestId"

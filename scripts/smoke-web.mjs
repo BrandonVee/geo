@@ -217,6 +217,23 @@ if (
   throw new Error("protected API returned an invalid authentication error");
 assertRequestId(unauthorizedResponse, unauthorized, "/api/v1/organizations");
 
+const untrustedAuthPath =
+  "/api/auth/sign-in/username (untrusted oversized Origin)";
+const untrustedAuthResponse = await request("/api/auth/sign-in/username", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    Origin: "https://untrusted.example",
+  },
+  body: oversizedJsonBody,
+});
+assertStatus(untrustedAuthResponse, 403, untrustedAuthPath);
+assertNoStore(untrustedAuthResponse, untrustedAuthPath);
+const untrustedAuth = await readJson(untrustedAuthResponse, untrustedAuthPath);
+if (untrustedAuth?.error?.code !== "UNTRUSTED_ORIGIN")
+  throw new Error("untrusted authentication origin bypassed the route guard");
+assertRequestId(untrustedAuthResponse, untrustedAuth, untrustedAuthPath);
+
 const oversizedAuthPath = "/api/auth/sign-in/username (oversized JSON)";
 const oversizedAuthResponse = await request("/api/auth/sign-in/username", {
   method: "POST",
