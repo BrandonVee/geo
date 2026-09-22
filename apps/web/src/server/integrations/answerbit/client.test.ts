@@ -83,6 +83,29 @@ describe("AnswerBitClient", () => {
     );
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
+  it("保留超过内部退避上限的上游 Retry-After", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response("", {
+          status: 429,
+          headers: { "retry-after": "120" },
+        }),
+      ),
+    );
+
+    await expect(
+      new AnswerBitClient("key", "https://answerbit.test").post(
+        "/geo/query/brand",
+        {},
+        z.unknown(),
+        "request-id",
+      ),
+    ).rejects.toMatchObject({
+      kind: "rate_limited",
+      retryAfterMs: 120_000,
+    } satisfies Partial<AnswerBitError>);
+  });
   it("外部写入可只重试明确拒绝的 429 而不重放 5xx", async () => {
     const fetchMock = vi
       .fn()

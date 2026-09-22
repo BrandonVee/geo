@@ -114,4 +114,20 @@ describe("OpenAPI 路由覆盖", () => {
       "认证契约声明了 catch-all Route 不支持的方法",
     ).toEqual([]);
   });
+
+  it("每个限流响应都声明标准 Retry-After 响应头", async () => {
+    const specification = await readFile(openApiPath, "utf8");
+    const rateLimitResponses = [
+      ...specification.matchAll(/^ {8}"429":\n((?: {10,}.*\n)*)/gm),
+    ];
+
+    expect(rateLimitResponses.length).toBeGreaterThan(0);
+    expect(
+      rateLimitResponses.filter(
+        ([, block]) =>
+          !block.includes('$ref: "#/components/headers/RetryAfter"'),
+      ),
+      "存在没有声明 Retry-After 的 429 响应",
+    ).toEqual([]);
+  });
 });

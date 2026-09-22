@@ -9,13 +9,14 @@ const envelopeSchema = z.object({
 });
 const retryAfterMs = (value: string | null) => {
   if (!value) return undefined;
-  const seconds = Number(value);
-  if (Number.isFinite(seconds) && seconds >= 0)
-    return Math.min(5_000, seconds * 1000);
+  if (/^\d+$/.test(value)) {
+    const seconds = Number(value);
+    const milliseconds = seconds * 1000;
+    if (Number.isSafeInteger(milliseconds) && milliseconds >= 0)
+      return milliseconds;
+  }
   const instant = Date.parse(value);
-  return Number.isNaN(instant)
-    ? undefined
-    : Math.min(5_000, Math.max(0, instant - Date.now()));
+  return Number.isNaN(instant) ? undefined : Math.max(0, instant - Date.now());
 };
 export class AnswerBitClient {
   constructor(
@@ -101,7 +102,9 @@ export class AnswerBitClient {
           (normalized.kind === "rate_limited" &&
             options.retryRateLimited === true);
         if (!retryable || attempt === retries) throw normalized;
-        await delay(normalized.retryAfterMs ?? 500 * 2 ** attempt);
+        await delay(
+          Math.min(5_000, normalized.retryAfterMs ?? 500 * 2 ** attempt),
+        );
       }
     }
     throw new AnswerBitError("upstream", operation);

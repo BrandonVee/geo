@@ -1,5 +1,6 @@
 import type { AuditContext } from "@/server/audit/write-audit";
 import { ApiError } from "@/server/http/errors";
+import { retryAfterSeconds } from "@/server/http/rate-limit";
 import { AnswerBitError } from "@/server/integrations/answerbit/errors";
 import { answerBitConnectionRepository as repository } from "@/server/repositories/answerbit-connections";
 import { organizationService } from "./organizations";
@@ -28,11 +29,21 @@ export const mapUpstreamError = (error: unknown): never => {
     ],
   } as const;
   const [status, code, message] = mapping[error.kind];
-  throw new ApiError(status, code, message, {
-    operation: error.operation,
-    httpStatus: error.httpStatus,
-    businessCode: error.businessCode,
-  });
+  const retryAfter =
+    error.kind === "rate_limited" && error.retryAfterMs !== undefined
+      ? retryAfterSeconds(error.retryAfterMs)
+      : undefined;
+  throw new ApiError(
+    status,
+    code,
+    message,
+    {
+      operation: error.operation,
+      httpStatus: error.httpStatus,
+      businessCode: error.businessCode,
+    },
+    retryAfter === undefined ? undefined : { "Retry-After": retryAfter },
+  );
 };
 
 export const answerBitConnectionService = {

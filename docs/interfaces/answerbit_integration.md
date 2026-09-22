@@ -48,7 +48,7 @@ Web Gateway 与 Worker 对每个实际 operation 独立解析凭证。业务输�
 
 自动企业同步只在 `/geo/query/brand` 成功且响应完整通过校验后提交数据库变更，使用事务级 advisory lock 与凭证 `key_version` 防止 Key 轮换、平台写入和周期任务互相覆盖。超时、限流、5xx、业务码或非法响应均保留上一次成功目录；401/403 会把当前版本统一凭证及托管连接标记为 `invalid`。
 
-请求包含 `Content-Type: application/json`、本次解析出的 `X-API-Key` 和贯穿自有 API、上游调用、日志与账本的 `X-Request-ID`。默认超时为 15 秒。通用 Client 只对 timeout 和 5xx 按调用方指定次数退避重试；401/403、429、业务码错误和响应结构错误不自动重试。
+请求包含 `Content-Type: application/json`、本次解析出的 `X-API-Key` 和贯穿自有 API、上游调用、日志与账本的 `X-Request-ID`。默认超时为 15 秒。通用 Client 只对 timeout 和 5xx 按调用方指定次数退避重试；401/403、429、业务码错误和响应结构错误默认不自动重试。显式允许重试 429 的计量调用保留上游完整等待窗口用于最终 API 的标准 `Retry-After` 响应头，但单次进程内等待最多 5 秒，避免请求被异常上游值长期占用。
 
 ## 响应与错误归一化
 

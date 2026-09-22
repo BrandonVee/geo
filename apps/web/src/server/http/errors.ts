@@ -4,6 +4,7 @@ export class ApiError extends Error {
     public readonly code: string,
     message: string,
     public readonly details?: unknown,
+    public readonly headers?: HeadersInit,
   ) {
     super(message);
   }
@@ -32,7 +33,7 @@ export const errorResponse = (error: unknown, requestId: string) => {
         },
         requestId,
       },
-      { status: error.status },
+      { status: error.status, headers: error.headers },
     );
   console.error(
     JSON.stringify({

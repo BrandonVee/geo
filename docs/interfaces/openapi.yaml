@@ -68,6 +68,9 @@ paths:
           description: 账户已停用
         "429":
           description: 请求频率过高
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
   /v1/system/bootstrap:
     get:
       summary: 查询系统是否已完成初始化
@@ -1827,6 +1830,9 @@ paths:
           description: 腾讯团队积分不足
         "429":
           description: 腾讯计量接口限流，服务端已按 Retry-After 退避后仍被拒绝
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
         "502":
           description: 腾讯服务错误或响应格式异常
         "504":
@@ -2348,6 +2354,9 @@ paths:
           description: 统一凭证未配置、不可用或腾讯拒绝查询
         "429":
           description: 腾讯 AnswerBit 限流
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
         "502":
           description: 腾讯服务或响应暂时异常
         "504":
@@ -2454,6 +2463,9 @@ paths:
           description: 统一凭证未配置、不可用或腾讯拒绝品牌创建
         "429":
           description: 腾讯 AnswerBit 限流
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
         "502":
           description: 腾讯服务或响应暂时异常
         "504":
@@ -2487,6 +2499,9 @@ paths:
           description: 统一凭证未配置、不可用或腾讯拒绝品牌详情查询
         "429":
           description: 腾讯 AnswerBit 限流
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
         "502":
           description: 腾讯服务或响应暂时异常
         "504":
@@ -2554,6 +2569,9 @@ paths:
           description: 统一凭证未配置、不可用或腾讯拒绝品牌更新；错误详情包含 operation、HTTP 状态和业务码
         "429":
           description: 腾讯 AnswerBit 限流
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
         "502":
           description: 腾讯服务或响应暂时异常
         "504":
@@ -2586,6 +2604,9 @@ paths:
           description: 统一凭证未配置或不可用
         "429":
           description: 腾讯 AnswerBit 限流
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
         "502":
           description: 腾讯服务或响应暂时异常
         "504":
@@ -2645,6 +2666,9 @@ paths:
           description: 统一凭证未配置、不可用或腾讯拒绝 Logo 更新
         "429":
           description: 腾讯 AnswerBit 限流
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
         "502":
           description: 腾讯服务或响应暂时异常
         "504":
@@ -3693,6 +3717,11 @@ components:
       schema:
         type: string
         const: no-store, max-age=0
+    RetryAfter:
+      description: 客户端再次发起请求前应等待的秒数
+      schema:
+        type: string
+        pattern: "^[0-9]+$"
   schemas:
     PurchaseAnswerBitQuota:
       type: object
