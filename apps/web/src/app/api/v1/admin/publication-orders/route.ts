@@ -2,11 +2,12 @@ import { createRequestId } from "@geo/core";
 import { requireUser } from "@/server/auth/session";
 import { errorResponse } from "@/server/http/errors";
 import { publicationService } from "@/server/services/publications";
+import { apiJson } from "@/server/http/response";
 export async function GET(request: Request) {
   const requestId = createRequestId();
   try {
     const user = await requireUser(request);
-    return Response.json({
+    return apiJson({
       data: await publicationService.adminOrders(user.id),
       requestId,
     });

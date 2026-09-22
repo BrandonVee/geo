@@ -6,6 +6,7 @@ import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { platformAnswerbitService } from "@/server/services/platform-answerbit";
 import { validateBrandIconPayload } from "../../../../../../../server/http/brand-icon";
+import { apiJson } from "@/server/http/response";
 
 type Context = { params: Promise<{ brandId: string }> };
 
@@ -41,7 +42,7 @@ export async function PUT(request: Request, context: Context) {
     );
     if (!validatedIcon.success)
       throw new ApiError(400, "VALIDATION_ERROR", validatedIcon.message);
-    return Response.json({
+    return apiJson({
       data: await platformAnswerbitService.updateBrandIcon(
         brandId.data,
         parsed.data,

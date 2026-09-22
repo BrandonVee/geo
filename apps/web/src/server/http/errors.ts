@@ -1,3 +1,5 @@
+import { apiJson } from "./response";
+
 export class ApiError extends Error {
   constructor(
     public readonly status: number,
@@ -24,7 +26,7 @@ export const databaseErrorCode = (error: unknown) => {
 };
 export const errorResponse = (error: unknown, requestId: string) => {
   if (error instanceof ApiError)
-    return Response.json(
+    return apiJson(
       {
         error: {
           code: error.code,
@@ -43,7 +45,7 @@ export const errorResponse = (error: unknown, requestId: string) => {
       error: error instanceof Error ? error.message : "unknown",
     }),
   );
-  return Response.json(
+  return apiJson(
     { error: { code: "INTERNAL_ERROR", message: "服务暂时不可用" }, requestId },
     { status: 500 },
   );

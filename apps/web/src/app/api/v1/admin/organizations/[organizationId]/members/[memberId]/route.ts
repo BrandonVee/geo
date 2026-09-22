@@ -5,6 +5,7 @@ import { auditContextFromRequest } from "@/server/audit/write-audit";
 import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { adminService } from "@/server/services/admin";
+import { apiJson, emptyResponse } from "@/server/http/response";
 
 type Context = {
   params: Promise<{ organizationId: string; memberId: string }>;
@@ -24,7 +25,7 @@ export async function PATCH(request: Request, context: Context) {
     );
     if (!params.success || !body.success)
       throw new ApiError(400, "VALIDATION_ERROR", "成员状态参数有误");
-    return Response.json({
+    return apiJson({
       data: await adminService.updateOrganizationMember(
         params.data.organizationId,
         params.data.memberId,
@@ -62,7 +63,7 @@ export async function DELETE(request: Request, context: Context) {
         requestId,
       ),
     );
-    return new Response(null, { status: 204 });
+    return emptyResponse(requestId, { status: 204 });
   } catch (error) {
     return errorResponse(error, requestId);
   }

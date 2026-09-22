@@ -29,6 +29,14 @@ const assertNoStore = (response, path) => {
     throw new Error(`${path} permits cached API responses`);
 };
 
+const assertRequestId = (response, body, path) => {
+  if (
+    typeof body?.requestId !== "string" ||
+    response.headers.get("x-request-id") !== body.requestId
+  )
+    throw new Error(`${path} returned mismatched request IDs`);
+};
+
 const waitForLive = async () => {
   const deadline = Date.now() + startupTimeoutMs;
   let lastError;
@@ -52,6 +60,7 @@ const live = await readJson(liveResponse, "/api/health/live");
 if (live?.data?.status !== "ok" || typeof live.requestId !== "string")
   throw new Error("live probe returned an invalid response envelope");
 assertNoStore(liveResponse, "/api/health/live");
+assertRequestId(liveResponse, live, "/api/health/live");
 
 for (const [name, value] of [
   ["x-content-type-options", "nosniff"],
@@ -80,11 +89,13 @@ const ready = await readJson(readyResponse, "/api/health/ready");
 if (ready?.data?.status !== "ready" || typeof ready.requestId !== "string")
   throw new Error("readiness probe returned an invalid response envelope");
 assertNoStore(readyResponse, "/api/health/ready");
+assertRequestId(readyResponse, ready, "/api/health/ready");
 
 const bootstrapResponse = await request("/api/v1/system/bootstrap");
 assertStatus(bootstrapResponse, 200, "/api/v1/system/bootstrap");
 const bootstrap = await readJson(bootstrapResponse, "/api/v1/system/bootstrap");
 assertNoStore(bootstrapResponse, "/api/v1/system/bootstrap");
+assertRequestId(bootstrapResponse, bootstrap, "/api/v1/system/bootstrap");
 if (
   typeof bootstrap?.data?.initialized !== "boolean" ||
   typeof bootstrap.requestId !== "string"
@@ -103,6 +114,7 @@ if (
   typeof unauthorized.requestId !== "string"
 )
   throw new Error("protected API returned an invalid authentication error");
+assertRequestId(unauthorizedResponse, unauthorized, "/api/v1/organizations");
 
 const signInFailureResponse = await request("/api/auth/sign-in/username", {
   method: "POST",

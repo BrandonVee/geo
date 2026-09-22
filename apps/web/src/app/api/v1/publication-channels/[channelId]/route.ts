@@ -2,6 +2,7 @@ import { createRequestId } from "@geo/core";
 import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { publicationService } from "@/server/services/publications";
+import { apiJson } from "@/server/http/response";
 
 export async function GET(
   request: Request,
@@ -18,7 +19,7 @@ export async function GET(
         "PUBLICATION_CHANNEL_NOT_FOUND",
         "发布渠道不存在或已下架",
       );
-    return Response.json({ data, requestId });
+    return apiJson({ data, requestId });
   } catch (error) {
     return errorResponse(error, requestId);
   }

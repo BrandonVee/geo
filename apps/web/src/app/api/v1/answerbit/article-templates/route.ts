@@ -3,6 +3,7 @@ import { createRequestId } from "@geo/core";
 import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { articleService } from "@/server/services/articles";
+import { apiJson } from "@/server/http/response";
 export async function GET(request: Request) {
   const requestId = createRequestId();
   try {
@@ -18,7 +19,7 @@ export async function GET(request: Request) {
         parsed.error.issues,
       );
     const { localCode, ...scope } = parsed.data;
-    return Response.json({
+    return apiJson({
       data: await articleService.templates(
         scope,
         localCode,

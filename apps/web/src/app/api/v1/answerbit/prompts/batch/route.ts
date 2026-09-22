@@ -7,6 +7,7 @@ import { auditContextFromRequest } from "@/server/audit/write-audit";
 import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { promptService } from "@/server/services/prompts";
+import { apiJson, emptyResponse } from "@/server/http/response";
 export async function POST(request: Request) {
   const requestId = createRequestId();
   try {
@@ -32,7 +33,7 @@ export async function POST(request: Request) {
         requestId,
       ),
     );
-    return Response.json({ data, requestId }, { status: 201 });
+    return apiJson({ data, requestId }, { status: 201 });
   } catch (error) {
     return errorResponse(error, requestId);
   }
@@ -64,7 +65,7 @@ export async function DELETE(request: Request) {
         requestId,
       ),
     );
-    return new Response(null, { status: 204 });
+    return emptyResponse(requestId, { status: 204 });
   } catch (error) {
     return errorResponse(error, requestId);
   }

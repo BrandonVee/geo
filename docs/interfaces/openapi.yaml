@@ -3,7 +3,7 @@ info:
   title: AnswerBit GEO SaaS API
   version: 1.0.0
   description: >-
-    除认证、初始化和平台腾讯配置外，业务 API 要求固定 TeamID 与统一 API Key 已完成验证；前置接入未完成时返回 `422 PLATFORM_TENCENT_CONNECTION_REQUIRED`。所有 API 响应统一返回 `Cache-Control: no-store, max-age=0`。
+    除认证、初始化和平台腾讯配置外，业务 API 要求固定 TeamID 与统一 API Key 已完成验证；前置接入未完成时返回 `422 PLATFORM_TENCENT_CONNECTION_REQUIRED`。所有 API 响应统一返回 `Cache-Control: no-store, max-age=0`；除 Better Auth 自有响应外均通过 `X-Request-ID` 返回日志关联标识。
 servers:
   - url: /api
 paths:
@@ -18,6 +18,8 @@ paths:
           headers:
             Cache-Control:
               $ref: "#/components/headers/NoStore"
+            X-Request-ID:
+              $ref: "#/components/headers/RequestId"
   /health/ready:
     get:
       summary: 查询 Web 配置、数据库连接与数据库发布状态
@@ -29,11 +31,15 @@ paths:
           headers:
             Cache-Control:
               $ref: "#/components/headers/NoStore"
+            X-Request-ID:
+              $ref: "#/components/headers/RequestId"
         "503":
           description: 运行配置无效（CONFIGURATION_INVALID）、数据库依赖未就绪（DEPENDENCY_UNAVAILABLE）、schema 版本未就绪（DATABASE_SCHEMA_NOT_READY）或 seed 版本未就绪（DATABASE_SEED_NOT_READY）
           headers:
             Cache-Control:
               $ref: "#/components/headers/NoStore"
+            X-Request-ID:
+              $ref: "#/components/headers/RequestId"
   /auth/sign-in/username:
     post:
       summary: 使用账号密码登录
@@ -83,6 +89,8 @@ paths:
           headers:
             Cache-Control:
               $ref: "#/components/headers/NoStore"
+            X-Request-ID:
+              $ref: "#/components/headers/RequestId"
     post:
       summary: 首次运行时创建最高权限管理员
       description: 仅在系统尚无本地密码账户时可执行；并发请求由数据库事务锁串行化。
@@ -3723,6 +3731,11 @@ components:
       schema:
         type: string
         pattern: "^[0-9]+$"
+    RequestId:
+      description: 与响应体、结构化日志及上游调用一致的请求关联标识
+      schema:
+        type: string
+        minLength: 1
   schemas:
     PurchaseAnswerBitQuota:
       type: object
@@ -5219,18 +5232,27 @@ components:
   responses:
     BadRequest:
       description: 请求参数错误
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/RequestId"
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
     Unauthorized:
       description: 未登录或 Session 失效
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/RequestId"
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
     Forbidden:
       description: 权限不足
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/RequestId"
       content:
         application/json:
           schema:

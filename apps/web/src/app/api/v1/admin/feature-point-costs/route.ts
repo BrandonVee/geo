@@ -4,12 +4,13 @@ import { auditContextFromRequest } from "@/server/audit/write-audit";
 import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { balanceService } from "@/server/services/balances";
+import { apiJson } from "@/server/http/response";
 
 export async function GET(request: Request) {
   const requestId = createRequestId();
   try {
     const user = await requireUser(request);
-    return Response.json({
+    return apiJson({
       data: await balanceService.pointCosts(user.id),
       requestId,
     });
@@ -31,7 +32,7 @@ export async function PUT(request: Request) {
         "功能积分规则参数有误",
         parsed.error.issues,
       );
-    return Response.json({
+    return apiJson({
       data: await balanceService.setPointCost(
         parsed.data,
         user.id,

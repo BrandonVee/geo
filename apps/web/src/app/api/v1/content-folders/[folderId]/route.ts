@@ -8,6 +8,7 @@ import { auditContextFromRequest } from "@/server/audit/write-audit";
 import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { contentDocumentService } from "@/server/services/content-documents";
+import { apiJson, emptyResponse } from "@/server/http/response";
 
 type Context = { params: Promise<{ folderId: string }> };
 
@@ -29,7 +30,7 @@ export async function PATCH(request: Request, context: Context) {
         "请求参数有误",
         parsed.success ? undefined : parsed.error.issues,
       );
-    return Response.json({
+    return apiJson({
       data: await contentDocumentService.updateFolder(
         parsed.data,
         id.data,
@@ -78,7 +79,7 @@ export async function DELETE(request: Request, context: Context) {
         requestId,
       ),
     );
-    return new Response(null, { status: 204 });
+    return emptyResponse(requestId, { status: 204 });
   } catch (error) {
     return errorResponse(error, requestId);
   }

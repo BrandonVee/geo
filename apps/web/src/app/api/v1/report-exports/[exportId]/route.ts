@@ -3,6 +3,7 @@ import { createRequestId } from "@geo/core";
 import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { reportExportService } from "@/server/services/report-exports";
+import { apiJson } from "@/server/http/response";
 type Context = { params: Promise<{ exportId: string }> };
 export async function GET(request: Request, context: Context) {
   const requestId = createRequestId();
@@ -19,7 +20,7 @@ export async function GET(request: Request, context: Context) {
         "企业参数有误",
         parsed.error.issues,
       );
-    return Response.json({
+    return apiJson({
       data: await reportExportService.get(
         exportId,
         parsed.data.organizationId,

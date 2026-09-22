@@ -5,12 +5,13 @@ import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { parseAdminUserPage } from "@/server/http/admin-request";
 import { adminService } from "@/server/services/admin";
+import { apiJson } from "@/server/http/response";
 
 export async function GET(request: Request) {
   const requestId = createRequestId();
   try {
     const user = await requireUser(request);
-    return Response.json({
+    return apiJson({
       data: await adminService.users(parseAdminUserPage(request), user.id),
       requestId,
     });
@@ -38,7 +39,7 @@ export async function POST(request: Request) {
       actor.id,
       auditContextFromRequest(request, undefined, actor.id, requestId),
     );
-    return Response.json(
+    return apiJson(
       { data: user, requestId },
       { status: 201, headers: { Location: `/api/v1/admin/users/${user.id}` } },
     );

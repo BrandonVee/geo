@@ -7,6 +7,7 @@ import { auditContextFromRequest } from "@/server/audit/write-audit";
 import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { notificationService } from "@/server/services/notifications";
+import { apiJson, emptyResponse } from "@/server/http/response";
 
 type Context = { params: Promise<{ ruleId: string }> };
 export async function PUT(request: Request, context: Context) {
@@ -24,7 +25,7 @@ export async function PUT(request: Request, context: Context) {
         "通知规则参数有误",
         parsed.error.issues,
       );
-    return Response.json({
+    return apiJson({
       data: await notificationService.replaceRule(
         ruleId,
         parsed.data,
@@ -68,7 +69,7 @@ export async function DELETE(request: Request, context: Context) {
         requestId,
       ),
     );
-    return new Response(null, { status: 204 });
+    return emptyResponse(requestId, { status: 204 });
   } catch (error) {
     return errorResponse(error, requestId);
   }

@@ -4,6 +4,7 @@ import { auditContextFromRequest } from "@/server/audit/write-audit";
 import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { publicationService } from "@/server/services/publications";
+import { apiJson } from "@/server/http/response";
 type Context = { params: Promise<{ orderId: string }> };
 export async function PATCH(request: Request, context: Context) {
   const requestId = createRequestId();
@@ -20,7 +21,7 @@ export async function PATCH(request: Request, context: Context) {
         "发布订单处理参数有误",
         parsed.error.issues,
       );
-    return Response.json({
+    return apiJson({
       data: await publicationService.updateOrder(
         orderId,
         parsed.data,

@@ -8,6 +8,7 @@ import { auditContextFromRequest } from "@/server/audit/write-audit";
 import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { reportExportService } from "@/server/services/report-exports";
+import { apiJson } from "@/server/http/response";
 export async function GET(request: Request) {
   const requestId = createRequestId();
   try {
@@ -22,7 +23,7 @@ export async function GET(request: Request) {
         "导出任务查询参数有误",
         parsed.error.issues,
       );
-    return Response.json({
+    return apiJson({
       data: await reportExportService.list(parsed.data, user.id),
       requestId,
     });
@@ -58,7 +59,7 @@ export async function POST(request: Request) {
         requestId,
       ),
     );
-    return Response.json(
+    return apiJson(
       { data: row, requestId },
       {
         status: row.replayed ? 200 : 201,

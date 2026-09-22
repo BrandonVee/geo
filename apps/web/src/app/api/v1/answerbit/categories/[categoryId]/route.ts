@@ -5,6 +5,7 @@ import { auditContextFromRequest } from "@/server/audit/write-audit";
 import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { categoryService } from "@/server/services/prompts";
+import { apiJson, emptyResponse } from "@/server/http/response";
 type Context = { params: Promise<{ categoryId: string }> };
 const idSchema = z.string().trim().min(1).max(128);
 export async function PATCH(request: Request, context: Context) {
@@ -22,7 +23,7 @@ export async function PATCH(request: Request, context: Context) {
         "请求参数有误",
         body.success ? undefined : body.error.issues,
       );
-    return Response.json({
+    return apiJson({
       data: await categoryService.update(
         id.data,
         body.data,
@@ -68,7 +69,7 @@ export async function DELETE(request: Request, context: Context) {
         requestId,
       ),
     );
-    return new Response(null, { status: 204 });
+    return emptyResponse(requestId, { status: 204 });
   } catch (error) {
     return errorResponse(error, requestId);
   }

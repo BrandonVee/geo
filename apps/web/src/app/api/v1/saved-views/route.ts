@@ -7,6 +7,7 @@ import { auditContextFromRequest } from "@/server/audit/write-audit";
 import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { savedViewService } from "@/server/services/saved-views";
+import { apiJson } from "@/server/http/response";
 export async function GET(request: Request) {
   const requestId = createRequestId();
   try {
@@ -21,7 +22,7 @@ export async function GET(request: Request) {
         "保存视图查询参数有误",
         parsed.error.issues,
       );
-    return Response.json({
+    return apiJson({
       data: await savedViewService.list(
         parsed.data.organizationId,
         parsed.data.page,
@@ -57,7 +58,7 @@ export async function POST(request: Request) {
         requestId,
       ),
     );
-    return Response.json(
+    return apiJson(
       { data: row, requestId },
       { status: 201, headers: { Location: `/api/v1/saved-views/${row.id}` } },
     );

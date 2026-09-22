@@ -3,6 +3,7 @@ import { createRequestId } from "@geo/core";
 import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { balanceService } from "@/server/services/balances";
+import { apiJson } from "@/server/http/response";
 
 export async function GET(request: Request) {
   const requestId = createRequestId();
@@ -18,7 +19,7 @@ export async function GET(request: Request) {
         "平台余额流水查询参数有误",
         parsed.error.issues,
       );
-    return Response.json({
+    return apiJson({
       data: await balanceService.adminTransactions(parsed.data, user.id),
       requestId,
     });

@@ -130,4 +130,37 @@ describe("OpenAPI 路由覆盖", () => {
       "存在没有声明 Retry-After 的 429 响应",
     ).toEqual([]);
   });
+
+  it("自有 API Route 统一使用可关联 requestId 的响应边界", async () => {
+    const routeFiles = await listRouteFiles(apiRoot);
+    const sources = await Promise.all(
+      routeFiles.map(async (file) => ({
+        file: relative(apiRoot, file),
+        source: await readFile(file, "utf8"),
+      })),
+    );
+
+    expect(
+      sources
+        .filter(({ source }) => source.includes("Response.json("))
+        .map(({ file }) => file),
+      "Route 绕过了统一 JSON 响应边界",
+    ).toEqual([]);
+    expect(
+      sources
+        .filter(({ source }) => source.includes("new Response(null"))
+        .map(({ file }) => file),
+      "空响应未携带 requestId 响应头",
+    ).toEqual([]);
+    expect(
+      sources
+        .filter(
+          ({ source }) =>
+            source.includes("new Response(") &&
+            !source.toLowerCase().includes('"x-request-id"'),
+        )
+        .map(({ file }) => file),
+      "自定义响应未显式携带 requestId 响应头",
+    ).toEqual([]);
+  });
 });

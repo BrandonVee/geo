@@ -4,12 +4,13 @@ import { auditContextFromRequest } from "@/server/audit/write-audit";
 import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { platformFrogService } from "@/server/services/platform-frog";
+import { apiJson } from "@/server/http/response";
 
 export async function GET(request: Request) {
   const requestId = createRequestId();
   try {
     const user = await requireUser(request);
-    return Response.json({
+    return apiJson({
       data: await platformFrogService.get(user.id),
       requestId,
     });
@@ -32,7 +33,7 @@ export async function PUT(request: Request) {
         "小青蛙平台接入参数有误",
         parsed.error.issues,
       );
-    return Response.json({
+    return apiJson({
       data: await platformFrogService.configure(
         parsed.data,
         user.id,

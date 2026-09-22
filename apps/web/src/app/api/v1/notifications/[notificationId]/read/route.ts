@@ -3,6 +3,7 @@ import { createRequestId } from "@geo/core";
 import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { notificationService } from "@/server/services/notifications";
+import { apiJson } from "@/server/http/response";
 
 type Context = { params: Promise<{ notificationId: string }> };
 export async function PUT(request: Request, context: Context) {
@@ -20,7 +21,7 @@ export async function PUT(request: Request, context: Context) {
         "通知读取状态参数有误",
         parsed.error.issues,
       );
-    return Response.json({
+    return apiJson({
       data: await notificationService.setRead(
         notificationId,
         parsed.data.organizationId,

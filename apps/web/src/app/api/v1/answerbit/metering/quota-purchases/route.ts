@@ -4,6 +4,7 @@ import { auditContextFromRequest } from "@/server/audit/write-audit";
 import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { meteringService } from "@/server/services/metering";
+import { apiJson } from "@/server/http/response";
 
 export async function POST(request: Request) {
   const requestId = createRequestId();
@@ -19,7 +20,7 @@ export async function POST(request: Request) {
         "监控品牌扩容参数有误",
         parsed.error.issues,
       );
-    return Response.json({
+    return apiJson({
       data: await meteringService.purchaseQuota(
         parsed.data,
         user.id,

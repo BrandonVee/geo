@@ -5,6 +5,7 @@ import { auditContextFromRequest } from "@/server/audit/write-audit";
 import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { memberService } from "@/server/services/members";
+import { apiJson } from "@/server/http/response";
 type Context = {
   params: Promise<{ organizationId: string; memberId: string }>;
 };
@@ -40,7 +41,7 @@ export async function POST(request: Request, context: Context) {
         requestId,
       ),
     );
-    return Response.json(
+    return apiJson(
       { data, requestId },
       {
         status: 201,

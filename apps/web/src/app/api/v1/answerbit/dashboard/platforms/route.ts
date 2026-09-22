@@ -3,6 +3,7 @@ import { createRequestId } from "@geo/core";
 import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { dashboardService } from "@/server/services/dashboard";
+import { apiJson } from "@/server/http/response";
 export async function GET(request: Request) {
   const requestId = createRequestId();
   try {
@@ -17,7 +18,7 @@ export async function GET(request: Request) {
         "查询参数有误",
         parsed.error.issues,
       );
-    return Response.json({
+    return apiJson({
       data: await dashboardService.platforms(
         parsed.data.organizationId,
         parsed.data.teamBindingId,

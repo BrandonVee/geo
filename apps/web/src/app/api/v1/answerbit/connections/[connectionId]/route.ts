@@ -5,6 +5,7 @@ import { auditContextFromRequest } from "@/server/audit/write-audit";
 import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { answerBitConnectionService } from "@/server/services/answerbit-connections";
+import { apiJson, emptyResponse } from "@/server/http/response";
 type Context = { params: Promise<{ connectionId: string }> };
 const parseId = (value: string) => {
   const parsed = z.string().uuid().safeParse(value);
@@ -32,7 +33,7 @@ export async function PATCH(request: Request, context: Context) {
       connectionId,
       user.id,
     );
-    return Response.json({ data, requestId });
+    return apiJson({ data, requestId });
   } catch (error) {
     return errorResponse(error, requestId);
   }
@@ -58,7 +59,7 @@ export async function DELETE(request: Request, context: Context) {
         requestId,
       ),
     );
-    return new Response(null, { status: 204 });
+    return emptyResponse(requestId, { status: 204 });
   } catch (error) {
     return errorResponse(error, requestId);
   }

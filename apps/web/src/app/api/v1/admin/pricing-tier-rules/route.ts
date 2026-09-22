@@ -4,12 +4,13 @@ import { auditContextFromRequest } from "@/server/audit/write-audit";
 import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { pricingService } from "@/server/services/pricing";
+import { apiJson } from "@/server/http/response";
 
 export async function GET(request: Request) {
   const requestId = createRequestId();
   try {
     const user = await requireUser(request);
-    return Response.json({
+    return apiJson({
       data: await pricingService.list(user.id),
       requestId,
     });
@@ -32,7 +33,7 @@ export async function PUT(request: Request) {
         "价格等级规则参数有误",
         parsed.error.issues,
       );
-    return Response.json({
+    return apiJson({
       data: await pricingService.update(
         parsed.data,
         user.id,

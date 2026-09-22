@@ -4,6 +4,7 @@ import { auditContextFromRequest } from "@/server/audit/write-audit";
 import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { platformAnswerbitService } from "@/server/services/platform-answerbit";
+import { apiJson } from "@/server/http/response";
 
 export async function GET(request: Request) {
   const requestId = createRequestId();
@@ -11,7 +12,7 @@ export async function GET(request: Request) {
     const user = await requireUser(request, {
       allowBeforeTencentConnection: true,
     });
-    return Response.json({
+    return apiJson({
       data: await platformAnswerbitService.get(user.id),
       requestId,
     });
@@ -36,7 +37,7 @@ export async function PUT(request: Request) {
         "统一腾讯接入参数有误",
         parsed.error.issues,
       );
-    return Response.json({
+    return apiJson({
       data: await platformAnswerbitService.configure(
         parsed.data,
         user.id,

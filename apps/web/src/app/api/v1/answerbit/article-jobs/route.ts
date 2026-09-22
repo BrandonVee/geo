@@ -8,6 +8,7 @@ import { auditContextFromRequest } from "@/server/audit/write-audit";
 import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { articleService } from "@/server/services/articles";
+import { apiJson } from "@/server/http/response";
 export async function GET(request: Request) {
   const requestId = createRequestId();
   try {
@@ -23,7 +24,7 @@ export async function GET(request: Request) {
         parsed.error.issues,
       );
     const { limit, ...scope } = parsed.data;
-    return Response.json({
+    return apiJson({
       data: await articleService.listJobs(scope, limit, user.id),
       requestId,
     });
@@ -60,7 +61,7 @@ export async function POST(request: Request) {
         requestId,
       ),
     );
-    return Response.json(
+    return apiJson(
       { data, requestId },
       {
         status: data.replayed ? 200 : 202,

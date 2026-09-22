@@ -8,6 +8,7 @@ import { auditContextFromRequest } from "@/server/audit/write-audit";
 import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { competitorService } from "@/server/services/competitors";
+import { apiJson, emptyResponse } from "@/server/http/response";
 type Context = { params: Promise<{ competitorId: string }> };
 const idSchema = z.string().trim().min(1).max(128);
 
@@ -38,7 +39,7 @@ export async function PATCH(request: Request, context: Context) {
         requestId,
       ),
     );
-    return Response.json({ data, requestId });
+    return apiJson({ data, requestId });
   } catch (error) {
     return errorResponse(error, requestId);
   }
@@ -72,7 +73,7 @@ export async function DELETE(request: Request, context: Context) {
         requestId,
       ),
     );
-    return new Response(null, { status: 204 });
+    return emptyResponse(requestId, { status: 204 });
   } catch (error) {
     return errorResponse(error, requestId);
   }

@@ -5,6 +5,7 @@ import { auditContextFromRequest } from "@/server/audit/write-audit";
 import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { platformAnswerbitService } from "@/server/services/platform-answerbit";
+import { apiJson, emptyResponse } from "@/server/http/response";
 
 type Context = { params: Promise<{ brandId: string }> };
 
@@ -25,7 +26,7 @@ export async function GET(request: Request, context: Context) {
   try {
     const user = await requireUser(request);
     const brandId = await brandIdFrom(context);
-    return Response.json({
+    return apiJson({
       data: await platformAnswerbitService.getBrand(
         brandId,
         user.id,
@@ -53,7 +54,7 @@ export async function PATCH(request: Request, context: Context) {
         "腾讯企业参数有误",
         parsed.error.issues,
       );
-    return Response.json({
+    return apiJson({
       data: await platformAnswerbitService.updateBrand(
         brandId,
         parsed.data,
@@ -77,7 +78,7 @@ export async function DELETE(request: Request, context: Context) {
       user.id,
       auditContextFromRequest(request, undefined, user.id, requestId),
     );
-    return new Response(null, { status: 204 });
+    return emptyResponse(requestId, { status: 204 });
   } catch (error) {
     return errorResponse(error, requestId);
   }

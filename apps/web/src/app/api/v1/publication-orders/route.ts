@@ -7,6 +7,7 @@ import { auditContextFromRequest } from "@/server/audit/write-audit";
 import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { publicationService } from "@/server/services/publications";
+import { apiJson } from "@/server/http/response";
 export async function GET(request: Request) {
   const requestId = createRequestId();
   try {
@@ -21,7 +22,7 @@ export async function GET(request: Request) {
         "发布订单查询参数有误",
         parsed.error.issues,
       );
-    return Response.json({
+    return apiJson({
       data: await publicationService.list(
         parsed.data.organizationId,
         parsed.data.teamBindingId,
@@ -58,10 +59,7 @@ export async function POST(request: Request) {
         requestId,
       ),
     );
-    return Response.json(
-      { data, requestId },
-      { status: data.replayed ? 200 : 201 },
-    );
+    return apiJson({ data, requestId }, { status: data.replayed ? 200 : 201 });
   } catch (error) {
     return errorResponse(error, requestId);
   }

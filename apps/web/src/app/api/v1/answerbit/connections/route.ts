@@ -3,6 +3,7 @@ import { createRequestId } from "@geo/core";
 import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { answerBitConnectionService } from "@/server/services/answerbit-connections";
+import { apiJson } from "@/server/http/response";
 export async function GET(request: Request) {
   const requestId = createRequestId();
   try {
@@ -12,7 +13,7 @@ export async function GET(request: Request) {
     );
     if (!parsed.success)
       throw new ApiError(400, "VALIDATION_ERROR", "organizationId 格式错误");
-    return Response.json({
+    return apiJson({
       data: await answerBitConnectionService.list(
         parsed.data.organizationId,
         user.id,
@@ -41,7 +42,7 @@ export async function POST(request: Request) {
       parsed.data.organizationId,
       user.id,
     );
-    return Response.json(
+    return apiJson(
       { data, requestId },
       {
         status: 201,

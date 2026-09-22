@@ -4,6 +4,7 @@ import { auditContextFromRequest } from "@/server/audit/write-audit";
 import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { balanceService } from "@/server/services/balances";
+import { apiJson } from "@/server/http/response";
 
 export async function POST(request: Request) {
   const requestId = createRequestId();
@@ -29,10 +30,7 @@ export async function POST(request: Request) {
         requestId,
       ),
     );
-    return Response.json(
-      { data, requestId },
-      { status: data.replayed ? 200 : 201 },
-    );
+    return apiJson({ data, requestId }, { status: data.replayed ? 200 : 201 });
   } catch (error) {
     return errorResponse(error, requestId);
   }

@@ -3,6 +3,7 @@ import { createRequestId } from "@geo/core";
 import { noStoreJson, withNoStore } from "@/server/http/cache";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { identityService } from "@/server/modules/identity/identity.service";
+import { apiJson } from "@/server/http/response";
 
 export const dynamic = "force-dynamic";
 
@@ -38,7 +39,7 @@ export async function POST(request: Request) {
     const administrator = await identityService.bootstrapAdministrator(
       parsed.data,
     );
-    return Response.json(
+    return apiJson(
       { data: administrator, requestId },
       {
         status: 201,

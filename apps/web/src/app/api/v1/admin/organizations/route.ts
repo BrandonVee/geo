@@ -3,11 +3,12 @@ import { requireUser } from "@/server/auth/session";
 import { errorResponse } from "@/server/http/errors";
 import { parseAdminPage } from "@/server/http/admin-request";
 import { adminService } from "@/server/services/admin";
+import { apiJson, emptyResponse } from "@/server/http/response";
 export async function GET(request: Request) {
   const requestId = createRequestId();
   try {
     const user = await requireUser(request);
-    return Response.json({
+    return apiJson({
       data: await adminService.organizations(parseAdminPage(request), user.id),
       requestId,
     });
@@ -21,7 +22,7 @@ export async function POST(request: Request) {
   try {
     const user = await requireUser(request);
     await adminService.rejectLocalOrganizationCreation(user.id);
-    return new Response(null, { status: 410 });
+    return emptyResponse(requestId, { status: 410 });
   } catch (error) {
     return errorResponse(error, requestId);
   }

@@ -7,6 +7,7 @@ import { auditContextFromRequest } from "@/server/audit/write-audit";
 import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { notificationService } from "@/server/services/notifications";
+import { apiJson } from "@/server/http/response";
 
 export async function GET(request: Request) {
   const requestId = createRequestId();
@@ -22,7 +23,7 @@ export async function GET(request: Request) {
         "通知规则查询参数有误",
         parsed.error.issues,
       );
-    return Response.json(
+    return apiJson(
       {
         data: await notificationService.listRules(
           parsed.data.organizationId,
@@ -61,7 +62,7 @@ export async function POST(request: Request) {
         requestId,
       ),
     );
-    return Response.json(
+    return apiJson(
       { data: rule, requestId },
       {
         status: 201,

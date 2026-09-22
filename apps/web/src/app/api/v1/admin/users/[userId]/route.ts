@@ -5,6 +5,7 @@ import { auditContextFromRequest } from "@/server/audit/write-audit";
 import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { adminService } from "@/server/services/admin";
+import { apiJson } from "@/server/http/response";
 type Context = { params: Promise<{ userId: string }> };
 async function userIdFrom(context: Context) {
   const parsed = z
@@ -20,7 +21,7 @@ export async function GET(request: Request, context: Context) {
   try {
     const actor = await requireUser(request);
     const userId = await userIdFrom(context);
-    return Response.json({
+    return apiJson({
       data: await adminService.user(userId, actor.id),
       requestId,
     });
@@ -43,7 +44,7 @@ export async function PATCH(request: Request, context: Context) {
         "用户权限或额度参数有误",
         parsed.error.issues,
       );
-    return Response.json({
+    return apiJson({
       data: await adminService.updateUser(
         userId,
         parsed.data,

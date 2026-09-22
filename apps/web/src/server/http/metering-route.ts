@@ -2,6 +2,7 @@ import { createRequestId } from "@geo/core";
 import { z } from "zod";
 import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "./errors";
+import { apiJson } from "./response";
 
 export function createMeteringGetRoute<T>(
   schema: z.ZodType<T>,
@@ -21,7 +22,7 @@ export function createMeteringGetRoute<T>(
           "计量查询参数有误",
           parsed.error.issues,
         );
-      return Response.json({
+      return apiJson({
         data: await load(parsed.data, user.id, requestId),
         requestId,
       });

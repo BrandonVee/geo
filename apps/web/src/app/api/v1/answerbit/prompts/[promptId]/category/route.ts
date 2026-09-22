@@ -5,6 +5,7 @@ import { auditContextFromRequest } from "@/server/audit/write-audit";
 import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { promptService } from "@/server/services/prompts";
+import { apiJson } from "@/server/http/response";
 type Context = { params: Promise<{ promptId: string }> };
 export async function PUT(request: Request, context: Context) {
   const requestId = createRequestId();
@@ -27,7 +28,7 @@ export async function PUT(request: Request, context: Context) {
         body.success ? undefined : body.error.issues,
       );
     const { organizationId, teamBindingId, brandId } = body.data;
-    return Response.json({
+    return apiJson({
       data: await promptService.move(
         { organizationId, teamBindingId, brandId },
         id.data,

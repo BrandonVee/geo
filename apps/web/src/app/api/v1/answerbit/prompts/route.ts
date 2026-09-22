@@ -4,6 +4,7 @@ import { auditContextFromRequest } from "@/server/audit/write-audit";
 import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { promptService } from "@/server/services/prompts";
+import { apiJson } from "@/server/http/response";
 export async function GET(request: Request) {
   const requestId = createRequestId();
   try {
@@ -18,7 +19,7 @@ export async function GET(request: Request) {
         "查询参数有误",
         parsed.error.issues,
       );
-    return Response.json({
+    return apiJson({
       data: await promptService.list(parsed.data, user.id, requestId),
       requestId,
     });
@@ -51,7 +52,7 @@ export async function POST(request: Request) {
         requestId,
       ),
     );
-    return Response.json(
+    return apiJson(
       { data, requestId },
       {
         status: 201,

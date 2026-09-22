@@ -5,6 +5,7 @@ import { auditContextFromRequest } from "@/server/audit/write-audit";
 import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { promptService } from "@/server/services/prompts";
+import { apiJson, emptyResponse } from "@/server/http/response";
 type Context = { params: Promise<{ promptId: string }> };
 const idSchema = z.string().trim().min(1).max(128);
 export async function PATCH(request: Request, context: Context) {
@@ -24,7 +25,7 @@ export async function PATCH(request: Request, context: Context) {
       );
     const { organizationId, teamBindingId, brandId, ...changes } = body.data;
     const scope = { organizationId, teamBindingId, brandId };
-    return Response.json({
+    return apiJson({
       data: await promptService.update(
         scope,
         id.data,
@@ -66,7 +67,7 @@ export async function DELETE(request: Request, context: Context) {
         requestId,
       ),
     );
-    return new Response(null, { status: 204 });
+    return emptyResponse(requestId, { status: 204 });
   } catch (error) {
     return errorResponse(error, requestId);
   }

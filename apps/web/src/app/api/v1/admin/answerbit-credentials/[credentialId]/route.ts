@@ -5,6 +5,7 @@ import { auditContextFromRequest } from "@/server/audit/write-audit";
 import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { answerBitCredentialService } from "@/server/services/answerbit-credentials";
+import { apiJson, emptyResponse } from "@/server/http/response";
 
 type Context = { params: Promise<{ credentialId: string }> };
 async function credentialIdFrom(context: Context) {
@@ -32,7 +33,7 @@ export async function PATCH(request: Request, context: Context) {
         "AnswerBit Key 更新参数有误",
         parsed.error.issues,
       );
-    return Response.json({
+    return apiJson({
       data: await answerBitCredentialService.update(
         credentialId,
         parsed.data,
@@ -56,7 +57,7 @@ export async function DELETE(request: Request, context: Context) {
       user.id,
       auditContextFromRequest(request, undefined, user.id, requestId),
     );
-    return new Response(null, { status: 204 });
+    return emptyResponse(requestId, { status: 204 });
   } catch (error) {
     return errorResponse(error, requestId);
   }

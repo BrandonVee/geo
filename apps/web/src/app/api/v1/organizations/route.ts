@@ -2,11 +2,12 @@ import { createRequestId } from "@geo/core";
 import { requireUser } from "@/server/auth/session";
 import { errorResponse } from "@/server/http/errors";
 import { organizationService } from "@/server/services/organizations";
+import { apiJson, emptyResponse } from "@/server/http/response";
 export async function GET(request: Request) {
   const requestId = createRequestId();
   try {
     const user = await requireUser(request);
-    return Response.json({
+    return apiJson({
       data: await organizationService.list(user.id),
       requestId,
     });
@@ -19,7 +20,7 @@ export async function POST(request: Request) {
   try {
     const user = await requireUser(request);
     await organizationService.create(user.id);
-    return new Response(null, { status: 410 });
+    return emptyResponse(requestId, { status: 410 });
   } catch (error) {
     return errorResponse(error, requestId);
   }

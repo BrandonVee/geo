@@ -5,6 +5,7 @@ import { requireUser } from "@/server/auth/session";
 import { auditContextFromRequest } from "@/server/audit/write-audit";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { articleService } from "@/server/services/articles";
+import { apiJson } from "@/server/http/response";
 type Context = { params: Promise<{ jobId: string }> };
 export async function GET(request: Request, context: Context) {
   const requestId = createRequestId();
@@ -24,7 +25,7 @@ export async function GET(request: Request, context: Context) {
         "查询参数有误",
         query.success ? undefined : query.error.issues,
       );
-    return Response.json({
+    return apiJson({
       data: await articleService.getJob(query.data, id.data, user.id),
       requestId,
     });
@@ -50,7 +51,7 @@ export async function DELETE(request: Request, context: Context) {
         "查询参数有误",
         query.success ? undefined : query.error.issues,
       );
-    return Response.json({
+    return apiJson({
       data: await articleService.cancelJob(
         query.data,
         id.data,

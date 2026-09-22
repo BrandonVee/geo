@@ -4,6 +4,7 @@ import { auditContextFromRequest } from "@/server/audit/write-audit";
 import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { categoryService } from "@/server/services/prompts";
+import { apiJson } from "@/server/http/response";
 export async function GET(request: Request) {
   const requestId = createRequestId();
   try {
@@ -20,7 +21,7 @@ export async function GET(request: Request) {
       );
     const { organizationId, teamBindingId, brandId, id, titleName } =
       parsed.data;
-    return Response.json({
+    return apiJson({
       data: await categoryService.list(
         { organizationId, teamBindingId, brandId },
         { id, titleName },
@@ -58,7 +59,7 @@ export async function POST(request: Request) {
         requestId,
       ),
     );
-    return Response.json(
+    return apiJson(
       { data, requestId },
       {
         status: 201,

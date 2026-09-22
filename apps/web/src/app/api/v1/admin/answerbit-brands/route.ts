@@ -5,6 +5,7 @@ import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { platformAnswerbitService } from "@/server/services/platform-answerbit";
 import { validateBrandIconPayload } from "../../../../../server/http/brand-icon";
+import { apiJson } from "@/server/http/response";
 
 export async function POST(request: Request) {
   const requestId = createRequestId();
@@ -33,7 +34,7 @@ export async function POST(request: Request) {
       user.id,
       auditContextFromRequest(request, undefined, user.id, requestId),
     );
-    return Response.json(
+    return apiJson(
       { data: brand, requestId },
       {
         status: 201,

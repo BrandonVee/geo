@@ -2,6 +2,7 @@ import { createRequestId } from "@geo/core";
 import { requireUser } from "@/server/auth/session";
 import { errorResponse } from "@/server/http/errors";
 import { organizationService } from "@/server/services/organizations";
+import { apiJson } from "@/server/http/response";
 
 type RouteContext = { params: Promise<{ organizationId: string }> };
 export async function GET(request: Request, context: RouteContext) {
@@ -9,7 +10,7 @@ export async function GET(request: Request, context: RouteContext) {
   try {
     const user = await requireUser(request);
     const { organizationId } = await context.params;
-    return Response.json({
+    return apiJson({
       data: await organizationService.get(organizationId, user.id),
       requestId,
     });
@@ -22,7 +23,7 @@ export async function PATCH(request: Request, context: RouteContext) {
   try {
     const user = await requireUser(request);
     const { organizationId } = await context.params;
-    return Response.json({
+    return apiJson({
       data: await organizationService.update(organizationId, user.id),
       requestId,
     });

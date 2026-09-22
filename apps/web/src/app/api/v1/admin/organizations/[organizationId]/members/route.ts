@@ -5,6 +5,7 @@ import { auditContextFromRequest } from "@/server/audit/write-audit";
 import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { adminService } from "@/server/services/admin";
+import { apiJson } from "@/server/http/response";
 
 type Context = { params: Promise<{ organizationId: string }> };
 
@@ -24,7 +25,7 @@ export async function GET(request: Request, context: Context) {
     const user = await requireUser(request);
     const organizationId = await organizationIdFrom(context);
     const detail = await adminService.organization(organizationId, user.id);
-    return Response.json({ data: detail.members, requestId });
+    return apiJson({ data: detail.members, requestId });
   } catch (error) {
     return errorResponse(error, requestId);
   }
@@ -51,7 +52,7 @@ export async function POST(request: Request, context: Context) {
       user.id,
       auditContextFromRequest(request, organizationId, user.id, requestId),
     );
-    return Response.json(
+    return apiJson(
       { data: member, requestId },
       {
         status: 201,

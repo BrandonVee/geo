@@ -4,6 +4,7 @@ import { z } from "zod";
 import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { insightService } from "@/server/services/insights";
+import { apiJson } from "@/server/http/response";
 type Context = { params: Promise<{ taskId: string }> };
 export async function GET(request: Request, context: Context) {
   const requestId = createRequestId();
@@ -25,7 +26,7 @@ export async function GET(request: Request, context: Context) {
         "查询参数有误",
         query.success ? undefined : query.error.issues,
       );
-    return Response.json({
+    return apiJson({
       data: await insightService.taskDetail(
         query.data,
         id.data,
