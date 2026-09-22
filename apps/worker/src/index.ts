@@ -17,7 +17,6 @@ import {
   countConsecutiveFailures,
   decideAsyncJobRecovery,
   hasPermission,
-  parseTencentBrandDirectory,
   platformAnswerBitCredentialAad,
   platformFrogCredentialAad,
   platformAnswerBitConnectionSentinel,
@@ -84,6 +83,11 @@ import {
   users,
 } from "@geo/db";
 import { PgBoss, type Job } from "pg-boss";
+import { runtimeTaskErrorCode } from "./runtime-task";
+import {
+  queryTencentBrandDirectory,
+  TencentDirectoryError,
+} from "./tencent-directory";
 
 const runtimeEnvResult = workerEnvSchema.safeParse(process.env);
 if (!runtimeEnvResult.success) {
@@ -137,84 +141,6 @@ type ArticlePayload = {
 };
 type Envelope = { code: number; msg?: string; data: unknown };
 
-type DirectoryErrorKind =
-  | "unauthorized"
-  | "rate_limited"
-  | "business"
-  | "invalid_response"
-  | "timeout"
-  | "upstream";
-
-class TencentDirectoryError extends Error {
-  constructor(
-    readonly kind: DirectoryErrorKind,
-    readonly httpStatus?: number,
-    readonly answerbitCode?: number,
-  ) {
-    super(`TENCENT_DIRECTORY_${kind.toUpperCase()}`);
-  }
-}
-
-async function queryTencentBrandDirectory(input: {
-  apiKey: string;
-  teamId: string;
-  requestId: string;
-}) {
-  for (let attempt = 0; attempt <= 2; attempt += 1) {
-    try {
-      const response = await fetch(
-        new URL("/geo/query/brand", runtimeEnv.ANSWERBIT_BASE_URL),
-        {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "X-API-Key": input.apiKey,
-            "X-Request-ID": input.requestId,
-          },
-          body: JSON.stringify({ team_id: input.teamId }),
-          signal: AbortSignal.timeout(4_500),
-        },
-      );
-      if (response.status === 401 || response.status === 403)
-        throw new TencentDirectoryError("unauthorized", response.status);
-      if (response.status === 429)
-        throw new TencentDirectoryError("rate_limited", response.status);
-      if (response.status >= 500)
-        throw new TencentDirectoryError("upstream", response.status);
-      if (!response.ok)
-        throw new TencentDirectoryError("business", response.status);
-      const envelope = (await response.json()) as Partial<Envelope>;
-      if (!envelope || typeof envelope.code !== "number")
-        throw new TencentDirectoryError("invalid_response", response.status);
-      if (envelope.code !== 0)
-        throw new TencentDirectoryError(
-          "business",
-          response.status,
-          envelope.code,
-        );
-      try {
-        return parseTencentBrandDirectory(envelope.data);
-      } catch {
-        throw new TencentDirectoryError("invalid_response", response.status);
-      }
-    } catch (error) {
-      const normalized =
-        error instanceof TencentDirectoryError
-          ? error
-          : new TencentDirectoryError(
-              error instanceof DOMException && error.name === "TimeoutError"
-                ? "timeout"
-                : "upstream",
-            );
-      const retryable =
-        normalized.kind === "timeout" || normalized.kind === "upstream";
-      if (!retryable || attempt === 2) throw normalized;
-      await delay(200 * 2 ** attempt);
-    }
-  }
-  throw new TencentDirectoryError("upstream");
-}
-
 async function processTencentEnterpriseSync() {
   const [configuration] = await db
     .select()
@@ -257,6 +183,7 @@ async function processTencentEnterpriseSync() {
       ),
       teamId,
       requestId,
+      baseUrl: runtimeEnv.ANSWERBIT_BASE_URL,
     });
     const result = await syncTencentEnterpriseDirectory({
       brands,
@@ -1832,18 +1759,6 @@ async function pruneStaleWorkerHeartbeats() {
       ),
     );
 }
-
-const runtimeTaskErrorCode = (taskName: RuntimeTaskName, error: unknown) => {
-  const value =
-    error && typeof error === "object" && "code" in error
-      ? (error as { code?: unknown }).code
-      : error instanceof Error
-        ? error.message
-        : undefined;
-  if (typeof value === "string" && /^[A-Z][A-Z0-9_]{2,127}$/.test(value))
-    return value;
-  return `${taskName.replaceAll("-", "_").toUpperCase()}_FAILED`;
-};
 
 async function recordRuntimeTaskCompletion(input: {
   taskName: RuntimeTaskName;
