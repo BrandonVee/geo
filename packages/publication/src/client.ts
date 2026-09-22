@@ -1,3 +1,8 @@
+import {
+  BoundedJsonResponseError,
+  discardResponseBody,
+  readBoundedJsonResponse,
+} from "@geo/core";
 import { z } from "zod";
 
 export type FrogMediaType = "website" | "wemedia";
@@ -161,6 +166,7 @@ export class FrogPublicationClient {
         for (const item of value) body.append(key, item);
       } else body.set(key, String(value));
     }
+    let responseStatus: number | undefined;
     try {
       const response = await fetch(new URL(operation, this.baseUrl), {
         method: "POST",
@@ -168,14 +174,19 @@ export class FrogPublicationClient {
         body,
         signal: AbortSignal.timeout(15_000),
       });
-      if (!response.ok)
+      responseStatus = response.status;
+      if (!response.ok) {
+        await discardResponseBody(response);
         throw new FrogPublicationError(
           "upstream",
           operation,
           `聚合发布上游返回 HTTP ${response.status}`,
           response.status,
         );
-      const envelope = envelopeSchema.safeParse(await response.json());
+      }
+      const envelope = envelopeSchema.safeParse(
+        await readBoundedJsonResponse(response),
+      );
       if (!envelope.success)
         throw new FrogPublicationError(
           "invalid_response",
@@ -201,6 +212,13 @@ export class FrogPublicationClient {
       return parsed.data;
     } catch (error) {
       if (error instanceof FrogPublicationError) throw error;
+      if (error instanceof BoundedJsonResponseError)
+        throw new FrogPublicationError(
+          "invalid_response",
+          operation,
+          "聚合发布上游响应格式无效",
+          responseStatus,
+        );
       throw new FrogPublicationError(
         error instanceof DOMException && error.name === "TimeoutError"
           ? "timeout"

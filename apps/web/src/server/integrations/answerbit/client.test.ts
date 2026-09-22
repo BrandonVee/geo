@@ -48,9 +48,10 @@ describe("AnswerBitClient", () => {
     } satisfies Partial<AnswerBitError>);
   });
   it("网络 5xx 查询按配置重试", async () => {
+    const unavailable = new Response("ignored upstream body", { status: 503 });
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(new Response("", { status: 503 }))
+      .mockResolvedValueOnce(unavailable)
       .mockResolvedValueOnce(
         new Response(JSON.stringify({ code: 0, data: [] }), { status: 200 }),
       );
@@ -63,6 +64,7 @@ describe("AnswerBitClient", () => {
       { retries: 1 },
     );
     expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(unavailable.bodyUsed).toBe(true);
   });
   it("仅在调用方显式开启时按 Retry-After 重试 429", async () => {
     const fetchMock = vi
@@ -124,6 +126,26 @@ describe("AnswerBitClient", () => {
         },
       ),
     ).rejects.toMatchObject({ kind: "upstream" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("拒绝超限响应且不按瞬时网络错误重试", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response("{}", {
+        headers: { "Content-Length": String(16 * 1024 * 1024 + 1) },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      new AnswerBitClient("key", "https://answerbit.test").post(
+        "/geo/query/brand",
+        {},
+        z.unknown(),
+        "request-id",
+        { retries: 2 },
+      ),
+    ).rejects.toMatchObject({ kind: "invalid_response", httpStatus: 200 });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

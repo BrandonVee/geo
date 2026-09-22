@@ -34,6 +34,13 @@ export {
   type NotificationMetric,
   type NotificationSeverity,
 } from "./notification-evaluation";
+export {
+  BoundedJsonResponseError,
+  DEFAULT_UPSTREAM_JSON_LIMIT_BYTES,
+  discardResponseBody,
+  readBoundedJsonResponse,
+  type BoundedJsonResponseErrorKind,
+} from "./bounded-json-response";
 export const createRequestId = () => randomUUID();
 export const platformAnswerBitCredentialAad = "platform-answerbit";
 export const platformFrogCredentialAad = "platform-frog-publication";

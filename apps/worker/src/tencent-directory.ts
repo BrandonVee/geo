@@ -1,5 +1,10 @@
 import { setTimeout as delay } from "node:timers/promises";
-import { parseTencentBrandDirectory } from "@geo/core";
+import {
+  BoundedJsonResponseError,
+  discardResponseBody,
+  parseTencentBrandDirectory,
+  readBoundedJsonResponse,
+} from "@geo/core";
 
 type DirectoryErrorKind =
   | "unauthorized"
@@ -38,6 +43,7 @@ export async function queryTencentBrandDirectory(
   const sleep = dependencies.sleep ?? delay;
 
   for (let attempt = 0; attempt <= 2; attempt += 1) {
+    let responseStatus: number | undefined;
     try {
       const response = await fetchDirectory(
         new URL("/geo/query/brand", input.baseUrl),
@@ -52,15 +58,20 @@ export async function queryTencentBrandDirectory(
           signal: AbortSignal.timeout(4_500),
         },
       );
-      if (response.status === 401 || response.status === 403)
-        throw new TencentDirectoryError("unauthorized", response.status);
-      if (response.status === 429)
-        throw new TencentDirectoryError("rate_limited", response.status);
-      if (response.status >= 500)
-        throw new TencentDirectoryError("upstream", response.status);
-      if (!response.ok)
+      responseStatus = response.status;
+      if (!response.ok) {
+        await discardResponseBody(response);
+        if (response.status === 401 || response.status === 403)
+          throw new TencentDirectoryError("unauthorized", response.status);
+        if (response.status === 429)
+          throw new TencentDirectoryError("rate_limited", response.status);
+        if (response.status >= 500)
+          throw new TencentDirectoryError("upstream", response.status);
         throw new TencentDirectoryError("business", response.status);
-      const envelope = (await response.json()) as Partial<Envelope>;
+      }
+      const envelope = (await readBoundedJsonResponse(
+        response,
+      )) as Partial<Envelope>;
       if (!envelope || typeof envelope.code !== "number")
         throw new TencentDirectoryError("invalid_response", response.status);
       if (envelope.code !== 0)
@@ -78,11 +89,13 @@ export async function queryTencentBrandDirectory(
       const normalized =
         error instanceof TencentDirectoryError
           ? error
-          : new TencentDirectoryError(
-              error instanceof DOMException && error.name === "TimeoutError"
-                ? "timeout"
-                : "upstream",
-            );
+          : error instanceof BoundedJsonResponseError
+            ? new TencentDirectoryError("invalid_response", responseStatus)
+            : new TencentDirectoryError(
+                error instanceof DOMException && error.name === "TimeoutError"
+                  ? "timeout"
+                  : "upstream",
+              );
       const retryable =
         normalized.kind === "timeout" || normalized.kind === "upstream";
       if (!retryable || attempt === 2) throw normalized;

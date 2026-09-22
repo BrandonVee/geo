@@ -169,6 +169,19 @@ describe("FrogPublicationClient", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0][1].redirect).toBe("error");
   });
+  it("取消非成功 HTTP 响应正文并返回稳定错误", async () => {
+    const response = new Response("secret upstream body", { status: 502 });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response));
+
+    await expect(
+      new FrogPublicationClient("key", "https://frog.test").getBalance(),
+    ).rejects.toMatchObject({
+      kind: "upstream",
+      message: "聚合发布上游返回 HTTP 502",
+      status: 502,
+    });
+    expect(response.bodyUsed).toBe(true);
+  });
   it.each(["javascript:alert(1)", "data:text/html,hello"])(
     "拒绝非 HTTP 结果链接 %s",
     async (url) => {
@@ -260,5 +273,24 @@ describe("FrogPublicationClient", () => {
     expect(() => frogPriceToCents("10000000.01")).toThrow(
       "聚合发布价格超出范围",
     );
+  });
+
+  it("将超限响应归一化为格式错误且不泄露正文", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response("secret upstream body", {
+          headers: { "Content-Length": String(16 * 1024 * 1024 + 1) },
+        }),
+      ),
+    );
+
+    await expect(
+      new FrogPublicationClient("key", "https://frog.test").getBalance(),
+    ).rejects.toMatchObject({
+      kind: "invalid_response",
+      message: "聚合发布上游响应格式无效",
+      status: 200,
+    });
   });
 });

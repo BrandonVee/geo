@@ -12,6 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@geo/core": "workspace:*",
     "zod": "latest"
   },
   "devDependencies": {

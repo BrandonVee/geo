@@ -1,5 +1,10 @@
 import { setTimeout as delay } from "node:timers/promises";
-import type { AnswerBitOperation } from "@geo/core";
+import {
+  BoundedJsonResponseError,
+  discardResponseBody,
+  readBoundedJsonResponse,
+  type AnswerBitOperation,
+} from "@geo/core";
 import { z } from "zod";
 import { AnswerBitError } from "./errors";
 const envelopeSchema = z.object({
@@ -39,6 +44,7 @@ export class AnswerBitClient {
     const retries = options.retries ?? 0;
     const timeoutMs = options.timeoutMs ?? 15_000;
     for (let attempt = 0; attempt <= retries; attempt += 1) {
+      let responseStatus: number | undefined;
       try {
         const response = await fetch(new URL(operation, this.baseUrl), {
           method: "POST",
@@ -50,21 +56,30 @@ export class AnswerBitClient {
           body: JSON.stringify(payload),
           signal: AbortSignal.timeout(timeoutMs),
         });
-        if (response.status === 401 || response.status === 403)
-          throw new AnswerBitError("unauthorized", operation, response.status);
-        if (response.status === 429)
-          throw new AnswerBitError(
-            "rate_limited",
-            operation,
-            response.status,
-            undefined,
-            retryAfterMs(response.headers.get("retry-after")),
-          );
-        if (response.status >= 500)
-          throw new AnswerBitError("upstream", operation, response.status);
-        if (!response.ok)
+        responseStatus = response.status;
+        if (!response.ok) {
+          await discardResponseBody(response);
+          if (response.status === 401 || response.status === 403)
+            throw new AnswerBitError(
+              "unauthorized",
+              operation,
+              response.status,
+            );
+          if (response.status === 429)
+            throw new AnswerBitError(
+              "rate_limited",
+              operation,
+              response.status,
+              undefined,
+              retryAfterMs(response.headers.get("retry-after")),
+            );
+          if (response.status >= 500)
+            throw new AnswerBitError("upstream", operation, response.status);
           throw new AnswerBitError("business", operation, response.status);
-        const envelope = envelopeSchema.safeParse(await response.json());
+        }
+        const envelope = envelopeSchema.safeParse(
+          await readBoundedJsonResponse(response),
+        );
         if (!envelope.success)
           throw new AnswerBitError(
             "invalid_response",
@@ -90,12 +105,18 @@ export class AnswerBitClient {
         const normalized =
           error instanceof AnswerBitError
             ? error
-            : new AnswerBitError(
-                error instanceof DOMException && error.name === "TimeoutError"
-                  ? "timeout"
-                  : "upstream",
-                operation,
-              );
+            : error instanceof BoundedJsonResponseError
+              ? new AnswerBitError(
+                  "invalid_response",
+                  operation,
+                  responseStatus,
+                )
+              : new AnswerBitError(
+                  error instanceof DOMException && error.name === "TimeoutError"
+                    ? "timeout"
+                    : "upstream",
+                  operation,
+                );
         const retryable =
           ((normalized.kind === "timeout" || normalized.kind === "upstream") &&
             options.retryTransient !== false) ||

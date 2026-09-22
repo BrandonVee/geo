@@ -83,8 +83,24 @@ describe("Worker 腾讯企业目录读取", () => {
 
     await expect(
       queryTencentBrandDirectory(input, { fetch: fetchDirectory }),
-    ).rejects.toMatchObject({ kind: "invalid_response" });
+    ).rejects.toMatchObject({ kind: "invalid_response", httpStatus: 200 });
     expect(fetchDirectory).toHaveBeenCalledOnce();
+  });
+
+  it("拒绝超限目录响应且不重试", async () => {
+    const fetchDirectory = vi.fn().mockResolvedValue(
+      new Response("{}", {
+        status: 200,
+        headers: { "Content-Length": String(16 * 1024 * 1024 + 1) },
+      }),
+    );
+    const sleep = vi.fn();
+
+    await expect(
+      queryTencentBrandDirectory(input, { fetch: fetchDirectory, sleep }),
+    ).rejects.toMatchObject({ kind: "invalid_response", httpStatus: 200 });
+    expect(fetchDirectory).toHaveBeenCalledOnce();
+    expect(sleep).not.toHaveBeenCalled();
   });
 
   it("临时 5xx 使用指数退避并在后续成功", async () => {

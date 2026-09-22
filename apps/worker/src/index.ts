@@ -9,6 +9,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { workerEnvSchema } from "@geo/config";
 import {
   answerBitAvailableCredits,
+  BoundedJsonResponseError,
   type AnswerBitOperation,
   type BillableFeatureCode,
   classifyConnectionFailure,
@@ -16,10 +17,12 @@ import {
   connectionFailureLookbackLimit,
   countConsecutiveFailures,
   decideAsyncJobRecovery,
+  discardResponseBody,
   hasPermission,
   platformAnswerBitCredentialAad,
   platformFrogCredentialAad,
   platformAnswerBitConnectionSentinel,
+  readBoundedJsonResponse,
   recordsToCsv,
   runtimeTaskDefinitions,
   SecretCipher,
@@ -485,8 +488,11 @@ async function callAnswerBit(
       },
     );
     httpStatus = response.status;
-    if (!response.ok) throw new Error(`HTTP_${response.status}`);
-    const envelope = (await response.json()) as Envelope;
+    if (!response.ok) {
+      await discardResponseBody(response);
+      throw new Error(`HTTP_${response.status}`);
+    }
+    const envelope = (await readBoundedJsonResponse(response)) as Envelope;
     answerbitCode = envelope.code;
     if (envelope.code !== 0) throw new Error(`BUSINESS_${envelope.code}`);
     await recordAnswerBitApiCall({
@@ -501,6 +507,7 @@ async function callAnswerBit(
   } catch (error) {
     const timeout =
       error instanceof DOMException && error.name === "TimeoutError";
+    const invalidResponse = error instanceof BoundedJsonResponseError;
     await recordAnswerBitApiCall({
       ...apiCallContext,
       operation,
@@ -508,7 +515,11 @@ async function callAnswerBit(
       httpStatus,
       status: timeout ? "timeout" : "failed",
       durationMs: Math.round(performance.now() - started),
-      errorCode: timeout ? "ANSWERBIT_TIMEOUT" : "ANSWERBIT_WORKER_ERROR",
+      errorCode: timeout
+        ? "ANSWERBIT_TIMEOUT"
+        : invalidResponse
+          ? "ANSWERBIT_INVALID_RESPONSE"
+          : "ANSWERBIT_WORKER_ERROR",
     });
     throw error;
   }

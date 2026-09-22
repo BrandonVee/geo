@@ -240,6 +240,9 @@ importers:
 
   packages/publication:
     dependencies:
+      '@geo/core':
+        specifier: workspace:*
+        version: link:../core
       zod:
         specifier: latest
         version: 4.5.4
