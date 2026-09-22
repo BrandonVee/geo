@@ -3834,3 +3834,8 @@ INSERT INTO public.system_release_state (component, version)
 VALUES ('schema', 'v1')
 ON CONFLICT (component) DO UPDATE
 SET version = excluded.version, updated_at = now();
+
+-- pg_dump emits an empty search_path near the start of the baseline. Restore a
+-- deterministic path before Drizzle continues with the unqualified v2+ SQL in
+-- the same migration session. This changes no persisted schema object.
+SELECT pg_catalog.set_config('search_path', 'public, pg_catalog', false);

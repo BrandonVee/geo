@@ -62,5 +62,8 @@ describe("database release readiness", () => {
     expect(baseline.match(/CREATE FUNCTION public\./g)).toHaveLength(8);
     expect(baseline).not.toContain("enforce_billing_order_transition");
     expect(baseline).not.toContain("protect_billing_refund");
+    expect(baseline.trimEnd()).toMatch(
+      /set_config\('search_path', 'public, pg_catalog', false\);$/,
+    );
   });
 });
