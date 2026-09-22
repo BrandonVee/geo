@@ -579,6 +579,26 @@ export const createArticleJobSchema = z
     language: articleLanguageSchema.optional().default("zh-CN"),
   })
   .strict();
+export const answerBitArticleCreatePayloadSchema = z
+  .object({
+    brand_id: brandScopeShape.brandId,
+    template_type: z.number().int().positive(),
+    prompt_ids: idListSchema.max(20),
+    knowledge_ids: z
+      .array(z.string().trim().min(1).max(128))
+      .max(20)
+      .optional()
+      .default([]),
+    once_knowledge: z.string().trim().max(50000).optional(),
+    high_ref: highReferenceSchema.optional(),
+    tag_ids: z
+      .array(z.string().trim().min(1).max(128))
+      .max(50)
+      .optional()
+      .default([]),
+    language: articleLanguageSchema,
+  })
+  .strict();
 export const articleJobListQuerySchema = z
   .object({ ...brandScopeShape, limit: queryInteger(20, 1, 100) })
   .strict();
@@ -1375,6 +1395,9 @@ export type TraceArticleInput = z.infer<typeof traceArticleSchema>;
 export type ArticleListQuery = z.infer<typeof articleListQuerySchema>;
 export type ArticleDetailQuery = z.infer<typeof articleDetailQuerySchema>;
 export type CreateArticleJobInput = z.infer<typeof createArticleJobSchema>;
+export type AnswerBitArticleCreatePayload = z.infer<
+  typeof answerBitArticleCreatePayloadSchema
+>;
 export type ContentDocumentListQuery = z.infer<
   typeof contentDocumentListQuerySchema
 >;

@@ -1,8 +1,9 @@
-import type {
-  ArticleDetailQuery,
-  ArticleListQuery,
-  CreateArticleJobInput,
-  TraceArticleInput,
+import {
+  answerBitArticleCreatePayloadSchema,
+  type ArticleDetailQuery,
+  type ArticleListQuery,
+  type CreateArticleJobInput,
+  type TraceArticleInput,
 } from "@geo/contracts";
 import type { Permission } from "@geo/core";
 import type { AuditContext } from "@/server/audit/write-audit";
@@ -252,7 +253,7 @@ export const articleService = {
       idempotencyKey,
     );
     if (existing) return { ...publicJob(existing), replayed: true };
-    const requestPayload = {
+    const requestPayload = answerBitArticleCreatePayloadSchema.parse({
       brand_id: input.brandId,
       template_type: input.templateType,
       prompt_ids: input.promptIds,
@@ -261,7 +262,7 @@ export const articleService = {
       high_ref: input.highReference,
       tag_ids: input.tagIds,
       language: input.language,
-    };
+    });
     const encryptedRequestPayload = {
       ciphertext: getSecretCipher().encrypt(
         JSON.stringify(requestPayload),

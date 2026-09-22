@@ -104,6 +104,10 @@ import {
   parseAnswerBitData,
 } from "./answerbit-response";
 import {
+  InvalidArticleJobPayloadError,
+  parseArticleJobPayload,
+} from "./article-job-payload";
+import {
   queryTencentBrandDirectory,
   TencentDirectoryError,
 } from "./tencent-directory";
@@ -148,16 +152,6 @@ const workerInstanceId = randomUUID();
 const workerVersion = runtimeEnv.APP_VERSION;
 const workerHeartbeatIntervalMs = 30_000;
 const workerHeartbeatStaleRetentionMs = 7 * 24 * 60 * 60_000;
-type ArticlePayload = {
-  brand_id: string;
-  template_type: number;
-  prompt_ids: string[];
-  knowledge_ids?: string[];
-  once_knowledge?: string;
-  high_ref?: { url?: string; title?: string; content?: string };
-  tag_ids?: string[];
-  language: string;
-};
 
 async function processTencentEnterpriseSync() {
   const [configuration] = await db
@@ -599,6 +593,7 @@ async function restoreFeaturePoints(
     actorUserId: context.actorUserId,
   });
 }
+// @project-doc docs/domains/geo_operations.md#article_jobs
 async function processArticleGeneration(data: {
   organizationId: string;
   jobId: string;
@@ -633,19 +628,20 @@ async function processArticleGeneration(data: {
     referenceId: context.job.id,
   };
   try {
+    const requestPayload = parseArticleJobPayload(
+      context.job.requestPayload,
+      (ciphertext) => cipher.decrypt(ciphertext, data.organizationId),
+      {
+        brandId: context.job.brandId,
+        templateType: context.job.templateType,
+        language: context.job.language,
+      },
+    );
     chargedPoints = await consumeFeaturePoints(
       "ai_article_generation",
       "AI 文章生成",
       featureContext,
     );
-    const storedPayload = context.job.requestPayload as {
-      ciphertext?: unknown;
-    };
-    if (typeof storedPayload.ciphertext !== "string")
-      throw new Error("INVALID_ENCRYPTED_JOB_PAYLOAD");
-    const requestPayload = JSON.parse(
-      cipher.decrypt(storedPayload.ciphertext, data.organizationId),
-    ) as ArticlePayload;
     if (!articleId) {
       const created = await callAnswerBit(
         "/geo/article/create",
@@ -844,11 +840,14 @@ async function processArticleGeneration(data: {
       .update(articleGenerationJobs)
       .set({
         status: "failed",
-        errorCode: uncertain
-          ? "ANSWERBIT_CREATE_UNCERTAIN"
-          : articleId
-            ? "ARTICLE_CONTENT_FETCH_FAILED"
-            : "ARTICLE_CREATE_FAILED",
+        errorCode:
+          error instanceof InvalidArticleJobPayloadError
+            ? "INVALID_ARTICLE_JOB_PAYLOAD"
+            : uncertain
+              ? "ANSWERBIT_CREATE_UNCERTAIN"
+              : articleId
+                ? "ARTICLE_CONTENT_FETCH_FAILED"
+                : "ARTICLE_CREATE_FAILED",
         completedAt: new Date(),
         executionId: null,
         updatedAt: new Date(),
