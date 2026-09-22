@@ -50,6 +50,10 @@ if (live?.data?.status !== "ok" || typeof live.requestId !== "string")
 for (const [name, value] of [
   ["x-content-type-options", "nosniff"],
   ["x-frame-options", "DENY"],
+  ["x-dns-prefetch-control", "off"],
+  ["x-permitted-cross-domain-policies", "none"],
+  ["cross-origin-opener-policy", "same-origin"],
+  ["origin-agent-cluster", "?1"],
   ["referrer-policy", "strict-origin-when-cross-origin"],
   ["permissions-policy", "camera=(), microphone=(), geolocation=()"],
 ]) {
@@ -58,6 +62,11 @@ for (const [name, value] of [
 }
 if (liveResponse.headers.has("x-powered-by"))
   throw new Error("live probe exposes the x-powered-by header");
+if (
+  liveResponse.headers.get("strict-transport-security") !==
+  "max-age=31536000; includeSubDomains"
+)
+  throw new Error("live probe is missing production HSTS");
 
 const readyResponse = await request("/api/health/ready");
 assertStatus(readyResponse, 200, "/api/health/ready");
