@@ -94,6 +94,36 @@ describe("运行环境校验", () => {
     expect(parsed.success).toBe(false);
   });
 
+  it.each([
+    ["带路径的 APP_URL", { APP_URL: "https://geo.example.com/app" }],
+    [
+      "带查询参数的 BETTER_AUTH_URL",
+      { BETTER_AUTH_URL: "https://geo.example.com?tenant=1" },
+    ],
+    ["带片段的 APP_URL", { APP_URL: "https://geo.example.com#sign-in" }],
+    [
+      "带凭证的 BETTER_AUTH_URL",
+      { BETTER_AUTH_URL: "https://user:password@geo.example.com" },
+    ],
+    ["非 HTTP 的 APP_URL", { APP_URL: "ftp://geo.example.com" }],
+    [
+      "非 HTTP 的可信 Origin",
+      { BETTER_AUTH_TRUSTED_ORIGINS: "ftp://admin.example.com" },
+    ],
+  ])("拒绝%s", (_name, override) => {
+    const parsed = webEnvSchema.safeParse({
+      ...base,
+      APP_URL: "https://geo.example.com",
+      BETTER_AUTH_SECRET: "a".repeat(32),
+      BETTER_AUTH_URL: "https://geo.example.com",
+      BETTER_AUTH_TRUSTED_ORIGINS: "https://admin.example.com",
+      REDIS_URL: "redis://cache:6379/0",
+      ...override,
+    });
+
+    expect(parsed.success).toBe(false);
+  });
+
   it("拒绝非 Redis 协议的缓存地址", () => {
     const parsed = webEnvSchema.safeParse({
       ...base,

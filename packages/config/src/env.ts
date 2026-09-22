@@ -26,6 +26,32 @@ const encryptionKeySchema = z.string().refine(
   { message: "APP_ENCRYPTION_KEY must be a base64 encoded 32-byte key" },
 );
 
+const isHttpOrigin = (value: string) => {
+  try {
+    const url = new URL(value);
+    return (
+      ["http:", "https:"].includes(url.protocol) &&
+      url.pathname === "/" &&
+      !value.includes("?") &&
+      !value.includes("#") &&
+      !url.search &&
+      !url.hash &&
+      !url.username &&
+      !url.password
+    );
+  } catch {
+    return false;
+  }
+};
+
+const httpOriginSchema = (name: string, fallback: string) =>
+  z
+    .url()
+    .refine(isHttpOrigin, {
+      message: `${name} must be an HTTP(S) origin without path, query, credentials, or fragment`,
+    })
+    .default(fallback);
+
 const trustedOriginsSchema = z
   .string()
   .default("")
@@ -34,10 +60,7 @@ const trustedOriginsSchema = z
       .split(",")
       .map((item) => item.trim())
       .filter(Boolean)) {
-      try {
-        const url = new URL(origin);
-        if (url.origin !== origin.replace(/\/$/, "")) throw new Error();
-      } catch {
+      if (!isHttpOrigin(origin)) {
         context.addIssue({
           code: "custom",
           message: `Invalid trusted origin: ${origin}`,
@@ -90,9 +113,9 @@ const runtimeEnvSchema = databaseEnvSchema.extend({
 export const workerEnvSchema = runtimeEnvSchema;
 
 export const webEnvSchema = runtimeEnvSchema.extend({
-  APP_URL: z.url().default("http://localhost:3000"),
+  APP_URL: httpOriginSchema("APP_URL", "http://localhost:3000"),
   BETTER_AUTH_SECRET: z.string().min(32),
-  BETTER_AUTH_URL: z.url().default("http://localhost:3000"),
+  BETTER_AUTH_URL: httpOriginSchema("BETTER_AUTH_URL", "http://localhost:3000"),
   BETTER_AUTH_TRUSTED_ORIGINS: trustedOriginsSchema,
   REDIS_URL: z
     .url()
