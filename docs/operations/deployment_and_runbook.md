@@ -50,7 +50,7 @@ docker build --target worker -t REGISTRY/answerbit-geo-worker:VERSION .
 `.github/workflows/ci.yml` 在 push、pull request 和手工触发时执行三层门禁：
 
 1. Quality gate 使用锁文件安装依赖，依次执行格式、类型/lint、单元测试和完整构建；本地等价命令为 `pnpm verify`。
-2. Database release gate 在一次性 PostgreSQL 18 与 Redis 8 环境完整执行两次 `pnpm db:release`，验证迁移、版本记录、种子、RLS 与整个发布流程的幂等性；随后启用真实 PostgreSQL 事务回归，覆盖发布单并发幂等扣款、退款、零元订单和迟到上游状态隔离；最后按生产镜像布局启动 Web standalone 产物，执行 `pnpm smoke:web` 验证存活、就绪、初始化入口、安全响应头和静态资源可读性，以 Chromium 完成首次管理员初始化、错误登录、成功登录和路由守卫验收，并启动 Worker bundle 验证队列注册、初始维护、运行心跳及优雅退出。
+2. Database release gate 在一次性 PostgreSQL 18 与 Redis 8 环境完整执行两次 `pnpm db:release`，验证迁移、版本记录、种子、RLS 与整个发布流程的幂等性；随后启用真实 PostgreSQL 事务回归，覆盖发布单并发幂等扣款、退款、零元订单和迟到上游状态隔离；最后按生产镜像布局启动 Web standalone 产物，执行 `pnpm smoke:web` 验证存活、就绪、初始化入口、安全响应头和静态资源可读性，以 Chromium 完成首次管理员初始化、错误登录、成功登录和路由守卫验收，并使用 axe-core 阻止初始化、登录及腾讯接入页面出现 serious/critical 级 WCAG 2/2.1 A、AA 问题；Worker bundle 同时验证队列注册、初始维护、运行心跳及优雅退出。
 3. Container matrix 分别构建 `release`、`web`、`worker` 目标并检查最终镜像用户为 `node`。
 
 外部 GitHub Actions 使用不可变提交摘要固定，`.github/dependabot.yml` 每周为 pnpm 工作区、Actions 与 Docker 基础镜像提出独立更新。CI 只使用一次性占位密钥和本地服务数据库，不读取生产 Secrets。保护分支应把 Quality gate、Database release gate 和三个 Container 检查设为必需状态；只有全部通过的提交才能进入镜像发布流程。
