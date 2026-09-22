@@ -3,7 +3,7 @@ info:
   title: AnswerBit GEO SaaS API
   version: 1.0.0
   description: >-
-    除认证、初始化和平台腾讯配置外，业务 API 要求固定 TeamID 与统一 API Key 已完成验证；前置接入未完成时返回 `422 PLATFORM_TENCENT_CONNECTION_REQUIRED`。所有 API 响应统一返回 `Cache-Control: no-store, max-age=0` 和 `X-Request-ID`；自有 API 的响应头标识与 JSON envelope 一致，Better Auth 保留原生响应体。自有业务 API 只接受 `application/json` 或 `application/*+json` 的 UTF-8 JSON 正文，其他媒体类型返回 `415 UNSUPPORTED_MEDIA_TYPE`；请求体上限为 4 MiB，超限返回 `413 PAYLOAD_TOO_LARGE`；非空正文解析失败返回 `400 INVALID_JSON`。业务写入统一校验浏览器 Origin，未登记来源返回 `403 UNTRUSTED_ORIGIN`。
+    除认证、初始化和平台腾讯配置外，业务 API 要求固定 TeamID 与统一 API Key 已完成验证；前置接入未完成时返回 `422 PLATFORM_TENCENT_CONNECTION_REQUIRED`。所有 API 响应统一返回 `Cache-Control: no-store, max-age=0` 和 `X-Request-ID`；自有 API 的响应头标识与 JSON envelope 一致，Better Auth 保留原生响应体。自有业务 API 只接受 `application/json` 或 `application/*+json` 的 UTF-8 JSON 正文，其他媒体类型返回 `415 UNSUPPORTED_MEDIA_TYPE`；自有业务 API 与 Better Auth POST 的请求体上限均为 4 MiB，超限返回 `413 PAYLOAD_TOO_LARGE`；自有业务 API 的非空正文解析失败返回 `400 INVALID_JSON`。业务写入统一校验浏览器 Origin，未登记来源返回 `403 UNTRUSTED_ORIGIN`。
 servers:
   - url: /api
 paths:
@@ -67,6 +67,8 @@ paths:
                   type: boolean
                   default: true
       responses:
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
         "200":
           description: 登录成功并创建 Session
           headers:
@@ -5463,7 +5465,7 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
     PayloadTooLarge:
-      description: JSON 请求体超过 4 MiB 上限
+      description: 请求体超过 4 MiB 上限
       headers:
         X-Request-ID:
           $ref: "#/components/headers/RequestId"

@@ -125,6 +125,9 @@ if (
 )
   throw new Error("bootstrap status returned an invalid response envelope");
 
+const oversizedJsonBody = JSON.stringify({
+  payload: "x".repeat(4 * 1024 * 1024),
+});
 const oversizedPath = "/api/v1/system/bootstrap (oversized JSON)";
 const oversizedResponse = await request("/api/v1/system/bootstrap", {
   method: "POST",
@@ -132,7 +135,7 @@ const oversizedResponse = await request("/api/v1/system/bootstrap", {
     "Content-Type": "application/json",
     Origin: baseUrl.origin,
   },
-  body: JSON.stringify({ payload: "x".repeat(4 * 1024 * 1024) }),
+  body: oversizedJsonBody,
 });
 assertStatus(oversizedResponse, 413, oversizedPath);
 assertNoStore(oversizedResponse, oversizedPath);
@@ -213,6 +216,22 @@ if (
 )
   throw new Error("protected API returned an invalid authentication error");
 assertRequestId(unauthorizedResponse, unauthorized, "/api/v1/organizations");
+
+const oversizedAuthPath = "/api/auth/sign-in/username (oversized JSON)";
+const oversizedAuthResponse = await request("/api/auth/sign-in/username", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    Origin: baseUrl.origin,
+  },
+  body: oversizedJsonBody,
+});
+assertStatus(oversizedAuthResponse, 413, oversizedAuthPath);
+assertNoStore(oversizedAuthResponse, oversizedAuthPath);
+const oversizedAuth = await readJson(oversizedAuthResponse, oversizedAuthPath);
+if (oversizedAuth?.error?.code !== "PAYLOAD_TOO_LARGE")
+  throw new Error("oversized authentication body returned an unexpected error");
+assertRequestId(oversizedAuthResponse, oversizedAuth, oversizedAuthPath);
 
 const signInFailureResponse = await request("/api/auth/sign-in/username", {
   method: "POST",

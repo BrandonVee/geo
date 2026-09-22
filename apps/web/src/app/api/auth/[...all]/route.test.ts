@@ -58,4 +58,53 @@ describe("Better Auth route", () => {
     );
     log.mockRestore();
   });
+
+  it("在进入认证适配器前拒绝超限正文", async () => {
+    const request = new Request("https://geo.test/api/auth/sign-in/username", {
+      method: "POST",
+      headers: {
+        "Content-Length": String(4 * 1024 * 1024 + 1),
+        "Content-Type": "application/json",
+      },
+      body: "{}",
+    });
+
+    const response = await POST(request);
+
+    expect(mocks.post).not.toHaveBeenCalled();
+    expect(response.status).toBe(413);
+    expect(response.headers.get("X-Request-ID")).toBe("auth-request-1");
+    expect(await response.json()).toEqual({
+      error: { code: "PAYLOAD_TOO_LARGE", message: "请求体不能超过 4 MiB" },
+      requestId: "auth-request-1",
+    });
+  });
+
+  it("将限长后可重放的正文传给认证适配器", async () => {
+    mocks.post.mockImplementation(async (request: Request) => {
+      expect(request.headers.get("Content-Length")).toBe("56");
+      expect(await request.json()).toEqual({
+        username: "smoke_user",
+        password: "SmokePassword123!",
+      });
+      return Response.json({ token: "session" });
+    });
+    const request = new Request("https://geo.test/api/auth/sign-in/username", {
+      method: "POST",
+      headers: {
+        "Content-Length": "1",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        username: "smoke_user",
+        password: "SmokePassword123!",
+      }),
+    });
+
+    const response = await POST(request);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("X-Request-ID")).toBe("auth-request-1");
+    expect(await response.json()).toEqual({ token: "session" });
+  });
 });

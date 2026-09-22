@@ -1,6 +1,6 @@
 import { ApiError } from "./errors";
 
-export const DEFAULT_JSON_BODY_LIMIT_BYTES = 4 * 1024 * 1024;
+export const DEFAULT_REQUEST_BODY_LIMIT_BYTES = 4 * 1024 * 1024;
 
 const readableLimit = (maxBytes: number) =>
   maxBytes % (1024 * 1024) === 0
@@ -11,7 +11,7 @@ const payloadTooLarge = (maxBytes: number) =>
   new ApiError(
     413,
     "PAYLOAD_TOO_LARGE",
-    `JSON 请求体不能超过 ${readableLimit(maxBytes)}`,
+    `请求体不能超过 ${readableLimit(maxBytes)}`,
   );
 
 const unsupportedMediaType = () =>
@@ -54,12 +54,8 @@ const declaredLengthExceeds = (request: Request, maxBytes: number) => {
   return Number(contentLength) > maxBytes;
 };
 
-export async function readJsonBody(
-  request: Request,
-  maxBytes = DEFAULT_JSON_BODY_LIMIT_BYTES,
-): Promise<unknown> {
+const readBoundedBodyBytes = async (request: Request, maxBytes: number) => {
   if (!request.body) return null;
-  if (!hasJsonContentType(request)) throw unsupportedMediaType();
   if (declaredLengthExceeds(request, maxBytes)) throw payloadTooLarge(maxBytes);
 
   const reader = request.body.getReader();
@@ -87,6 +83,36 @@ export async function readJsonBody(
     bytes.set(chunk, offset);
     offset += chunk.byteLength;
   }
+  return bytes;
+};
+
+export async function withBoundedRequestBody(
+  request: Request,
+  maxBytes = DEFAULT_REQUEST_BODY_LIMIT_BYTES,
+): Promise<Request> {
+  if (!request.body) return request;
+
+  const { method, signal, url } = request;
+  const headers = new Headers(request.headers);
+  const bytes = await readBoundedBodyBytes(request, maxBytes);
+  headers.set("Content-Length", String(bytes?.byteLength ?? 0));
+
+  return new Request(url, {
+    method,
+    headers,
+    body: bytes,
+    signal,
+  });
+}
+
+export async function readJsonBody(
+  request: Request,
+  maxBytes = DEFAULT_REQUEST_BODY_LIMIT_BYTES,
+): Promise<unknown> {
+  if (!request.body) return null;
+  if (!hasJsonContentType(request)) throw unsupportedMediaType();
+  const bytes = await readBoundedBodyBytes(request, maxBytes);
+  if (!bytes) return null;
 
   let text: string;
   try {
