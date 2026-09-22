@@ -49,7 +49,7 @@ openssl rand -base64 32
 
 `APP_URL`、`BETTER_AUTH_URL` 和实际浏览器 Origin 应一致，并且只能填写不含路径、查询参数、凭证或片段的完整 HTTP(S) Origin；通过局域网 IP 访问时把该 Origin 加入 trusted origins。
 
-Web readiness 与 Worker 启动都会使用 `packages/config` 校验环境变量。`APP_ENCRYPTION_KEY` 必须是 `openssl rand -base64 32` 生成的 32 字节 Base64 值，`DATABASE_URL` 必须使用 `postgres:` 或 `postgresql:` 协议，Web 的 `REDIS_URL` 必须使用 `redis:` 或 `rediss:` 协议，数据库连接池容量、建连/查询超时和连接生命周期必须位于约束范围，`APP_URL`、`BETTER_AUTH_URL` 与 trusted origins 只能填写 HTTP(S) Origin；配置错误时 readiness 返回 `503 CONFIGURATION_INVALID`，Worker 直接以非零状态退出。`MIGRATION_DATABASE_URL` 仅由 `db:release` 使用，生产环境不得复用 Web/Worker 运行身份。
+Web readiness 与 Worker 启动都会使用 `packages/config` 校验环境变量。`APP_ENCRYPTION_KEY` 必须是 `openssl rand -base64 32` 生成的规范 Base64 值，解码后恰好 32 字节；尾随字符、空白和省略填充均会被拒绝。`DATABASE_URL` 必须使用 `postgres:` 或 `postgresql:` 协议，Web 的 `REDIS_URL` 必须使用 `redis:` 或 `rediss:` 协议，数据库连接池容量、建连/查询超时和连接生命周期必须位于约束范围，`APP_URL`、`BETTER_AUTH_URL` 与 trusted origins 只能填写 HTTP(S) Origin；配置错误时 readiness 返回 `503 CONFIGURATION_INVALID`，Worker 直接以非零状态退出。`MIGRATION_DATABASE_URL` 仅由 `db:release` 使用，生产环境不得复用 Web/Worker 运行身份。
 
 ## 首次启动
 

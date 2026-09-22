@@ -18,12 +18,16 @@ const databaseUrlSchema = z
 const encryptionKeySchema = z.string().refine(
   (value) => {
     try {
-      return Buffer.from(value, "base64").length === 32;
+      const decoded = Buffer.from(value, "base64");
+      return decoded.length === 32 && decoded.toString("base64") === value;
     } catch {
       return false;
     }
   },
-  { message: "APP_ENCRYPTION_KEY must be a base64 encoded 32-byte key" },
+  {
+    message:
+      "APP_ENCRYPTION_KEY must be a canonical base64 encoded 32-byte key",
+  },
 );
 
 const isHttpOrigin = (value: string) => {

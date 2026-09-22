@@ -75,6 +75,16 @@ describe("运行环境校验", () => {
     ).toThrow(/base64 encoded 32-byte key/);
   });
 
+  it.each([
+    ["尾随非法字符", `${base.APP_ENCRYPTION_KEY}@@@`],
+    ["缺少 Base64 填充", base.APP_ENCRYPTION_KEY.replace(/=$/, "")],
+    ["包含前导空白", ` ${base.APP_ENCRYPTION_KEY}`],
+  ])("拒绝解码后长度看似正确但编码不规范的密钥：%s", (_name, key) => {
+    expect(() => workerEnv({ ...base, APP_ENCRYPTION_KEY: key })).toThrow(
+      /canonical base64 encoded 32-byte key/,
+    );
+  });
+
   it("拒绝越界连接池配置和非法应用名", () => {
     expect(() => workerEnv({ ...base, DB_POOL_MAX: "0" })).toThrow();
     expect(() =>
