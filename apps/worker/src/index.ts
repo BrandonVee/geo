@@ -34,7 +34,6 @@ import {
   platformFrogCredentialAad,
   platformAnswerBitConnectionSentinel,
   readBoundedJsonResponse,
-  recordsToCsv,
   runtimeTaskDefinitions,
   SecretCipher,
   type Role,
@@ -107,6 +106,11 @@ import {
   InvalidArticleJobPayloadError,
   parseArticleJobPayload,
 } from "./article-job-payload";
+import {
+  maxReportExportRows,
+  parseReportExportFilters,
+  ReportExportBuffer,
+} from "./report-export";
 import {
   queryTencentBrandDirectory,
   TencentDirectoryError,
@@ -918,15 +922,7 @@ async function processArticleGeneration(data: {
   }
 }
 
-type ExportFilters = {
-  beginDate: string;
-  endDate: string;
-  titleIds?: string[];
-  promptIds?: string[];
-  platforms?: string[];
-  tagIds?: string[];
-  keyword?: string;
-};
+// @project-doc docs/domains/geo_operations.md#report_exports
 async function processReportExport(data: {
   organizationId: string;
   exportId: string;
@@ -1008,14 +1004,14 @@ async function processReportExport(data: {
       )
       .limit(1);
     if (!team) throw new Error("TEAM_BINDING_NOT_FOUND");
-    const filters = claimed.filters as ExportFilters;
+    const filters = parseReportExportFilters(claimed.filters);
     const operation =
       claimed.reportType === "answers"
         ? "/geo/task/get"
         : claimed.reportType === "domain_rank"
           ? "/geo/domain/rank"
           : "/geo/article/rank";
-    const rows: Record<string, unknown>[] = [];
+    const exportBuffer = new ReportExportBuffer();
     let page = 1;
     let total = 0;
     do {
@@ -1068,16 +1064,20 @@ async function processReportExport(data: {
           ? result.scores
           : result.reference_count;
       if (!chunk) throw new Error("INVALID_REPORT_RESPONSE");
-      rows.push(
-        ...chunk.filter(
-          (row): row is Record<string, unknown> =>
-            Boolean(row) && typeof row === "object",
-        ),
-      );
-      total = typeof result.total === "number" ? result.total : rows.length;
+      const chunkRows = chunk.map((row) => {
+        if (!row || typeof row !== "object" || Array.isArray(row))
+          throw new Error("INVALID_REPORT_RESPONSE");
+        return row as Record<string, unknown>;
+      });
+      exportBuffer.append(chunkRows);
+      total = result.total;
       page += 1;
       if (!chunk.length) break;
-    } while (rows.length < Math.min(total, 10_000));
+    } while (
+      !exportBuffer.full &&
+      exportBuffer.rowCount < Math.min(total, maxReportExportRows)
+    );
+    const { fileContent, rowCount } = exportBuffer.toCsv();
     const completedAt = new Date();
     const expiresAt = new Date(completedAt.getTime() + 24 * 60 * 60_000);
     const filename = `geo-${claimed.reportType}-${filters.beginDate}-${filters.endDate}-${claimed.id.slice(0, 8)}.csv`;
@@ -1087,8 +1087,8 @@ async function processReportExport(data: {
         status: "succeeded",
         filename,
         mimeType: "text/csv",
-        fileContent: recordsToCsv(rows.slice(0, 10_000)),
-        rowCount: Math.min(rows.length, 10_000),
+        fileContent,
+        rowCount,
         completedAt,
         expiresAt,
         executionId: null,

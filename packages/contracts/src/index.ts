@@ -1301,6 +1301,13 @@ const reportFilterFields = {
     .default([]),
   keyword: z.string().trim().max(500).optional(),
 };
+export const reportExportFiltersSchema = z
+  .object(reportFilterFields)
+  .strict()
+  .refine((value) => value.beginDate <= value.endDate, {
+    message: "开始日期不能晚于结束日期",
+    path: ["beginDate"],
+  });
 export const createReportExportSchema = z
   .object({
     organizationId: z.string().uuid(),
@@ -1474,6 +1481,7 @@ export type AppealPublicationOrderInput = z.infer<
 export type CreateSavedViewInput = z.infer<typeof createSavedViewSchema>;
 export type UpdateSavedViewInput = z.infer<typeof updateSavedViewSchema>;
 export type CreateReportExportInput = z.infer<typeof createReportExportSchema>;
+export type ReportExportFilters = z.infer<typeof reportExportFiltersSchema>;
 export type ReportExportListQuery = z.infer<typeof reportExportListQuerySchema>;
 export type NotificationRuleInput = z.infer<typeof notificationRuleSchema>;
 export type NotificationListQuery = z.infer<typeof notificationListQuerySchema>;

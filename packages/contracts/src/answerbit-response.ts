@@ -55,7 +55,7 @@ export const answerBitTaskListSchema = z
         })
         .passthrough(),
     ),
-    total: z.number().int(),
+    total: z.number().int().nonnegative(),
   })
   .passthrough();
 
@@ -65,12 +65,12 @@ export const answerBitDomainRankSchema = z
       z
         .object({
           domain: z.string(),
-          count: z.number().int(),
+          count: z.number().int().nonnegative(),
           is_own: z.boolean(),
         })
         .passthrough(),
     ),
-    total: z.number().int(),
+    total: z.number().int().nonnegative(),
   })
   .passthrough();
 
@@ -82,13 +82,13 @@ export const answerBitArticleRankSchema = z
           article: z.string(),
           url: z.string(),
           domain: z.string(),
-          count: z.number().int(),
+          count: z.number().int().nonnegative(),
           source: z.number().int(),
           article_id: answerBitIdSchema,
         })
         .passthrough(),
     ),
-    total: z.number().int(),
+    total: z.number().int().nonnegative(),
   })
   .passthrough();
 

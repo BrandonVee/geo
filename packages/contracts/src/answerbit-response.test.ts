@@ -31,6 +31,12 @@ describe("AnswerBit shared response contracts", () => {
     ).toBe(false);
   });
 
+  it("rejects negative report totals", () => {
+    expect(
+      answerBitTaskListSchema.safeParse({ scores: [], total: -1 }).success,
+    ).toBe(false);
+  });
+
   it("requires complete generated article content", () => {
     expect(
       answerBitArticleContentSchema.safeParse({
