@@ -2,16 +2,13 @@ import { setTimeout as delay } from "node:timers/promises";
 import {
   BoundedJsonResponseError,
   discardResponseBody,
+  InvalidAnswerBitEnvelopeError,
+  parseAnswerBitEnvelope,
   readBoundedJsonResponse,
   type AnswerBitOperation,
 } from "@geo/core";
 import { z } from "zod";
 import { AnswerBitError } from "./errors";
-const envelopeSchema = z.object({
-  code: z.number(),
-  msg: z.string().optional(),
-  data: z.unknown(),
-});
 const retryAfterMs = (value: string | null) => {
   if (!value) return undefined;
   if (/^\d+$/.test(value)) {
@@ -77,23 +74,17 @@ export class AnswerBitClient {
             throw new AnswerBitError("upstream", operation, response.status);
           throw new AnswerBitError("business", operation, response.status);
         }
-        const envelope = envelopeSchema.safeParse(
+        const envelope = parseAnswerBitEnvelope(
           await readBoundedJsonResponse(response),
         );
-        if (!envelope.success)
-          throw new AnswerBitError(
-            "invalid_response",
-            operation,
-            response.status,
-          );
-        if (envelope.data.code !== 0)
+        if (envelope.code !== 0)
           throw new AnswerBitError(
             "business",
             operation,
             response.status,
-            envelope.data.code,
+            envelope.code,
           );
-        const parsed = schema.safeParse(envelope.data.data);
+        const parsed = schema.safeParse(envelope.data);
         if (!parsed.success)
           throw new AnswerBitError(
             "invalid_response",
@@ -105,7 +96,8 @@ export class AnswerBitClient {
         const normalized =
           error instanceof AnswerBitError
             ? error
-            : error instanceof BoundedJsonResponseError
+            : error instanceof BoundedJsonResponseError ||
+                error instanceof InvalidAnswerBitEnvelopeError
               ? new AnswerBitError(
                   "invalid_response",
                   operation,

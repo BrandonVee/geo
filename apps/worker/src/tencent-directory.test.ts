@@ -87,6 +87,19 @@ describe("Worker 腾讯企业目录读取", () => {
     expect(fetchDirectory).toHaveBeenCalledOnce();
   });
 
+  it("将缺少 data 的 envelope 归一化且不重试", async () => {
+    const fetchDirectory = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ code: 0 })));
+    const sleep = vi.fn();
+
+    await expect(
+      queryTencentBrandDirectory(input, { fetch: fetchDirectory, sleep }),
+    ).rejects.toMatchObject({ kind: "invalid_response", httpStatus: 200 });
+    expect(fetchDirectory).toHaveBeenCalledOnce();
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
   it("拒绝超限目录响应且不重试", async () => {
     const fetchDirectory = vi.fn().mockResolvedValue(
       new Response("{}", {

@@ -19,6 +19,8 @@ import {
   decideAsyncJobRecovery,
   discardResponseBody,
   hasPermission,
+  InvalidAnswerBitEnvelopeError,
+  parseAnswerBitEnvelope,
   platformAnswerBitCredentialAad,
   platformFrogCredentialAad,
   platformAnswerBitConnectionSentinel,
@@ -142,7 +144,6 @@ type ArticlePayload = {
   tag_ids?: string[];
   language: string;
 };
-type Envelope = { code: number; msg?: string; data: unknown };
 
 async function processTencentEnterpriseSync() {
   const [configuration] = await db
@@ -492,7 +493,9 @@ async function callAnswerBit(
       await discardResponseBody(response);
       throw new Error(`HTTP_${response.status}`);
     }
-    const envelope = (await readBoundedJsonResponse(response)) as Envelope;
+    const envelope = parseAnswerBitEnvelope(
+      await readBoundedJsonResponse(response),
+    );
     answerbitCode = envelope.code;
     if (envelope.code !== 0) throw new Error(`BUSINESS_${envelope.code}`);
     await recordAnswerBitApiCall({
@@ -507,7 +510,9 @@ async function callAnswerBit(
   } catch (error) {
     const timeout =
       error instanceof DOMException && error.name === "TimeoutError";
-    const invalidResponse = error instanceof BoundedJsonResponseError;
+    const invalidResponse =
+      error instanceof BoundedJsonResponseError ||
+      error instanceof InvalidAnswerBitEnvelopeError;
     await recordAnswerBitApiCall({
       ...apiCallContext,
       operation,

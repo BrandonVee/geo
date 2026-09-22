@@ -52,7 +52,7 @@ Web Gateway 与 Worker 对每个实际 operation 独立解析凭证。业务输�
 
 ## 响应与错误归一化
 
-AnswerBit 响应必须符合 `{ code, msg?, data }` 且 `code === 0`，再由 operation 对应 Zod Schema 校验 `data`。异常归一化为 unauthorized、rate_limited、business、invalid_response、timeout 或 upstream，避免上游格式泄漏到页面；平台 API 的归一化错误详情保留 operation、HTTP 状态和业务码，便于通过 requestId 定位参数或权限问题。
+Web 通用 Client、Worker 业务调用与腾讯企业目录同步复用同一 envelope 校验器。AnswerBit 响应必须是对象，包含有限数字 `code` 与显式 `data`；可选 `msg` 只能是字符串。`code === 0` 后再由 operation 对应 Zod Schema 校验 `data`，缺字段或错误类型不会因 TypeScript 断言进入业务逻辑。异常归一化为 unauthorized、rate_limited、business、invalid_response、timeout 或 upstream，避免上游格式泄漏到页面；平台 API 的归一化错误详情保留 operation、HTTP 状态和业务码，便于通过 requestId 定位参数或权限问题。
 
 腾讯生产响应中，曝光与得分趋势的 `task_count` 可能是整数或十进制整数字符串；适配层统一转换为安全的非负整数后再交给 Service 和页面，其他格式继续按非法上游响应处理。
 

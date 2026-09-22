@@ -41,6 +41,11 @@ export {
   readBoundedJsonResponse,
   type BoundedJsonResponseErrorKind,
 } from "./bounded-json-response";
+export {
+  InvalidAnswerBitEnvelopeError,
+  parseAnswerBitEnvelope,
+  type AnswerBitEnvelope,
+} from "./answerbit-envelope";
 export const createRequestId = () => randomUUID();
 export const platformAnswerBitCredentialAad = "platform-answerbit";
 export const platformFrogCredentialAad = "platform-frog-publication";

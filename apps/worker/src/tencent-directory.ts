@@ -2,6 +2,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import {
   BoundedJsonResponseError,
   discardResponseBody,
+  InvalidAnswerBitEnvelopeError,
+  parseAnswerBitEnvelope,
   parseTencentBrandDirectory,
   readBoundedJsonResponse,
 } from "@geo/core";
@@ -14,7 +16,6 @@ type DirectoryErrorKind =
   | "timeout"
   | "upstream";
 
-type Envelope = { code: number; msg?: string; data: unknown };
 type DirectoryFetch = (input: URL, init: RequestInit) => Promise<Response>;
 
 export class TencentDirectoryError extends Error {
@@ -69,11 +70,9 @@ export async function queryTencentBrandDirectory(
           throw new TencentDirectoryError("upstream", response.status);
         throw new TencentDirectoryError("business", response.status);
       }
-      const envelope = (await readBoundedJsonResponse(
-        response,
-      )) as Partial<Envelope>;
-      if (!envelope || typeof envelope.code !== "number")
-        throw new TencentDirectoryError("invalid_response", response.status);
+      const envelope = parseAnswerBitEnvelope(
+        await readBoundedJsonResponse(response),
+      );
       if (envelope.code !== 0)
         throw new TencentDirectoryError(
           "business",
@@ -89,7 +88,8 @@ export async function queryTencentBrandDirectory(
       const normalized =
         error instanceof TencentDirectoryError
           ? error
-          : error instanceof BoundedJsonResponseError
+          : error instanceof BoundedJsonResponseError ||
+              error instanceof InvalidAnswerBitEnvelopeError
             ? new TencentDirectoryError("invalid_response", responseStatus)
             : new TencentDirectoryError(
                 error instanceof DOMException && error.name === "TimeoutError"

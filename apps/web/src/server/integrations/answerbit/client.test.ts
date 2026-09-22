@@ -47,6 +47,23 @@ describe("AnswerBitClient", () => {
       businessCode: 4001,
     } satisfies Partial<AnswerBitError>);
   });
+  it("将缺少 data 的 envelope 归一化且不重试", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ code: 0 })));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      new AnswerBitClient("key", "https://answerbit.test").post(
+        "/geo/query/brand",
+        {},
+        z.unknown(),
+        "request-id",
+        { retries: 2 },
+      ),
+    ).rejects.toMatchObject({ kind: "invalid_response", httpStatus: 200 });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
   it("网络 5xx 查询按配置重试", async () => {
     const unavailable = new Response("ignored upstream body", { status: 503 });
     const fetchMock = vi
