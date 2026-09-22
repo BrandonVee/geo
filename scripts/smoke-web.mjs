@@ -100,6 +100,11 @@ for (const directive of [
 }
 if (contentSecurityPolicy.includes("'unsafe-eval'"))
   throw new Error("production CSP permits unsafe eval");
+const apiScriptDirective = contentSecurityPolicy
+  .split(";")
+  .find((directive) => directive.trim().startsWith("script-src "));
+if (!apiScriptDirective || apiScriptDirective.includes("'unsafe-inline'"))
+  throw new Error("production CSP permits unsafe inline scripts");
 
 const readyResponse = await request("/api/health/ready");
 assertStatus(readyResponse, 200, "/api/health/ready");
@@ -248,7 +253,36 @@ const renderedPage = bootstrap.data.initialized
   : setupResponse;
 if (!(renderedPage.headers.get("content-type") ?? "").includes("text/html"))
   throw new Error("authentication entry page did not return HTML");
+const renderedPolicy =
+  renderedPage.headers.get("content-security-policy") ?? "";
+const renderedScriptDirective = renderedPolicy
+  .split(";")
+  .find((directive) => directive.trim().startsWith("script-src "));
+const renderedNonce = renderedScriptDirective?.match(/'nonce-([^']+)'/)?.[1];
+if (
+  !renderedNonce ||
+  !renderedScriptDirective?.includes("'strict-dynamic'") ||
+  renderedScriptDirective.includes("'unsafe-inline'")
+)
+  throw new Error("rendered page is missing strict nonce-based script CSP");
 const renderedHtml = await renderedPage.text();
+const scriptTags = [...renderedHtml.matchAll(/<script\b([^>]*)>/gi)];
+if (
+  scriptTags.length === 0 ||
+  scriptTags.some(([, attributes]) => {
+    const nonce = attributes.match(/\bnonce="([^"]+)"/i)?.[1];
+    return nonce !== renderedNonce;
+  })
+)
+  throw new Error("rendered page contains a script without the current nonce");
+const nextRenderedPage = await request(
+  bootstrap.data.initialized ? "/sign-in" : "/setup",
+);
+const nextNonce = nextRenderedPage.headers
+  .get("content-security-policy")
+  ?.match(/'nonce-([^']+)'/)?.[1];
+if (!nextNonce || nextNonce === renderedNonce)
+  throw new Error("rendered pages do not rotate CSP nonces per request");
 const assetPath = renderedHtml.match(
   /(?:src|href)="([^"?]*\/_next\/static\/[^"?]+)(?:\?[^"?]*)?"/,
 )?.[1];

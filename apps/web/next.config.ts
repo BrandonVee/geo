@@ -1,23 +1,8 @@
 import type { NextConfig } from "next";
 import path from "node:path";
+import { buildContentSecurityPolicy } from "./src/server/http/content-security-policy";
 
-export const buildContentSecurityPolicy = (production: boolean) =>
-  [
-    "default-src 'self'",
-    "base-uri 'self'",
-    "form-action 'self'",
-    "frame-ancestors 'none'",
-    "frame-src 'none'",
-    "object-src 'none'",
-    `script-src 'self' 'unsafe-inline'${production ? "" : " 'unsafe-eval'"}`,
-    "script-src-attr 'none'",
-    "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data: blob: https:",
-    "font-src 'self' data:",
-    `connect-src 'self'${production ? "" : " ws: wss: http: https:"}`,
-    "worker-src 'self' blob:",
-    "manifest-src 'self'",
-  ].join("; ");
+export { buildContentSecurityPolicy };
 
 const nextConfig: NextConfig = {
   output: "standalone",

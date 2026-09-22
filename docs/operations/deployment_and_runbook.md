@@ -50,7 +50,7 @@ docker build --target worker -t REGISTRY/answerbit-geo-worker:VERSION .
 `.github/workflows/ci.yml` 在 push、pull request 和手工触发时执行三层门禁：
 
 1. Quality gate 使用锁文件安装依赖，依次执行格式、类型/lint、单元测试和完整构建；本地等价命令为 `pnpm verify`。
-2. Database release gate 在一次性 PostgreSQL 18 与 Redis 8 环境完整执行两次 `pnpm db:release`，验证迁移、版本记录、种子、RLS 与整个发布流程的幂等性；随后启用真实 PostgreSQL 事务回归，覆盖发布单并发幂等扣款、退款、零元订单和迟到上游状态隔离；最后按生产镜像布局启动 Web standalone 产物，执行 `pnpm smoke:web` 验证存活、就绪、初始化入口、安全响应头和静态资源可读性，以 Chromium 完成首次管理员初始化、错误登录、成功登录和路由守卫验收，并使用 axe-core 阻止初始化、登录及腾讯接入页面出现 serious/critical 级 WCAG 2/2.1 A、AA 问题；Worker bundle 同时验证队列注册、初始维护、运行心跳及优雅退出。
+2. Database release gate 在一次性 PostgreSQL 18 与 Redis 8 环境完整执行两次 `pnpm db:release`，验证迁移、版本记录、种子、RLS 与整个发布流程的幂等性；随后启用真实 PostgreSQL 事务回归，覆盖发布单并发幂等扣款、退款、零元订单和迟到上游状态隔离；最后按生产镜像布局启动 Web standalone 产物，执行 `pnpm smoke:web` 验证存活、就绪、初始化入口、安全响应头、逐请求 CSP nonce、全部脚本 nonce 覆盖和静态资源可读性，以 Chromium 完成首次管理员初始化、错误登录、成功登录和路由守卫验收，并使用 axe-core 阻止初始化、登录及腾讯接入页面出现 serious/critical 级 WCAG 2/2.1 A、AA 问题；Worker bundle 同时验证队列注册、初始维护、运行心跳及优雅退出。
 3. Container matrix 分别构建 `release`、`web`、`worker` 目标并检查最终镜像用户为 `node`。
 
 外部 GitHub Actions 使用不可变提交摘要固定，`.github/dependabot.yml` 每周为 pnpm 工作区、Actions 与 Docker 基础镜像提出独立更新。CI 只使用一次性占位密钥和本地服务数据库，不读取生产 Secrets。保护分支应把 Quality gate、Database release gate 和三个 Container 检查设为必需状态；只有全部通过的提交才能进入镜像发布流程。
@@ -157,7 +157,7 @@ Worker 在线但存在过期异步任务时，先查看“异步任务恢复”�
 - CI 第三方 Action 固定到不可变提交摘要，依赖升级通过 Dependabot PR 和完整门禁审查；
 - 生产密钥来自密钥管理系统，不写入镜像、日志或仓库；
 - TLS、Secure Cookie、可信 Origin 和最小网络访问已启用；通过生产域名执行同源写入成功，伪造 Origin 的业务写入返回 `403 UNTRUSTED_ORIGIN`；
-- Web 响应保留 `nosniff`、`DENY` 防嵌入、关闭 DNS 预取与跨域策略文件、COOP/CORP 同源隔离、Origin Agent Cluster、严格 Referrer Policy、禁用摄像头/麦克风/定位的 Permissions Policy，以及生产 HSTS；CSP 限定脚本、样式、图片、字体、连接和 Worker 来源，禁止对象、子框架、内联事件处理器与跨站表单目标，生产环境不得出现 `unsafe-eval`；反向代理不得删除或放宽这些响应头，`X-Powered-By` 保持关闭；
+- Web 响应保留 `nosniff`、`DENY` 防嵌入、关闭 DNS 预取与跨域策略文件、COOP/CORP 同源隔离、Origin Agent Cluster、严格 Referrer Policy、禁用摄像头/麦克风/定位的 Permissions Policy，以及生产 HSTS；CSP 限定脚本、样式、图片、字体、连接和 Worker 来源，禁止对象、子框架、内联事件处理器与跨站表单目标，生产 HTML 的脚本策略不得出现 `unsafe-inline` 或 `unsafe-eval`；每个 HTML 请求的 nonce 必须唯一，反向代理不得缓存 HTML、删除/复用 nonce 或删除/放宽安全响应头，`X-Powered-By` 保持关闭；
 - Web 与 Worker 容器以非 root 用户运行；编排环境建议启用只读根文件系统、丢弃 Linux capabilities、`no-new-privileges`，仅按平台要求挂载可写临时目录；
 - 新表已评估 RLS，新接口完成对象级权限与输入校验；
 - 平台余额、发布履约、账号与权限操作可在审计日志追溯；

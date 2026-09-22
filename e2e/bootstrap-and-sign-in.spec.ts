@@ -11,7 +11,6 @@ async function expectNoSeriousAccessibilityViolations(
   page: Page,
   context: string,
 ) {
-  await page.addScriptTag({ content: axe.source });
   const violations = await page.evaluate(async () => {
     const runner = (
       window as typeof window & {
@@ -50,13 +49,22 @@ test("首次初始化、失败提示、登录和路由守卫形成完整闭环",
   page,
   context,
 }) => {
+  await page.addInitScript({ content: axe.source });
   const contentSecurityPolicyViolations: string[] = [];
   page.on("console", (message) => {
     if (message.text().toLowerCase().includes("content security policy"))
       contentSecurityPolicyViolations.push(message.text());
   });
 
-  await page.goto("/sign-in");
+  const initialResponse = await page.goto("/sign-in");
+  const initialPolicy = initialResponse?.headers()["content-security-policy"];
+  expect(initialPolicy).toContain("'strict-dynamic'");
+  expect(initialPolicy).toMatch(/'nonce-[^']+'/);
+  expect(
+    initialPolicy
+      ?.split(";")
+      .find((directive) => directive.trim().startsWith("script-src ")),
+  ).not.toContain("'unsafe-inline'");
   await expect(page).toHaveURL(/\/setup$/);
   await expect(page.getByRole("heading", { name: "创建管理员" })).toBeVisible();
   await expectNoSeriousAccessibilityViolations(page, "系统初始化页");
