@@ -50,6 +50,12 @@ test("首次初始化、失败提示、登录和路由守卫形成完整闭环",
   page,
   context,
 }) => {
+  const contentSecurityPolicyViolations: string[] = [];
+  page.on("console", (message) => {
+    if (message.text().toLowerCase().includes("content security policy"))
+      contentSecurityPolicyViolations.push(message.text());
+  });
+
   await page.goto("/sign-in");
   await expect(page).toHaveURL(/\/setup$/);
   await expect(page.getByRole("heading", { name: "创建管理员" })).toBeVisible();
@@ -83,4 +89,8 @@ test("首次初始化、失败提示、登录和路由守卫形成完整闭环",
   await expect(page).toHaveURL(/\/sign-in$/);
   await page.goto("/admin");
   await expect(page).toHaveURL(/\/sign-in$/);
+  expect(
+    contentSecurityPolicyViolations,
+    "浏览器报告了 Content Security Policy 违规",
+  ).toEqual([]);
 });

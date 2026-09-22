@@ -68,6 +68,7 @@ for (const [name, value] of [
   ["x-dns-prefetch-control", "off"],
   ["x-permitted-cross-domain-policies", "none"],
   ["cross-origin-opener-policy", "same-origin"],
+  ["cross-origin-resource-policy", "same-origin"],
   ["origin-agent-cluster", "?1"],
   ["referrer-policy", "strict-origin-when-cross-origin"],
   ["permissions-policy", "camera=(), microphone=(), geolocation=()"],
@@ -82,6 +83,23 @@ if (
   "max-age=31536000; includeSubDomains"
 )
   throw new Error("live probe is missing production HSTS");
+
+const contentSecurityPolicy =
+  liveResponse.headers.get("content-security-policy") ?? "";
+for (const directive of [
+  "default-src 'self'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+  "object-src 'none'",
+  "script-src-attr 'none'",
+  "connect-src 'self'",
+]) {
+  if (!contentSecurityPolicy.includes(directive))
+    throw new Error(`live probe CSP is missing ${directive}`);
+}
+if (contentSecurityPolicy.includes("'unsafe-eval'"))
+  throw new Error("production CSP permits unsafe eval");
 
 const readyResponse = await request("/api/health/ready");
 assertStatus(readyResponse, 200, "/api/health/ready");
