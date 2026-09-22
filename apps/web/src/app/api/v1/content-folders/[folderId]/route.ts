@@ -9,6 +9,7 @@ import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { contentDocumentService } from "@/server/services/content-documents";
 import { apiJson, emptyResponse } from "@/server/http/response";
+import { readJsonBody } from "@/server/http/request-body";
 
 type Context = { params: Promise<{ folderId: string }> };
 
@@ -21,7 +22,7 @@ export async function PATCH(request: Request, context: Context) {
       .uuid()
       .safeParse((await context.params).folderId);
     const parsed = updateContentFolderSchema.safeParse(
-      await request.json().catch(() => null),
+      await readJsonBody(request),
     );
     if (!id.success || !parsed.success)
       throw new ApiError(

@@ -6,6 +6,7 @@ import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { memberService } from "@/server/services/members";
 import { apiJson } from "@/server/http/response";
+import { readJsonBody } from "@/server/http/request-body";
 type Context = {
   params: Promise<{ organizationId: string; memberId: string }>;
 };
@@ -19,9 +20,7 @@ export async function POST(request: Request, context: Context) {
         memberId: z.string().uuid(),
       })
       .safeParse(await context.params);
-    const body = createBrandAccessSchema.safeParse(
-      await request.json().catch(() => null),
-    );
+    const body = createBrandAccessSchema.safeParse(await readJsonBody(request));
     if (!params.success || !body.success)
       throw new ApiError(
         400,

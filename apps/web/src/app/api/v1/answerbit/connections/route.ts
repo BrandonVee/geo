@@ -4,6 +4,7 @@ import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { answerBitConnectionService } from "@/server/services/answerbit-connections";
 import { apiJson } from "@/server/http/response";
+import { readJsonBody } from "@/server/http/request-body";
 export async function GET(request: Request) {
   const requestId = createRequestId();
   try {
@@ -29,7 +30,7 @@ export async function POST(request: Request) {
   try {
     const user = await requireUser(request);
     const parsed = organizationQuerySchema.safeParse(
-      await request.json().catch(() => null),
+      await readJsonBody(request),
     );
     if (!parsed.success)
       throw new ApiError(

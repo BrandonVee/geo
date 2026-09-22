@@ -6,13 +6,14 @@ import { ApiError, errorResponse } from "@/server/http/errors";
 import { platformAnswerbitService } from "@/server/services/platform-answerbit";
 import { validateBrandIconPayload } from "../../../../../server/http/brand-icon";
 import { apiJson } from "@/server/http/response";
+import { readJsonBody } from "@/server/http/request-body";
 
 export async function POST(request: Request) {
   const requestId = createRequestId();
   try {
     const user = await requireUser(request);
     const parsed = adminCreateAnswerBitBrandSchema.safeParse(
-      await request.json().catch(() => null),
+      await readJsonBody(request),
     );
     if (!parsed.success)
       throw new ApiError(

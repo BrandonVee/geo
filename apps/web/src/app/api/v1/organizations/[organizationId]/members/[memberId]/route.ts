@@ -6,6 +6,7 @@ import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { memberService } from "@/server/services/members";
 import { apiJson, emptyResponse } from "@/server/http/response";
+import { readJsonBody } from "@/server/http/request-body";
 type Context = {
   params: Promise<{ organizationId: string; memberId: string }>;
 };
@@ -18,9 +19,7 @@ export async function PATCH(request: Request, context: Context) {
   try {
     const user = await requireUser(request);
     const params = paramsSchema.safeParse(await context.params);
-    const body = updateMemberSchema.safeParse(
-      await request.json().catch(() => null),
-    );
+    const body = updateMemberSchema.safeParse(await readJsonBody(request));
     if (!params.success || !body.success)
       throw new ApiError(400, "VALIDATION_ERROR", "请求参数有误");
     const data = await memberService.update(

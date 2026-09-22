@@ -6,6 +6,7 @@ import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { contentDocumentService } from "@/server/services/content-documents";
 import { apiJson } from "@/server/http/response";
+import { readJsonBody } from "@/server/http/request-body";
 
 type Context = {
   params: Promise<{ documentId: string; version: string }>;
@@ -23,7 +24,7 @@ export async function POST(request: Request, context: Context) {
       .positive()
       .safeParse(params.version);
     const parsed = restoreContentDocumentVersionSchema.safeParse(
-      await request.json().catch(() => null),
+      await readJsonBody(request),
     );
     if (!id.success || !version.success || !parsed.success)
       throw new ApiError(

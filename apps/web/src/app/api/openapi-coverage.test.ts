@@ -57,6 +57,36 @@ const documentedOperations = (specification: string) => {
   return operations;
 };
 
+const documentedOperationBlocks = (specification: string) => {
+  const operations: { path: string; method: string; source: string }[] = [];
+  let path: string | undefined;
+  let operation: Omit<(typeof operations)[number], "source"> | undefined;
+  let source: string[] = [];
+  const finishOperation = () => {
+    if (operation) operations.push({ ...operation, source: source.join("\n") });
+    operation = undefined;
+    source = [];
+  };
+
+  for (const line of specification.split("\n")) {
+    const pathMatch = line.match(/^  (\/[^:]+):$/);
+    if (pathMatch) {
+      finishOperation();
+      path = pathMatch[1];
+      continue;
+    }
+    const methodMatch = line.match(/^    (get|post|put|patch|delete):$/);
+    if (methodMatch && path) {
+      finishOperation();
+      operation = { path, method: methodMatch[1].toUpperCase() };
+      continue;
+    }
+    if (operation) source.push(line);
+  }
+  finishOperation();
+  return operations;
+};
+
 describe("OpenAPI 路由覆盖", () => {
   it("每个公开 Route 都有契约且每个契约都有实现", async () => {
     const [routeFiles, specification] = await Promise.all([
@@ -161,6 +191,43 @@ describe("OpenAPI 路由覆盖", () => {
         )
         .map(({ file }) => file),
       "自定义响应未显式携带 requestId 响应头",
+    ).toEqual([]);
+  });
+
+  it("自有 JSON 请求统一使用有限解析器并声明 413 响应", async () => {
+    const [routeFiles, specification] = await Promise.all([
+      listRouteFiles(apiRoot),
+      readFile(openApiPath, "utf8"),
+    ]);
+    const sources = await Promise.all(
+      routeFiles.map(async (file) => ({
+        file: relative(apiRoot, file),
+        source: await readFile(file, "utf8"),
+      })),
+    );
+
+    expect(
+      sources
+        .filter(
+          ({ file, source }) =>
+            file.startsWith("v1/") && source.includes("request.json("),
+        )
+        .map(({ file }) => file),
+      "Route 绕过了 4 MiB JSON 请求体上限",
+    ).toEqual([]);
+
+    expect(
+      documentedOperationBlocks(specification)
+        .filter(
+          ({ path, source }) =>
+            path.startsWith("/v1/") &&
+            source.includes("      requestBody:") &&
+            !source.includes(
+              '        "413":\n          $ref: "#/components/responses/PayloadTooLarge"',
+            ),
+        )
+        .map(({ method, path }) => `${method} ${path}`),
+      "JSON 请求契约缺少 PAYLOAD_TOO_LARGE 响应",
     ).toEqual([]);
   });
 });

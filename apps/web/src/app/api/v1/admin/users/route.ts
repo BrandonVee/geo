@@ -6,6 +6,7 @@ import { ApiError, errorResponse } from "@/server/http/errors";
 import { parseAdminUserPage } from "@/server/http/admin-request";
 import { adminService } from "@/server/services/admin";
 import { apiJson } from "@/server/http/response";
+import { readJsonBody } from "@/server/http/request-body";
 
 export async function GET(request: Request) {
   const requestId = createRequestId();
@@ -24,9 +25,7 @@ export async function POST(request: Request) {
   const requestId = createRequestId();
   try {
     const actor = await requireUser(request);
-    const parsed = adminCreateUserSchema.safeParse(
-      await request.json().catch(() => null),
-    );
+    const parsed = adminCreateUserSchema.safeParse(await readJsonBody(request));
     if (!parsed.success)
       throw new ApiError(
         400,

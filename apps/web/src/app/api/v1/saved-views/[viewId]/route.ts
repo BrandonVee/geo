@@ -5,15 +5,14 @@ import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { savedViewService } from "@/server/services/saved-views";
 import { apiJson, emptyResponse } from "@/server/http/response";
+import { readJsonBody } from "@/server/http/request-body";
 type Context = { params: Promise<{ viewId: string }> };
 export async function PATCH(request: Request, context: Context) {
   const requestId = createRequestId();
   try {
     const user = await requireUser(request);
     const { viewId } = await context.params;
-    const parsed = updateSavedViewSchema.safeParse(
-      await request.json().catch(() => null),
-    );
+    const parsed = updateSavedViewSchema.safeParse(await readJsonBody(request));
     if (!parsed.success)
       throw new ApiError(
         400,
@@ -44,9 +43,7 @@ export async function DELETE(request: Request, context: Context) {
   try {
     const user = await requireUser(request);
     const { viewId } = await context.params;
-    const parsed = savedViewActionSchema.safeParse(
-      await request.json().catch(() => null),
-    );
+    const parsed = savedViewActionSchema.safeParse(await readJsonBody(request));
     if (!parsed.success)
       throw new ApiError(
         400,

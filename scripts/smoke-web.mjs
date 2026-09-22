@@ -120,6 +120,19 @@ if (
 )
   throw new Error("bootstrap status returned an invalid response envelope");
 
+const oversizedPath = "/api/v1/system/bootstrap (oversized JSON)";
+const oversizedResponse = await request("/api/v1/system/bootstrap", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ payload: "x".repeat(4 * 1024 * 1024) }),
+});
+assertStatus(oversizedResponse, 413, oversizedPath);
+assertNoStore(oversizedResponse, oversizedPath);
+const oversized = await readJson(oversizedResponse, oversizedPath);
+if (oversized?.error?.code !== "PAYLOAD_TOO_LARGE")
+  throw new Error("oversized JSON returned an unexpected error");
+assertRequestId(oversizedResponse, oversized, oversizedPath);
+
 const unauthorizedResponse = await request("/api/v1/organizations");
 assertStatus(unauthorizedResponse, 401, "/api/v1/organizations");
 assertNoStore(unauthorizedResponse, "/api/v1/organizations");

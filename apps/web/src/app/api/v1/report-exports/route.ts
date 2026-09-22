@@ -9,6 +9,7 @@ import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { reportExportService } from "@/server/services/report-exports";
 import { apiJson } from "@/server/http/response";
+import { readJsonBody } from "@/server/http/request-body";
 export async function GET(request: Request) {
   const requestId = createRequestId();
   try {
@@ -36,7 +37,7 @@ export async function POST(request: Request) {
   try {
     const user = await requireUser(request);
     const parsed = createReportExportSchema.safeParse(
-      await request.json().catch(() => null),
+      await readJsonBody(request),
     );
     const key = idempotencyKeySchema.safeParse(
       request.headers.get("Idempotency-Key"),

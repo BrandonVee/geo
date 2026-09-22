@@ -6,6 +6,7 @@ import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { adminService } from "@/server/services/admin";
 import { apiJson } from "@/server/http/response";
+import { readJsonBody } from "@/server/http/request-body";
 type Context = { params: Promise<{ userId: string }> };
 async function userIdFrom(context: Context) {
   const parsed = z
@@ -34,9 +35,7 @@ export async function PATCH(request: Request, context: Context) {
   try {
     const user = await requireUser(request);
     const userId = await userIdFrom(context);
-    const parsed = adminUpdateUserSchema.safeParse(
-      await request.json().catch(() => null),
-    );
+    const parsed = adminUpdateUserSchema.safeParse(await readJsonBody(request));
     if (!parsed.success)
       throw new ApiError(
         400,

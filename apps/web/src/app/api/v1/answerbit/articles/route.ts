@@ -5,6 +5,7 @@ import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { articleService } from "@/server/services/articles";
 import { apiJson } from "@/server/http/response";
+import { readJsonBody } from "@/server/http/request-body";
 export async function GET(request: Request) {
   const requestId = createRequestId();
   try {
@@ -31,9 +32,7 @@ export async function POST(request: Request) {
   const requestId = createRequestId();
   try {
     const user = await requireUser(request);
-    const parsed = traceArticleSchema.safeParse(
-      await request.json().catch(() => null),
-    );
+    const parsed = traceArticleSchema.safeParse(await readJsonBody(request));
     if (!parsed.success)
       throw new ApiError(
         400,

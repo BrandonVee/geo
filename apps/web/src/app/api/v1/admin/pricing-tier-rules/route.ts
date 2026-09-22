@@ -5,6 +5,7 @@ import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { pricingService } from "@/server/services/pricing";
 import { apiJson } from "@/server/http/response";
+import { readJsonBody } from "@/server/http/request-body";
 
 export async function GET(request: Request) {
   const requestId = createRequestId();
@@ -23,9 +24,7 @@ export async function PUT(request: Request) {
   const requestId = createRequestId();
   try {
     const user = await requireUser(request);
-    const parsed = pricingTierRuleSchema.safeParse(
-      await request.json().catch(() => null),
-    );
+    const parsed = pricingTierRuleSchema.safeParse(await readJsonBody(request));
     if (!parsed.success)
       throw new ApiError(
         400,

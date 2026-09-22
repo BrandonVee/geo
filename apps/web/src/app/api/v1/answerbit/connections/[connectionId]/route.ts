@@ -6,6 +6,7 @@ import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { answerBitConnectionService } from "@/server/services/answerbit-connections";
 import { apiJson, emptyResponse } from "@/server/http/response";
+import { readJsonBody } from "@/server/http/request-body";
 type Context = { params: Promise<{ connectionId: string }> };
 const parseId = (value: string) => {
   const parsed = z.string().uuid().safeParse(value);
@@ -19,7 +20,7 @@ export async function PATCH(request: Request, context: Context) {
     const user = await requireUser(request);
     const connectionId = parseId((await context.params).connectionId);
     const parsed = organizationQuerySchema.safeParse(
-      await request.json().catch(() => null),
+      await readJsonBody(request),
     );
     if (!parsed.success)
       throw new ApiError(

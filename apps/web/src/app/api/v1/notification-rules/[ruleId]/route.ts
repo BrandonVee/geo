@@ -8,6 +8,7 @@ import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { notificationService } from "@/server/services/notifications";
 import { apiJson, emptyResponse } from "@/server/http/response";
+import { readJsonBody } from "@/server/http/request-body";
 
 type Context = { params: Promise<{ ruleId: string }> };
 export async function PUT(request: Request, context: Context) {
@@ -16,7 +17,7 @@ export async function PUT(request: Request, context: Context) {
     const user = await requireUser(request);
     const { ruleId } = await context.params;
     const parsed = notificationRuleSchema.safeParse(
-      await request.json().catch(() => null),
+      await readJsonBody(request),
     );
     if (!parsed.success)
       throw new ApiError(
@@ -49,7 +50,7 @@ export async function DELETE(request: Request, context: Context) {
     const user = await requireUser(request);
     const { ruleId } = await context.params;
     const parsed = notificationRuleActionSchema.safeParse(
-      await request.json().catch(() => null),
+      await readJsonBody(request),
     );
     if (!parsed.success)
       throw new ApiError(

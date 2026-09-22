@@ -9,6 +9,7 @@ import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { contentDocumentService } from "@/server/services/content-documents";
 import { apiJson, emptyResponse } from "@/server/http/response";
+import { readJsonBody } from "@/server/http/request-body";
 
 type Context = { params: Promise<{ documentId: string }> };
 
@@ -53,7 +54,7 @@ export async function PATCH(request: Request, context: Context) {
     const user = await requireUser(request);
     const [id, input] = await Promise.all([
       documentId(context),
-      request.json().catch(() => null),
+      readJsonBody(request),
     ]);
     const parsed = updateContentDocumentSchema.safeParse(input);
     if (!id.success || !parsed.success)

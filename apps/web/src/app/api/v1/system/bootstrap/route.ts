@@ -4,6 +4,7 @@ import { noStoreJson, withNoStore } from "@/server/http/cache";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { identityService } from "@/server/modules/identity/identity.service";
 import { apiJson } from "@/server/http/response";
+import { readJsonBody } from "@/server/http/request-body";
 
 export const dynamic = "force-dynamic";
 
@@ -24,9 +25,7 @@ export async function POST(request: Request) {
   const requestId = createRequestId();
 
   try {
-    const parsed = bootstrapAdminSchema.safeParse(
-      await request.json().catch(() => null),
-    );
+    const parsed = bootstrapAdminSchema.safeParse(await readJsonBody(request));
     if (!parsed.success) {
       throw new ApiError(
         400,

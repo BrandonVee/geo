@@ -6,6 +6,7 @@ import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { promptService } from "@/server/services/prompts";
 import { apiJson, emptyResponse } from "@/server/http/response";
+import { readJsonBody } from "@/server/http/request-body";
 type Context = { params: Promise<{ promptId: string }> };
 const idSchema = z.string().trim().min(1).max(128);
 export async function PATCH(request: Request, context: Context) {
@@ -13,9 +14,7 @@ export async function PATCH(request: Request, context: Context) {
   try {
     const user = await requireUser(request);
     const id = idSchema.safeParse((await context.params).promptId);
-    const body = updatePromptSchema.safeParse(
-      await request.json().catch(() => null),
-    );
+    const body = updatePromptSchema.safeParse(await readJsonBody(request));
     if (!id.success || !body.success)
       throw new ApiError(
         400,

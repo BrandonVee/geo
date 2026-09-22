@@ -7,6 +7,7 @@ import { ApiError, errorResponse } from "@/server/http/errors";
 import { platformAnswerbitService } from "@/server/services/platform-answerbit";
 import { validateBrandIconPayload } from "../../../../../../../server/http/brand-icon";
 import { apiJson } from "@/server/http/response";
+import { readJsonBody } from "@/server/http/request-body";
 
 type Context = { params: Promise<{ brandId: string }> };
 
@@ -23,7 +24,7 @@ export async function PUT(request: Request, context: Context) {
     if (!brandId.success)
       throw new ApiError(400, "VALIDATION_ERROR", "brandId 格式错误");
     const parsed = adminUpdateAnswerBitBrandIconSchema.safeParse(
-      await request.json().catch(() => null),
+      await readJsonBody(request),
     );
     if (!parsed.success) {
       const iconDataIssue = parsed.error.issues.find(

@@ -6,6 +6,7 @@ import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { promptService } from "@/server/services/prompts";
 import { apiJson } from "@/server/http/response";
+import { readJsonBody } from "@/server/http/request-body";
 type Context = { params: Promise<{ promptId: string }> };
 export async function PUT(request: Request, context: Context) {
   const requestId = createRequestId();
@@ -17,9 +18,7 @@ export async function PUT(request: Request, context: Context) {
       .min(1)
       .max(128)
       .safeParse((await context.params).promptId);
-    const body = movePromptSchema.safeParse(
-      await request.json().catch(() => null),
-    );
+    const body = movePromptSchema.safeParse(await readJsonBody(request));
     if (!id.success || !body.success)
       throw new ApiError(
         400,

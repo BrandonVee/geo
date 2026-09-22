@@ -5,6 +5,7 @@ import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { publicationService } from "@/server/services/publications";
 import { apiJson } from "@/server/http/response";
+import { readJsonBody } from "@/server/http/request-body";
 
 type Context = { params: Promise<{ channelId: string }> };
 
@@ -14,7 +15,7 @@ export async function PATCH(request: Request, context: Context) {
     const user = await requireUser(request);
     const { channelId } = await context.params;
     const parsed = updatePublicationChannelSchema.safeParse(
-      await request.json().catch(() => null),
+      await readJsonBody(request),
     );
     if (!parsed.success)
       throw new ApiError(

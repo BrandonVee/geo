@@ -6,6 +6,7 @@ import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { memberService } from "@/server/services/members";
 import { apiJson } from "@/server/http/response";
+import { readJsonBody } from "@/server/http/request-body";
 
 type Context = { params: Promise<{ organizationId: string }> };
 
@@ -42,7 +43,7 @@ export async function POST(request: Request, context: Context) {
     const user = await requireUser(request);
     const organizationId = await parseOrganizationId(context);
     const body = addOrganizationMemberSchema.safeParse(
-      await request.json().catch(() => null),
+      await readJsonBody(request),
     );
     if (!body.success) {
       throw new ApiError(

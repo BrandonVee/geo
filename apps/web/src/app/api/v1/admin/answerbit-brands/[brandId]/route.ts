@@ -6,6 +6,7 @@ import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { platformAnswerbitService } from "@/server/services/platform-answerbit";
 import { apiJson, emptyResponse } from "@/server/http/response";
+import { readJsonBody } from "@/server/http/request-body";
 
 type Context = { params: Promise<{ brandId: string }> };
 
@@ -45,7 +46,7 @@ export async function PATCH(request: Request, context: Context) {
     const user = await requireUser(request);
     const brandId = await brandIdFrom(context);
     const parsed = adminUpdateAnswerBitBrandSchema.safeParse(
-      await request.json().catch(() => null),
+      await readJsonBody(request),
     );
     if (!parsed.success)
       throw new ApiError(

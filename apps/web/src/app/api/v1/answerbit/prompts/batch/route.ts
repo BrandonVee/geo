@@ -8,12 +8,13 @@ import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { promptService } from "@/server/services/prompts";
 import { apiJson, emptyResponse } from "@/server/http/response";
+import { readJsonBody } from "@/server/http/request-body";
 export async function POST(request: Request) {
   const requestId = createRequestId();
   try {
     const user = await requireUser(request);
     const parsed = createPromptsBatchSchema.safeParse(
-      await request.json().catch(() => null),
+      await readJsonBody(request),
     );
     if (!parsed.success)
       throw new ApiError(
@@ -43,7 +44,7 @@ export async function DELETE(request: Request) {
   try {
     const user = await requireUser(request);
     const parsed = deletePromptsBatchSchema.safeParse(
-      await request.json().catch(() => null),
+      await readJsonBody(request),
     );
     if (!parsed.success)
       throw new ApiError(

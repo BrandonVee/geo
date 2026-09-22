@@ -9,6 +9,7 @@ import { requireUser } from "@/server/auth/session";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { articleService } from "@/server/services/articles";
 import { apiJson } from "@/server/http/response";
+import { readJsonBody } from "@/server/http/request-body";
 export async function GET(request: Request) {
   const requestId = createRequestId();
   try {
@@ -40,7 +41,7 @@ export async function POST(request: Request) {
       request.headers.get("Idempotency-Key"),
     );
     const parsed = createArticleJobSchema.safeParse(
-      await request.json().catch(() => null),
+      await readJsonBody(request),
     );
     if (!key.success || !parsed.success)
       throw new ApiError(
