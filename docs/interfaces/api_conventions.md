@@ -48,7 +48,7 @@ JSON 请求使用 `Content-Type: application/json`。共享输入 Schema 放在 
 }
 ```
 
-`requestId` 用于日志、上游调用和故障关联。创建资源通常返回 `201`；无响应体操作可返回 `204`；客户端不得只依据错误文案分支，应使用稳定 `error.code`。返回 `429` 且服务端已知等待窗口时，同时返回标准 `Retry-After` 秒数；认证端点保留 Better Auth 的 `X-Retry-After` 兼容头，但调用方统一读取 `Retry-After`。
+`requestId` 用于日志、上游调用和故障关联。创建资源通常返回 `201`；无响应体操作可返回 `204`；客户端不得只依据错误文案分支，应使用稳定 `error.code`。所有 `/api/*` 响应（包括成功、认证失败和其他错误）统一返回 `Cache-Control: no-store, max-age=0`，浏览器、CDN 和反向代理不得保存跨用户业务数据或陈旧状态。返回 `429` 且服务端已知等待窗口时，同时返回标准 `Retry-After` 秒数；认证端点保留 Better Auth 的 `X-Retry-After` 兼容头，但调用方统一读取 `Retry-After`。
 
 ## 状态码语义
 

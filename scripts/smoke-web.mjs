@@ -24,6 +24,11 @@ const assertStatus = (response, expected, path) => {
     );
 };
 
+const assertNoStore = (response, path) => {
+  if (response.headers.get("cache-control") !== "no-store, max-age=0")
+    throw new Error(`${path} permits cached API responses`);
+};
+
 const waitForLive = async () => {
   const deadline = Date.now() + startupTimeoutMs;
   let lastError;
@@ -46,8 +51,7 @@ const liveResponse = await waitForLive();
 const live = await readJson(liveResponse, "/api/health/live");
 if (live?.data?.status !== "ok" || typeof live.requestId !== "string")
   throw new Error("live probe returned an invalid response envelope");
-if (liveResponse.headers.get("cache-control") !== "no-store, max-age=0")
-  throw new Error("live probe permits stale cached responses");
+assertNoStore(liveResponse, "/api/health/live");
 
 for (const [name, value] of [
   ["x-content-type-options", "nosniff"],
@@ -75,19 +79,44 @@ assertStatus(readyResponse, 200, "/api/health/ready");
 const ready = await readJson(readyResponse, "/api/health/ready");
 if (ready?.data?.status !== "ready" || typeof ready.requestId !== "string")
   throw new Error("readiness probe returned an invalid response envelope");
-if (readyResponse.headers.get("cache-control") !== "no-store, max-age=0")
-  throw new Error("readiness probe permits stale cached responses");
+assertNoStore(readyResponse, "/api/health/ready");
 
 const bootstrapResponse = await request("/api/v1/system/bootstrap");
 assertStatus(bootstrapResponse, 200, "/api/v1/system/bootstrap");
 const bootstrap = await readJson(bootstrapResponse, "/api/v1/system/bootstrap");
-if (bootstrapResponse.headers.get("cache-control") !== "no-store, max-age=0")
-  throw new Error("bootstrap status permits stale cached responses");
+assertNoStore(bootstrapResponse, "/api/v1/system/bootstrap");
 if (
   typeof bootstrap?.data?.initialized !== "boolean" ||
   typeof bootstrap.requestId !== "string"
 )
   throw new Error("bootstrap status returned an invalid response envelope");
+
+const unauthorizedResponse = await request("/api/v1/organizations");
+assertStatus(unauthorizedResponse, 401, "/api/v1/organizations");
+assertNoStore(unauthorizedResponse, "/api/v1/organizations");
+const unauthorized = await readJson(
+  unauthorizedResponse,
+  "/api/v1/organizations",
+);
+if (
+  unauthorized?.error?.code !== "AUTH_REQUIRED" ||
+  typeof unauthorized.requestId !== "string"
+)
+  throw new Error("protected API returned an invalid authentication error");
+
+const signInFailureResponse = await request("/api/auth/sign-in/username", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    Origin: baseUrl.origin,
+  },
+  body: JSON.stringify({
+    username: `smoke_missing_${Date.now()}`,
+    password: "SmokeMissing123!",
+  }),
+});
+assertStatus(signInFailureResponse, 401, "/api/auth/sign-in/username");
+assertNoStore(signInFailureResponse, "/api/auth/sign-in/username");
 
 const setupResponse = await request("/setup");
 const signInResponse = await request("/sign-in");
@@ -121,6 +150,8 @@ if (!assetPath)
 const assetResponse = await request(assetPath);
 if (!assetResponse.ok)
   throw new Error(`static asset ${assetPath} returned ${assetResponse.status}`);
+if ((assetResponse.headers.get("cache-control") ?? "").includes("no-store"))
+  throw new Error(`static asset ${assetPath} was incorrectly marked no-store`);
 
 console.log(
   JSON.stringify({

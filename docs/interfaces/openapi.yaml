@@ -2,7 +2,8 @@ openapi: 3.1.0
 info:
   title: AnswerBit GEO SaaS API
   version: 1.0.0
-  description: 除认证、初始化和平台腾讯配置外，业务 API 要求固定 TeamID 与统一 API Key 已完成验证；前置接入未完成时返回 `422 PLATFORM_TENCENT_CONNECTION_REQUIRED`。
+  description: >-
+    除认证、初始化和平台腾讯配置外，业务 API 要求固定 TeamID 与统一 API Key 已完成验证；前置接入未完成时返回 `422 PLATFORM_TENCENT_CONNECTION_REQUIRED`。所有 API 响应统一返回 `Cache-Control: no-store, max-age=0`。
 servers:
   - url: /api
 paths:
@@ -3713,7 +3714,7 @@ components:
       name: better-auth.session_token
   headers:
     NoStore:
-      description: 动态运行状态禁止由浏览器或中间代理缓存
+      description: API 响应禁止由浏览器或中间代理缓存
       schema:
         type: string
         const: no-store, max-age=0
