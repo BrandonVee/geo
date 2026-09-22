@@ -48,11 +48,15 @@
 
 本地品牌业务的统一授权还要求企业处于 active、内部 Team 绑定有效且属于企业、品牌映射属于该企业和 Team；企业管理员的全品牌权限不豁免归属校验。
 
+<a id="credential_encryption"></a>
+
 ## 凭证与会话
 
 用户密码由 Better Auth 以 scrypt 哈希保存到 `accounts`，服务端不保留明文。用户名规范化为小写并满足固定格式；系统关闭自行注册。Session 默认有效期 7 天，每 24 小时刷新；生产环境启用安全 Cookie。所有浏览器写请求在 Session 查询和正文解析前复用 Better Auth 的可信 Origin 集合，未知、空值、非法来源以及缺少 Origin 的同站/跨站浏览器请求返回 `403 UNTRUSTED_ORIGIN`；没有浏览器来源信号的服务端调用仍按 Session 与权限校验。Web 在 Next.js 响应边界为所有 `/api/*` 成功与错误响应以及所有 HTML 页面统一写入 `Cache-Control: no-store, max-age=0`，避免浏览器或共享代理保存认证结果、租户数据、动态运行状态或可复用的页面 nonce；静态构建资产继续使用长期不可变缓存。自有业务 API 只把 `application/json` 或 `application/*+json` 的 UTF-8 正文交给共享流式解析器；Better Auth POST 保留原生媒体解析，但同样先经过共享的流式字节上限。两类入口均核对声明长度和实际接收字节，超过 4 MiB 时立即停止读取并返回 `413 PAYLOAD_TOO_LARGE`；自有业务 API 的媒体类型错误返回 `415 UNSUPPORTED_MEDIA_TYPE`，以避免内容嗅探和无界正文缓冲。全站 CSP 把脚本、样式、连接、字体和 Worker 限定到业务所需来源，禁止对象、子框架、内联事件处理器和跨站表单目标；HTML 响应为每次请求生成独立 nonce，Next.js 框架脚本、主题初始化脚本以及 Ant Design 动态样式元素必须携带该 nonce，脚本通过 `strict-dynamic` 信任其加载链，生产脚本和样式元素策略均不开放 `unsafe-inline`，脚本策略也不开放 `unsafe-eval`。现有 React 内联 `style` 属性由独立的 `style-src-attr` 兼容策略允许，不会放宽 `<style>` 元素；开发环境仅为热更新额外允许 eval、WebSocket 与本地 HTTP(S) 连接。
 
 AnswerBit 只使用一组平台凭证。`platform_answerbit_credentials` 保存固定 TeamID 和 API Key 密文；密文使用独立平台 AAD 做 AES-256-GCM 加密。其 `permissions` 列只为迁移兼容保留，保存时自动写入全部已接入 operation，不参与统一凭证的运行时授权判断。`platform_answerbit_brands` 保存该 TeamID 的官方品牌目录，也是平台企业的唯一来源。完整密钥只在平台管理端提交，任何读取接口只返回掩码，统一配置表只授予平台数据库角色访问。
+
+AES-256-GCM 密文使用 `版本.IV.认证标签.正文` 四段 envelope，后三段必须是无填充的规范 Base64URL；IV 固定为 96 位，认证标签固定为 128 位。解密会先验证段数、版本、编码和长度，再执行认证；格式损坏、密文篡改及 AAD 范围不匹配统一返回 `INVALID_SECRET_ENVELOPE`，不暴露底层密码库差异。加密主密钥本身也必须是规范 Base64 编码的 32 字节值。
 
 小青蛙聚合发布同样只使用一组平台凭证。`platform_frog_credentials` 保存基础地址、API Key 密文、指纹、掩码、版本和验证时间，使用独立平台 AAD 加密且只授予平台数据库角色访问；租户数据库角色无表权限。平台管理端保存前调用余额接口验证，读取接口不返回明文或密文。数据库网页配置优先于旧环境变量回退，Web 与 Worker 使用相同 `APP_ENCRYPTION_KEY` 解密同一记录。
 

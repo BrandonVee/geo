@@ -1,10 +1,4 @@
-import {
-  createCipheriv,
-  createDecipheriv,
-  createHmac,
-  randomBytes,
-  randomUUID,
-} from "node:crypto";
+import { randomUUID } from "node:crypto";
 export {
   decideAsyncJobRecovery,
   type AsyncJobRecoveryAction,
@@ -46,6 +40,7 @@ export {
   parseAnswerBitEnvelope,
   type AnswerBitEnvelope,
 } from "./answerbit-envelope";
+export { InvalidSecretEnvelopeError, SecretCipher } from "./secret-cipher";
 export const createRequestId = () => randomUUID();
 export const platformAnswerBitCredentialAad = "platform-answerbit";
 export const platformFrogCredentialAad = "platform-frog-publication";
@@ -378,51 +373,3 @@ export const recordsToCsv = (rows: Record<string, unknown>[]) => {
   const keys = [...new Set(rows.flatMap((row) => Object.keys(row)))];
   return `\uFEFF${keys.map(csvCell).join(",")}\r\n${rows.map((row) => keys.map((key) => csvCell(row[key])).join(",")).join("\r\n")}\r\n`;
 };
-
-export class SecretCipher {
-  private readonly key: Buffer;
-  constructor(
-    encodedKey: string,
-    private readonly keyVersion = 1,
-  ) {
-    this.key = Buffer.from(encodedKey, "base64");
-    if (this.key.length !== 32)
-      throw new Error(
-        "APP_ENCRYPTION_KEY must be a base64 encoded 32-byte key",
-      );
-  }
-  encrypt(plaintext: string, context: string) {
-    const iv = randomBytes(12);
-    const cipher = createCipheriv("aes-256-gcm", this.key, iv);
-    cipher.setAAD(Buffer.from(context));
-    const ciphertext = Buffer.concat([
-      cipher.update(plaintext, "utf8"),
-      cipher.final(),
-    ]);
-    return [
-      `v${this.keyVersion}`,
-      iv.toString("base64url"),
-      cipher.getAuthTag().toString("base64url"),
-      ciphertext.toString("base64url"),
-    ].join(".");
-  }
-  decrypt(envelope: string, context: string) {
-    const [version, iv, tag, ciphertext] = envelope.split(".");
-    if (version !== `v${this.keyVersion}` || !iv || !tag || !ciphertext)
-      throw new Error("UNSUPPORTED_SECRET_ENVELOPE");
-    const decipher = createDecipheriv(
-      "aes-256-gcm",
-      this.key,
-      Buffer.from(iv, "base64url"),
-    );
-    decipher.setAAD(Buffer.from(context));
-    decipher.setAuthTag(Buffer.from(tag, "base64url"));
-    return Buffer.concat([
-      decipher.update(Buffer.from(ciphertext, "base64url")),
-      decipher.final(),
-    ]).toString("utf8");
-  }
-  fingerprint(secret: string) {
-    return createHmac("sha256", this.key).update(secret).digest("hex");
-  }
-}
