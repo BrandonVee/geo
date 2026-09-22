@@ -54,7 +54,7 @@ jobs:
   database-release:
     name: Database release gate
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     services:
       postgres:
         image: postgres:18-alpine
@@ -66,6 +66,15 @@ jobs:
           - 5432:5432
         options: >-
           --health-cmd "pg_isready -U postgres -d geo"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:8-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
@@ -83,10 +92,61 @@ jobs:
           cache: pnpm
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
+      - name: Install Chromium for browser acceptance
+        run: pnpm exec playwright install --with-deps chromium
       - name: Run database release
         run: pnpm db:release
       - name: Prove database release idempotence
         run: pnpm db:release
+      - name: Run PostgreSQL transaction regressions
+        run: pnpm --filter @geo/db test
+        env:
+          PUBLICATION_DB_TESTS: "1"
+      - name: Build Web smoke target
+        run: pnpm --filter @geo/web build
+      - name: Run Web process smoke test
+        shell: bash
+        run: |
+          cp -R apps/web/.next/static apps/web/.next/standalone/apps/web/.next/static
+          cp -R apps/web/public apps/web/.next/standalone/apps/web/public
+          HOSTNAME=127.0.0.1 PORT=3000 \
+            node apps/web/.next/standalone/apps/web/server.js \
+            >"$RUNNER_TEMP/web-smoke.log" 2>&1 &
+          web_pid=$!
+          trap 'kill "$web_pid" 2>/dev/null || true' EXIT
+          if ! pnpm smoke:web; then
+            cat "$RUNNER_TEMP/web-smoke.log"
+            exit 1
+          fi
+          if ! pnpm test:e2e; then
+            cat "$RUNNER_TEMP/web-smoke.log"
+            exit 1
+          fi
+      - name: Run Worker bundle smoke test
+        shell: bash
+        run: |
+          pnpm --filter @geo/worker build
+          node apps/worker/dist/index.mjs >"$RUNNER_TEMP/worker-smoke.log" 2>&1 &
+          worker_pid=$!
+          trap 'kill "$worker_pid" 2>/dev/null || true' EXIT
+          started=false
+          for _ in {1..120}; do
+            if grep -q '"event":"geo-worker.started"' "$RUNNER_TEMP/worker-smoke.log"; then
+              started=true
+              break
+            fi
+            if ! kill -0 "$worker_pid" 2>/dev/null; then
+              break
+            fi
+            sleep 0.5
+          done
+          if [[ "$started" != true ]]; then
+            cat "$RUNNER_TEMP/worker-smoke.log"
+            exit 1
+          fi
+          kill -TERM "$worker_pid"
+          wait "$worker_pid"
+          grep -q '"event":"geo-worker.stopping"' "$RUNNER_TEMP/worker-smoke.log"
 
   container-build:
     name: Container / ${{ matrix.target }}
