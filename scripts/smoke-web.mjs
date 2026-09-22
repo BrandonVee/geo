@@ -160,6 +160,22 @@ assertRequestId(
   unsupportedMediaTypePath,
 );
 
+const invalidJsonPath = "/api/v1/system/bootstrap (invalid JSON)";
+const invalidJsonResponse = await request("/api/v1/system/bootstrap", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    Origin: baseUrl.origin,
+  },
+  body: "{invalid",
+});
+assertStatus(invalidJsonResponse, 400, invalidJsonPath);
+assertNoStore(invalidJsonResponse, invalidJsonPath);
+const invalidJson = await readJson(invalidJsonResponse, invalidJsonPath);
+if (invalidJson?.error?.code !== "INVALID_JSON")
+  throw new Error("malformed JSON returned an unexpected error");
+assertRequestId(invalidJsonResponse, invalidJson, invalidJsonPath);
+
 const untrustedOriginPath = "/api/v1/system/bootstrap (untrusted Origin)";
 const untrustedOriginResponse = await request("/api/v1/system/bootstrap", {
   method: "POST",

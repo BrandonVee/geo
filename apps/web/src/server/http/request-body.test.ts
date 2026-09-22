@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readJsonBody } from "./request-body";
 
 describe("JSON request body", () => {
-  it("解析有效 JSON，并将空正文或无效 JSON 交给契约校验", async () => {
+  it("解析有效 JSON，并将空正文交给契约校验", async () => {
     await expect(
       readJsonBody(
         new Request("http://localhost/resource", {
@@ -17,15 +17,32 @@ describe("JSON request body", () => {
         new Request("http://localhost/resource", { method: "POST" }),
       ),
     ).resolves.toBeNull();
-    await expect(
-      readJsonBody(
-        new Request("http://localhost/resource", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: "{invalid",
-        }),
-      ),
-    ).resolves.toBeNull();
+  });
+
+  it("以稳定错误拒绝语法错误或非 UTF-8 的 JSON", async () => {
+    const malformed = readJsonBody(
+      new Request("http://localhost/resource", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{invalid",
+      }),
+    );
+    const invalidUtf8 = readJsonBody(
+      new Request("http://localhost/resource", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: new Uint8Array([0xff]),
+      }),
+    );
+
+    await expect(malformed).rejects.toMatchObject({
+      status: 400,
+      code: "INVALID_JSON",
+    });
+    await expect(invalidUtf8).rejects.toMatchObject({
+      status: 400,
+      code: "INVALID_JSON",
+    });
   });
 
   it("接受标准 JSON、UTF-8 参数和结构化 JSON 媒体类型", async () => {

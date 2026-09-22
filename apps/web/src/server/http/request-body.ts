@@ -21,6 +21,9 @@ const unsupportedMediaType = () =>
     "Content-Type 必须是 application/json",
   );
 
+const invalidJson = () =>
+  new ApiError(400, "INVALID_JSON", "JSON 请求体格式错误");
+
 const hasJsonContentType = (request: Request) => {
   const contentType = request.headers.get("Content-Type");
   if (!contentType) return false;
@@ -85,9 +88,16 @@ export async function readJsonBody(
     offset += chunk.byteLength;
   }
 
+  let text: string;
   try {
-    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   } catch {
-    return null;
+    throw invalidJson();
+  }
+  if (!text.trim()) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw invalidJson();
   }
 }
