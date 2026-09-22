@@ -21,6 +21,7 @@ describe("HTML CSP proxy", () => {
     expect(
       response.headers.get("x-middleware-request-content-security-policy"),
     ).toBe(policy);
+    expect(response.headers.get("Cache-Control")).toBe("no-store, max-age=0");
   });
 
   it("不同页面请求使用不同 nonce", () => {

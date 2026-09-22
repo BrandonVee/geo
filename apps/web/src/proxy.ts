@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
+import { NO_STORE_CACHE_CONTROL } from "@/server/http/cache";
 import { buildContentSecurityPolicy } from "@/server/http/content-security-policy";
 
 export const createCspNonce = () =>
@@ -16,6 +17,7 @@ export function proxy(request: NextRequest) {
   requestHeaders.set("X-Nonce", nonce);
 
   const response = NextResponse.next({ request: { headers: requestHeaders } });
+  response.headers.set("Cache-Control", NO_STORE_CACHE_CONTROL);
   response.headers.set("Content-Security-Policy", policy);
   return response;
 }

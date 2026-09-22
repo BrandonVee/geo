@@ -157,7 +157,7 @@ Worker 在线但存在过期异步任务时，先查看“异步任务恢复”�
 - CI 第三方 Action 固定到不可变提交摘要，依赖升级通过 Dependabot PR 和完整门禁审查；
 - 生产密钥来自密钥管理系统，不写入镜像、日志或仓库；
 - TLS、Secure Cookie、可信 Origin 和最小网络访问已启用；通过生产域名执行同源写入成功，伪造 Origin 的业务写入返回 `403 UNTRUSTED_ORIGIN`；
-- Web 响应保留 `nosniff`、`DENY` 防嵌入、关闭 DNS 预取与跨域策略文件、COOP/CORP 同源隔离、Origin Agent Cluster、严格 Referrer Policy、禁用摄像头/麦克风/定位的 Permissions Policy，以及生产 HSTS；CSP 限定脚本、样式、图片、字体、连接和 Worker 来源，禁止对象、子框架、内联事件处理器与跨站表单目标，生产 HTML 的脚本策略不得出现 `unsafe-inline` 或 `unsafe-eval`；每个 HTML 请求的 nonce 必须唯一，反向代理不得缓存 HTML、删除/复用 nonce 或删除/放宽安全响应头，`X-Powered-By` 保持关闭；
+- Web 响应保留 `nosniff`、`DENY` 防嵌入、关闭 DNS 预取与跨域策略文件、COOP/CORP 同源隔离、Origin Agent Cluster、严格 Referrer Policy、禁用摄像头/麦克风/定位的 Permissions Policy，以及生产 HSTS；CSP 限定脚本、样式、图片、字体、连接和 Worker 来源，禁止对象、子框架、内联事件处理器与跨站表单目标，生产 HTML 的脚本策略不得出现 `unsafe-inline` 或 `unsafe-eval`；每个 HTML 请求的 nonce 必须唯一且页面响应必须保留 `Cache-Control: no-store, max-age=0`，反向代理不得缓存 HTML、删除/复用 nonce 或删除/放宽安全响应头，`X-Powered-By` 保持关闭；
 - Web 与 Worker 容器以非 root 用户运行；编排环境建议启用只读根文件系统、丢弃 Linux capabilities、`no-new-privileges`，仅按平台要求挂载可写临时目录；
 - 新表已评估 RLS，新接口完成对象级权限与输入校验；
 - 平台余额、发布履约、账号与权限操作可在审计日志追溯；

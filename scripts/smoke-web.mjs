@@ -253,6 +253,8 @@ const renderedPage = bootstrap.data.initialized
   : setupResponse;
 if (!(renderedPage.headers.get("content-type") ?? "").includes("text/html"))
   throw new Error("authentication entry page did not return HTML");
+if (renderedPage.headers.get("cache-control") !== "no-store, max-age=0")
+  throw new Error("authentication entry page permits cached HTML");
 const renderedPolicy =
   renderedPage.headers.get("content-security-policy") ?? "";
 const renderedScriptDirective = renderedPolicy
