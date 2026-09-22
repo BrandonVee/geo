@@ -27,7 +27,7 @@ export default async function RootLayout({
       </head>
       <body>
         <AntdRegistry>
-          <Providers>{children}</Providers>
+          <Providers nonce={nonce}>{children}</Providers>
         </AntdRegistry>
       </body>
     </html>

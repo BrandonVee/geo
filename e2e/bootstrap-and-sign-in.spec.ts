@@ -51,15 +51,23 @@ test("首次初始化、失败提示、登录和路由守卫形成完整闭环",
 }) => {
   await page.addInitScript({ content: axe.source });
   const contentSecurityPolicyViolations: string[] = [];
+  let documentNonce: string | undefined;
   page.on("console", (message) => {
     if (message.text().toLowerCase().includes("content security policy"))
       contentSecurityPolicyViolations.push(message.text());
+  });
+  page.on("response", (response) => {
+    if (response.request().resourceType() !== "document") return;
+    documentNonce = response
+      .headers()
+      ["content-security-policy"]?.match(/'nonce-([^']+)'/)?.[1];
   });
 
   const initialResponse = await page.goto("/sign-in");
   const initialPolicy = initialResponse?.headers()["content-security-policy"];
   expect(initialPolicy).toContain("'strict-dynamic'");
   expect(initialPolicy).toMatch(/'nonce-[^']+'/);
+  expect(documentNonce).toBeTruthy();
   expect(
     initialPolicy
       ?.split(";")
@@ -91,6 +99,16 @@ test("首次初始化、失败提示、登录和路由守卫形成完整闭环",
     page.getByText("平台统一腾讯接入", { exact: true }),
   ).toBeVisible();
   await expectNoSeriousAccessibilityViolations(page, "平台腾讯接入页");
+  const styleElementNonces = await page
+    .locator("style")
+    .evaluateAll((elements) =>
+      elements.map((element) => (element as HTMLStyleElement).nonce),
+    );
+  expect(styleElementNonces.length).toBeGreaterThan(0);
+  expect(
+    new Set(styleElementNonces),
+    "运行时样式元素必须始终使用当前文档的 CSP nonce",
+  ).toEqual(new Set([documentNonce]));
 
   await context.clearCookies();
   await page.goto("/setup");

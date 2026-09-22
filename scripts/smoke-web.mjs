@@ -259,12 +259,20 @@ const renderedScriptDirective = renderedPolicy
   .split(";")
   .find((directive) => directive.trim().startsWith("script-src "));
 const renderedNonce = renderedScriptDirective?.match(/'nonce-([^']+)'/)?.[1];
+const renderedStyleDirective = renderedPolicy
+  .split(";")
+  .find((directive) => directive.trim().startsWith("style-src-elem "));
 if (
   !renderedNonce ||
   !renderedScriptDirective?.includes("'strict-dynamic'") ||
   renderedScriptDirective.includes("'unsafe-inline'")
 )
   throw new Error("rendered page is missing strict nonce-based script CSP");
+if (
+  !renderedStyleDirective?.includes(`'nonce-${renderedNonce}'`) ||
+  renderedStyleDirective.includes("'unsafe-inline'")
+)
+  throw new Error("rendered page is missing nonce-based style element CSP");
 const renderedHtml = await renderedPage.text();
 const scriptTags = [...renderedHtml.matchAll(/<script\b([^>]*)>/gi)];
 if (
@@ -275,6 +283,14 @@ if (
   })
 )
   throw new Error("rendered page contains a script without the current nonce");
+const styleTags = [...renderedHtml.matchAll(/<style\b([^>]*)>/gi)];
+if (
+  styleTags.some(([, attributes]) => {
+    const nonce = attributes.match(/\bnonce="([^"]+)"/i)?.[1];
+    return nonce !== renderedNonce;
+  })
+)
+  throw new Error("rendered page contains a style element without the nonce");
 const nextRenderedPage = await request(
   bootstrap.data.initialized ? "/sign-in" : "/setup",
 );

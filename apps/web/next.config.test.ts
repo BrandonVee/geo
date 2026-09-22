@@ -6,6 +6,11 @@ describe("Next.js response headers", () => {
     policy
       .split(";")
       .find((directive) => directive.trim().startsWith("script-src ")) ?? "";
+  const directive = (policy: string, name: string) =>
+    policy
+      .split(";")
+      .find((value) => value.trim().startsWith(`${name} `))
+      ?.trim() ?? "";
 
   it("所有 API 响应都禁止浏览器和共享代理缓存", async () => {
     const rules = await nextConfig.headers?.();
@@ -45,6 +50,20 @@ describe("Next.js response headers", () => {
     expect(scriptDirective(policy)).not.toContain("'unsafe-inline'");
     expect(buildContentSecurityPolicy(true, "bad nonce")).not.toContain(
       "'nonce-",
+    );
+  });
+
+  it("页面 CSP 仅允许同源或携带当前 nonce 的样式元素", () => {
+    const policy = buildContentSecurityPolicy(true, "bm9uY2U=");
+
+    expect(directive(policy, "style-src")).toBe(
+      "style-src 'self' 'nonce-bm9uY2U='",
+    );
+    expect(directive(policy, "style-src-elem")).toBe(
+      "style-src-elem 'self' 'nonce-bm9uY2U='",
+    );
+    expect(directive(policy, "style-src-attr")).toBe(
+      "style-src-attr 'unsafe-inline'",
     );
   });
 

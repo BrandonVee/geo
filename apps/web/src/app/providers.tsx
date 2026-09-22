@@ -25,7 +25,17 @@ export function useThemeMode() {
 
 const STORAGE_KEY = "ab-theme";
 
-export function Providers({ children }: { children: ReactNode }) {
+export function Providers({
+  children,
+  nonce,
+}: {
+  children: ReactNode;
+  nonce?: string;
+}) {
+  // A client-side route transition can render a new server payload with a new
+  // request nonce, while the browser keeps enforcing the CSP of the original
+  // document. Keep that document nonce stable until the next full navigation.
+  const [documentNonce] = useState(nonce);
   const [mode, setMode] = useState<ThemeMode>("light");
   const [themeRestored, setThemeRestored] = useState(false);
 
@@ -49,6 +59,7 @@ export function Providers({ children }: { children: ReactNode }) {
     <ThemeContext.Provider value={{ mode, toggle }}>
       <ConfigProvider
         componentSize="large"
+        csp={{ nonce: documentNonce }}
         locale={zhCN}
         theme={{
           algorithm:
