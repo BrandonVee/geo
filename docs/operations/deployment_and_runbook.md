@@ -39,7 +39,7 @@ docker build --target web -t REGISTRY/answerbit-geo-web:VERSION .
 docker build --target worker -t REGISTRY/answerbit-geo-worker:VERSION .
 ```
 
-`release` 目标只包含数据库包、核心包、配置包及执行迁移、版本记录、种子和 RLS 检查所需依赖；它要求运行时注入 `MIGRATION_DATABASE_URL`，先校验数据库发布配置，再按固定顺序执行迁移、记录 schema 版本、种子与 RLS 检查，任一步失败即非零退出。只读根文件系统下为 `/tmp` 挂载临时可写目录，任务完成后不保持常驻。`web` 目标只包含 Next.js standalone 服务端与静态资源，内置 `/api/health/ready` 容器健康检查；`worker` 目标只包含带 source map 的 Node.js bundle，通过进程状态和平台 Worker 心跳观测。
+`release` 目标只包含数据库包、核心包、配置包及执行迁移、版本记录、种子和 RLS 检查所需依赖；它要求运行时注入 `MIGRATION_DATABASE_URL`，先校验数据库发布配置，再按固定顺序执行迁移、记录 schema 版本、种子与 RLS 检查，任一步失败即非零退出。只读根文件系统下为 `/tmp` 挂载临时可写目录，任务完成后不保持常驻。`web` 目标只包含 Next.js standalone 服务端、构建静态资源和 `public` 模型图标等公开资源，内置 `/api/health/ready` 容器健康检查；`worker` 目标只包含带 source map 的 Node.js bundle，通过进程状态和平台 Worker 心跳观测。
 
 镜像构建阶段只使用不可用于运行的占位配置完成静态分析，真实运行 `DATABASE_URL`、迁移 `MIGRATION_DATABASE_URL`、认证密钥、加密主密钥和腾讯地址必须由运行环境注入，禁止写入 build args、镜像层或前端变量。数据库迁移、种子和 RLS 检查不在 Web/Worker 容器启动时自动执行；`MIGRATION_DATABASE_URL` 不得注入 Web 或 Worker。
 
@@ -50,8 +50,8 @@ docker build --target worker -t REGISTRY/answerbit-geo-worker:VERSION .
 `.github/workflows/ci.yml` 在 push、pull request 和手工触发时执行三层门禁：
 
 1. Quality gate 使用锁文件安装依赖，依次执行格式、类型/lint、单元测试和完整构建；本地等价命令为 `pnpm verify`。
-2. Database release gate 在一次性 PostgreSQL 18 与 Redis 8 环境完整执行两次 `pnpm db:release`，验证迁移、版本记录、种子、RLS 与整个发布流程的幂等性；随后启用真实 PostgreSQL 事务回归，覆盖发布单并发幂等扣款、退款、零元订单和迟到上游状态隔离；最后按生产镜像布局启动 Web standalone 产物，执行 `pnpm smoke:web` 验证存活、就绪、初始化入口、安全响应头、逐请求 CSP nonce、全部脚本 nonce 覆盖和静态资源可读性，以 Chromium 完成首次管理员初始化、错误登录、成功登录和路由守卫验收，并使用 axe-core 阻止初始化、登录及腾讯接入页面出现 serious/critical 级 WCAG 2/2.1 A、AA 问题；Worker bundle 同时验证队列注册、初始维护、运行心跳及优雅退出。
-3. Container matrix 分别构建 `release`、`web`、`worker` 目标并检查最终镜像用户为 `node`。
+2. Database release gate 在一次性 PostgreSQL 18 与 Redis 8 环境完整执行两次 `pnpm db:release`，验证迁移、版本记录、种子、RLS 与整个发布流程的幂等性；随后启用真实 PostgreSQL 事务回归，覆盖发布单并发幂等扣款、退款、零元订单和迟到上游状态隔离；最后按生产镜像布局启动 Web standalone 产物，执行 `pnpm smoke:web` 验证存活、就绪、初始化入口、安全响应头、逐请求 CSP nonce、全部脚本 nonce 覆盖、构建静态资源和 `public` 模型图标可读性，以 Chromium 完成首次管理员初始化、错误登录、成功登录和路由守卫验收，并使用 axe-core 阻止初始化、登录及腾讯接入页面出现 serious/critical 级 WCAG 2/2.1 A、AA 问题；Worker bundle 同时验证队列注册、初始维护、运行心跳及优雅退出。
+3. Container matrix 分别构建 `release`、`web`、`worker` 目标并检查最终镜像用户为 `node`，同时确认 Web 镜像包含运行时所需的 `public` 模型图标。
 
 外部 GitHub Actions 使用不可变提交摘要固定，`.github/dependabot.yml` 每周为 pnpm 工作区、Actions 与 Docker 基础镜像提出独立更新。CI 只使用一次性占位密钥和本地服务数据库，不读取生产 Secrets。保护分支应把 Quality gate、Database release gate 和三个 Container 检查设为必需状态；只有全部通过的提交才能进入镜像发布流程。
 

@@ -311,6 +311,20 @@ if (!assetResponse.ok)
   throw new Error(`static asset ${assetPath} returned ${assetResponse.status}`);
 if ((assetResponse.headers.get("cache-control") ?? "").includes("no-store"))
   throw new Error(`static asset ${assetPath} was incorrectly marked no-store`);
+const publicAssetPath = "/model-icons/openai.svg";
+const publicAssetResponse = await request(publicAssetPath);
+if (!publicAssetResponse.ok)
+  throw new Error(
+    `public asset ${publicAssetPath} returned ${publicAssetResponse.status}`,
+  );
+if (
+  !(publicAssetResponse.headers.get("content-type") ?? "").includes(
+    "image/svg+xml",
+  )
+)
+  throw new Error(
+    `public asset ${publicAssetPath} has an invalid content type`,
+  );
 
 console.log(
   JSON.stringify({

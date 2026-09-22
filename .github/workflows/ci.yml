@@ -179,3 +179,9 @@ jobs:
           cache-to: type=gha,mode=max,scope=answerbit-geo-${{ matrix.target }}
       - name: Verify non-root runtime
         run: test "$(docker image inspect answerbit-geo-${{ matrix.target }}:ci --format '{{.Config.User}}')" = node
+      - name: Verify Web public assets
+        if: matrix.target == 'web'
+        run: >-
+          docker run --rm --entrypoint test
+          answerbit-geo-web:ci
+          -f /app/apps/web/public/model-icons/openai.svg
