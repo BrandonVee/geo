@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@geo/config": "workspace:*",
+    "@geo/contracts": "workspace:*",
     "@geo/core": "workspace:*",
     "@geo/db": "workspace:*",
     "drizzle-orm": "^0.45.2",

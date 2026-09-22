@@ -1,11 +1,14 @@
 import { z } from "zod";
-export const answerBitBrandSchema = z
-  .object({
-    id: z.union([z.string(), z.number()]).transform(String),
-    brand_name: z.string(),
-  })
-  .passthrough();
-export const answerBitBrandListSchema = z.array(answerBitBrandSchema);
+export {
+  answerBitArticleContentSchema,
+  answerBitArticleRankSchema,
+  answerBitBrandListSchema,
+  answerBitBrandSchema,
+  answerBitDashboardMetricsSchema,
+  answerBitDomainRankSchema,
+  answerBitIdResultSchema,
+  answerBitTaskListSchema,
+} from "@geo/contracts";
 export const answerBitBrandDetailSchema = z
   .object({
     id: z.union([z.string(), z.number()]).transform(String),
@@ -104,13 +107,6 @@ const answerBitNonnegativeIntegerSchema = z
   .union([z.number().int().nonnegative(), z.string().regex(/^\d+$/)])
   .transform(Number)
   .refine(Number.isSafeInteger, "AnswerBit 整数超出安全范围");
-export const answerBitDashboardMetricsSchema = z
-  .object({
-    exposure: valueWithFluctuationSchema,
-    avg_rank: valueWithFluctuationSchema,
-    score: valueWithFluctuationSchema,
-  })
-  .passthrough();
 const exposurePointSchema = z
   .object({
     date: z.string(),
@@ -178,9 +174,6 @@ export const answerBitScoreRankSchema = z.array(
     .passthrough(),
 );
 export const answerBitPlatformMapSchema = z.record(z.string(), z.string());
-export const answerBitIdResultSchema = z.object({
-  id: z.union([z.string(), z.number()]).transform(String),
-});
 export const answerBitTitleSchema = z
   .object({
     id: z.union([z.string(), z.number()]).transform(String),
@@ -284,31 +277,6 @@ export const answerBitArticleTagsSchema = z.array(
     })
     .passthrough(),
 );
-export const answerBitTaskListSchema = z
-  .object({
-    scores: z.array(
-      z
-        .object({
-          task_id: z.union([z.string(), z.number()]).transform(String),
-          query_id: z.union([z.string(), z.number()]).transform(String),
-          query_str: z.string(),
-          platform: z.string(),
-          language: z.string(),
-          zone: z.string(),
-          date: z.string(),
-          exposure: z.number().int(),
-          score: z.number().int(),
-          avg_rank: z.number().int(),
-          title_id: z.union([z.string(), z.number()]).transform(String),
-          title_name: z.string(),
-          trace_article_cnt: z.number().int().optional().default(0),
-          tags: z.array(tagSchema).optional().default([]),
-        })
-        .passthrough(),
-    ),
-    total: z.number().int(),
-  })
-  .passthrough();
 const taskLinkSchema = z
   .object({
     index: z.number().int(),
@@ -346,37 +314,6 @@ export const answerBitTaskDetailSchema = z
     title_name: z.string(),
     title_id: z.union([z.string(), z.number()]).transform(String),
     tags: z.array(tagSchema).optional().default([]),
-  })
-  .passthrough();
-export const answerBitDomainRankSchema = z
-  .object({
-    reference_count: z.array(
-      z
-        .object({
-          domain: z.string(),
-          count: z.number().int(),
-          is_own: z.boolean(),
-        })
-        .passthrough(),
-    ),
-    total: z.number().int(),
-  })
-  .passthrough();
-export const answerBitArticleRankSchema = z
-  .object({
-    reference_count: z.array(
-      z
-        .object({
-          article: z.string(),
-          url: z.string(),
-          domain: z.string(),
-          count: z.number().int(),
-          source: z.number().int(),
-          article_id: z.union([z.string(), z.number()]).transform(String),
-        })
-        .passthrough(),
-    ),
-    total: z.number().int(),
   })
   .passthrough();
 export const answerBitPromptTrendsSchema = z
@@ -515,26 +452,6 @@ export const answerBitArticleTemplateSchema = z.array(
     })
     .passthrough(),
 );
-export const answerBitArticleContentSchema = z
-  .object({
-    article_id: z.union([z.string(), z.number()]).transform(String),
-    brand_id: z.union([z.string(), z.number()]).transform(String),
-    title: z.string(),
-    main_body: z.string(),
-    status: z.number().int(),
-    template_type: z.number().int(),
-    source: z.number().int(),
-    language: z.string(),
-    tags: z.array(
-      z
-        .object({
-          tag_id: z.union([z.string(), z.number()]).transform(String),
-          tag_name: z.string(),
-        })
-        .passthrough(),
-    ),
-  })
-  .passthrough();
 const answerBitUnixSecondsSchema = z
   .union([z.number().int().nonnegative(), z.string().regex(/^\d+$/)])
   .transform(Number)

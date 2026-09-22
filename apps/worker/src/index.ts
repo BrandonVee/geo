@@ -8,6 +8,15 @@ import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { workerEnvSchema } from "@geo/config";
 import {
+  answerBitArticleContentSchema,
+  answerBitArticleRankSchema,
+  answerBitBrandListSchema,
+  answerBitDashboardMetricsSchema,
+  answerBitDomainRankSchema,
+  answerBitIdResultSchema,
+  answerBitTaskListSchema,
+} from "@geo/contracts";
+import {
   answerBitAvailableCredits,
   BoundedJsonResponseError,
   type AnswerBitOperation,
@@ -89,6 +98,11 @@ import {
 } from "@geo/db";
 import { PgBoss, type Job } from "pg-boss";
 import { runtimeTaskErrorCode } from "./runtime-task";
+import {
+  type AnswerBitDataSchema,
+  InvalidAnswerBitDataError,
+  parseAnswerBitData,
+} from "./answerbit-response";
 import {
   queryTencentBrandDirectory,
   TencentDirectoryError,
@@ -447,7 +461,8 @@ async function recordAnswerBitApiCall(
   }
 }
 
-async function callAnswerBit(
+// @project-doc docs/interfaces/answerbit_integration.md#response_validation
+async function callAnswerBit<T>(
   operation: AnswerBitOperation,
   payload: unknown,
   context: {
@@ -458,7 +473,8 @@ async function callAnswerBit(
     actorUserId?: string;
   },
   timeoutMs: number,
-) {
+  schema: AnswerBitDataSchema<T>,
+): Promise<T> {
   const credential = await resolveWorkerCredential({
     organizationId: context.organizationId,
     teamBindingId: context.teamBindingId,
@@ -498,6 +514,7 @@ async function callAnswerBit(
     );
     answerbitCode = envelope.code;
     if (envelope.code !== 0) throw new Error(`BUSINESS_${envelope.code}`);
+    const data = parseAnswerBitData(schema, envelope.data);
     await recordAnswerBitApiCall({
       ...apiCallContext,
       operation,
@@ -506,13 +523,14 @@ async function callAnswerBit(
       status: "success",
       durationMs: Math.round(performance.now() - started),
     });
-    return envelope.data;
+    return data;
   } catch (error) {
     const timeout =
       error instanceof DOMException && error.name === "TimeoutError";
     const invalidResponse =
       error instanceof BoundedJsonResponseError ||
-      error instanceof InvalidAnswerBitEnvelopeError;
+      error instanceof InvalidAnswerBitEnvelopeError ||
+      error instanceof InvalidAnswerBitDataError;
     await recordAnswerBitApiCall({
       ...apiCallContext,
       operation,
@@ -629,7 +647,7 @@ async function processArticleGeneration(data: {
       cipher.decrypt(storedPayload.ciphertext, data.organizationId),
     ) as ArticlePayload;
     if (!articleId) {
-      const created = (await callAnswerBit(
+      const created = await callAnswerBit(
         "/geo/article/create",
         requestPayload,
         {
@@ -640,9 +658,9 @@ async function processArticleGeneration(data: {
           actorUserId: context.job.requestedBy,
         },
         120_000,
-      )) as { id?: string | number };
-      if (created.id === undefined) throw new Error("INVALID_CREATE_RESPONSE");
-      articleId = String(created.id);
+        answerBitIdResultSchema,
+      );
+      articleId = created.id;
       const [storedArticleId] = await db
         .update(articleGenerationJobs)
         .set({ answerbitArticleId: articleId, updatedAt: new Date() })
@@ -655,10 +673,12 @@ async function processArticleGeneration(data: {
         .returning({ id: articleGenerationJobs.id });
       if (!storedArticleId) throw new Error("ARTICLE_JOB_SUPERSEDED");
     }
-    let content: Record<string, unknown> | undefined;
+    let content:
+      | ReturnType<typeof answerBitArticleContentSchema.parse>
+      | undefined;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        content = (await callAnswerBit(
+        content = await callAnswerBit(
           "/geo/article/get",
           { brand_id: context.job.brandId, article_id: articleId },
           {
@@ -669,25 +689,19 @@ async function processArticleGeneration(data: {
             actorUserId: context.job.requestedBy,
           },
           10_000,
-        )) as Record<string, unknown>;
+          answerBitArticleContentSchema,
+        );
         break;
       } catch (error) {
         if (attempt === 2) throw error;
         await delay(500 * 2 ** attempt);
       }
     }
-    if (
-      !content ||
-      typeof content.title !== "string" ||
-      typeof content.main_body !== "string"
-    )
-      throw new Error("INVALID_CONTENT_RESPONSE");
-    const upstreamTags = Array.isArray(content.tags)
-      ? content.tags.map((tag) => ({
-          tagId: String((tag as { tag_id?: unknown }).tag_id ?? ""),
-          tagName: String((tag as { tag_name?: unknown }).tag_name ?? ""),
-        }))
-      : [];
+    if (!content) throw new Error("INVALID_CONTENT_RESPONSE");
+    const upstreamTags = content.tags.map((tag) => ({
+      tagId: tag.tag_id,
+      tagName: tag.tag_name,
+    }));
     const tags = [...(context.job.tags ?? []), ...upstreamTags].filter(
       (tag, index, all) =>
         tag.tagName &&
@@ -703,12 +717,12 @@ async function processArticleGeneration(data: {
         .update(articleGenerationJobs)
         .set({
           status: "succeeded",
-          articleTitle: content.title as string,
-          articleBody: content.main_body as string,
-          articleStatus: Number(content.status),
-          templateType: Number(content.template_type),
-          source: Number(content.source),
-          language: String(content.language),
+          articleTitle: content.title,
+          articleBody: content.main_body,
+          articleStatus: content.status,
+          templateType: content.template_type,
+          source: content.source,
+          language: content.language,
           tags,
           completedAt: new Date(),
           errorCode: null,
@@ -730,11 +744,11 @@ async function processArticleGeneration(data: {
           teamBindingId: context.job.teamBindingId,
           brandId: context.job.brandId,
           articleId: articleId!,
-          title: content.title as string,
-          status: Number(content.status),
-          source: Number(content.source),
-          templateType: Number(content.template_type),
-          language: String(content.language),
+          title: content.title,
+          status: content.status,
+          source: content.source,
+          templateType: content.template_type,
+          language: content.language,
         })
         .onConflictDoUpdate({
           target: [
@@ -744,11 +758,11 @@ async function processArticleGeneration(data: {
             answerbitArticleMappings.articleId,
           ],
           set: {
-            title: content.title as string,
-            status: Number(content.status),
-            source: Number(content.source),
-            templateType: Number(content.template_type),
-            language: String(content.language),
+            title: content.title,
+            status: content.status,
+            source: content.source,
+            templateType: content.template_type,
+            language: content.language,
             syncedAt: new Date(),
             updatedAt: new Date(),
           },
@@ -763,10 +777,10 @@ async function processArticleGeneration(data: {
           updatedBy: context.job.requestedBy,
           source: "ai_generated",
           sourceJobId: context.job.id,
-          title: content.title as string,
-          body: content.main_body as string,
+          title: content.title,
+          body: content.main_body,
           status: "ready",
-          language: String(content.language),
+          language: content.language,
           tags: tags.map((tag) => tag.tagName).slice(0, 20),
         })
         .onConflictDoNothing({ target: contentDocuments.sourceJobId })
@@ -1027,7 +1041,17 @@ async function processReportExport(data: {
             ? { domain: filters.keyword, page, page_size: 100 }
             : { keyword: filters.keyword, page, page_size: 100 }),
       };
-      const result = (await callAnswerBit(
+      const responseSchema =
+        claimed.reportType === "answers"
+          ? answerBitTaskListSchema
+          : claimed.reportType === "domain_rank"
+            ? answerBitDomainRankSchema
+            : answerBitArticleRankSchema;
+      const result = await callAnswerBit<{
+        scores?: unknown[];
+        reference_count?: unknown[];
+        total: number;
+      }>(
         operation,
         payload,
         {
@@ -1038,13 +1062,13 @@ async function processReportExport(data: {
           actorUserId: claimed.requestedBy,
         },
         30_000,
-      )) as Record<string, unknown>;
-      const chunk = (
+        responseSchema,
+      );
+      const chunk =
         claimed.reportType === "answers"
           ? result.scores
-          : result.reference_count
-      ) as unknown;
-      if (!Array.isArray(chunk)) throw new Error("INVALID_REPORT_RESPONSE");
+          : result.reference_count;
+      if (!chunk) throw new Error("INVALID_REPORT_RESPONSE");
       rows.push(
         ...chunk.filter(
           (row): row is Record<string, unknown> =>
@@ -1598,6 +1622,7 @@ async function processNotificationEvaluation() {
             { team_id: team.teamId },
             context,
             15_000,
+            answerBitBrandListSchema,
           );
         } catch (error) {
           errorCode =
@@ -1662,7 +1687,7 @@ async function processNotificationEvaluation() {
         const begin = new Date(end);
         begin.setUTCDate(begin.getUTCDate() - rule.windowDays + 1);
         const iso = (date: Date) => date.toISOString().slice(0, 10);
-        const result = (await callAnswerBit(
+        const result = await callAnswerBit(
           "/geo/base/dashboard",
           {
             brand_id: rule.brandId,
@@ -1674,14 +1699,9 @@ async function processNotificationEvaluation() {
           },
           context,
           15_000,
-        )) as Record<string, unknown>;
-        const sample = result[rule.metric] as
-          | { value?: unknown; fluctuation?: unknown }
-          | undefined;
-        const value = Number(sample?.value);
-        const fluctuation = Number(sample?.fluctuation);
-        if (!Number.isFinite(value) || !Number.isFinite(fluctuation))
-          throw new Error("INVALID_METRIC_RESPONSE");
+          answerBitDashboardMetricsSchema,
+        );
+        const { value, fluctuation } = result[rule.metric];
         const classification = classifyMetricAnomaly(
           rule.metric,
           fluctuation,

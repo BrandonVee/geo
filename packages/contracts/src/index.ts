@@ -1,4 +1,5 @@
 import { z } from "zod";
+export * from "./answerbit-response";
 export const organizationSchema = z.object({
   name: z.string().trim().min(2).max(100),
   slug: z
