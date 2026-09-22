@@ -14,6 +14,9 @@ paths:
       responses:
         "200":
           description: Web 进程存活
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/NoStore"
   /health/ready:
     get:
       summary: 查询 Web 配置、数据库连接与数据库发布状态
@@ -22,8 +25,14 @@ paths:
       responses:
         "200":
           description: Web 运行配置、数据库连接、schema 最低修订和 seed 最低修订全部就绪
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/NoStore"
         "503":
           description: 运行配置无效（CONFIGURATION_INVALID）、数据库依赖未就绪（DEPENDENCY_UNAVAILABLE）、schema 版本未就绪（DATABASE_SCHEMA_NOT_READY）或 seed 版本未就绪（DATABASE_SEED_NOT_READY）
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/NoStore"
   /auth/sign-in/username:
     post:
       summary: 使用账号密码登录
@@ -67,6 +76,9 @@ paths:
       responses:
         "200":
           description: 初始化状态
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/NoStore"
     post:
       summary: 首次运行时创建最高权限管理员
       description: 仅在系统尚无本地密码账户时可执行；并发请求由数据库事务锁串行化。
@@ -3675,6 +3687,12 @@ components:
       type: apiKey
       in: cookie
       name: better-auth.session_token
+  headers:
+    NoStore:
+      description: 动态运行状态禁止由浏览器或中间代理缓存
+      schema:
+        type: string
+        const: no-store, max-age=0
   schemas:
     PurchaseAnswerBitQuota:
       type: object

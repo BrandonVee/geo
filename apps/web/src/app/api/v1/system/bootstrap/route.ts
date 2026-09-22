@@ -1,5 +1,6 @@
 import { bootstrapAdminSchema } from "@geo/contracts";
 import { createRequestId } from "@geo/core";
+import { noStoreJson, withNoStore } from "@/server/http/cache";
 import { ApiError, errorResponse } from "@/server/http/errors";
 import { identityService } from "@/server/modules/identity/identity.service";
 
@@ -9,12 +10,12 @@ export async function GET() {
   const requestId = createRequestId();
 
   try {
-    return Response.json({
+    return noStoreJson({
       data: { initialized: await identityService.isInitialized() },
       requestId,
     });
   } catch (error) {
-    return errorResponse(error, requestId);
+    return withNoStore(errorResponse(error, requestId));
   }
 }
 

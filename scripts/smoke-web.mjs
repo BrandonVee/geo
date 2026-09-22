@@ -46,6 +46,8 @@ const liveResponse = await waitForLive();
 const live = await readJson(liveResponse, "/api/health/live");
 if (live?.data?.status !== "ok" || typeof live.requestId !== "string")
   throw new Error("live probe returned an invalid response envelope");
+if (liveResponse.headers.get("cache-control") !== "no-store, max-age=0")
+  throw new Error("live probe permits stale cached responses");
 
 for (const [name, value] of [
   ["x-content-type-options", "nosniff"],
@@ -73,10 +75,14 @@ assertStatus(readyResponse, 200, "/api/health/ready");
 const ready = await readJson(readyResponse, "/api/health/ready");
 if (ready?.data?.status !== "ready" || typeof ready.requestId !== "string")
   throw new Error("readiness probe returned an invalid response envelope");
+if (readyResponse.headers.get("cache-control") !== "no-store, max-age=0")
+  throw new Error("readiness probe permits stale cached responses");
 
 const bootstrapResponse = await request("/api/v1/system/bootstrap");
 assertStatus(bootstrapResponse, 200, "/api/v1/system/bootstrap");
 const bootstrap = await readJson(bootstrapResponse, "/api/v1/system/bootstrap");
+if (bootstrapResponse.headers.get("cache-control") !== "no-store, max-age=0")
+  throw new Error("bootstrap status permits stale cached responses");
 if (
   typeof bootstrap?.data?.initialized !== "boolean" ||
   typeof bootstrap.requestId !== "string"

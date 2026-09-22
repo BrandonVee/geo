@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { NO_STORE_CACHE_CONTROL } from "@/server/http/cache";
 
 const mocks = vi.hoisted(() => ({
   inspectServerEnv: vi.fn(),
@@ -22,6 +23,10 @@ vi.mock("@/server/redis", () => ({
 
 import { GET } from "./route";
 
+function expectNoStore(response: Response) {
+  expect(response.headers.get("cache-control")).toBe(NO_STORE_CACHE_CONTROL);
+}
+
 describe("readiness", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -37,6 +42,7 @@ describe("readiness", () => {
   it("配置、数据库与 Redis 均正常时返回 ready", async () => {
     const response = await GET();
     expect(response.status).toBe(200);
+    expectNoStore(response);
     expect(await response.json()).toMatchObject({ data: { status: "ready" } });
     expect(mocks.query).toHaveBeenCalledWith("select 1");
     expect(mocks.pingRedis).toHaveBeenCalledOnce();
@@ -47,6 +53,7 @@ describe("readiness", () => {
     mocks.inspectServerEnv.mockReturnValue({ success: false });
     const response = await GET();
     expect(response.status).toBe(503);
+    expectNoStore(response);
     expect(await response.json()).toMatchObject({
       error: { code: "CONFIGURATION_INVALID" },
     });
@@ -59,6 +66,7 @@ describe("readiness", () => {
     mocks.query.mockRejectedValue(new Error("database unavailable"));
     const response = await GET();
     expect(response.status).toBe(503);
+    expectNoStore(response);
     expect(await response.json()).toMatchObject({
       error: { code: "DEPENDENCY_UNAVAILABLE" },
     });
@@ -70,6 +78,7 @@ describe("readiness", () => {
     mocks.pingRedis.mockRejectedValue(new Error("redis unavailable"));
     const response = await GET();
     expect(response.status).toBe(503);
+    expectNoStore(response);
     expect(await response.json()).toMatchObject({
       error: { code: "DEPENDENCY_UNAVAILABLE", message: "Redis 未就绪" },
     });
@@ -82,6 +91,7 @@ describe("readiness", () => {
     );
     const response = await GET();
     expect(response.status).toBe(503);
+    expectNoStore(response);
     expect(await response.json()).toMatchObject({
       error: { code: "DATABASE_SCHEMA_NOT_READY" },
     });
@@ -94,6 +104,7 @@ describe("readiness", () => {
     });
     const response = await GET();
     expect(response.status).toBe(503);
+    expectNoStore(response);
     expect(await response.json()).toMatchObject({
       error: { code: "DATABASE_SCHEMA_NOT_READY" },
     });
@@ -106,6 +117,7 @@ describe("readiness", () => {
     });
     const response = await GET();
     expect(response.status).toBe(503);
+    expectNoStore(response);
     expect(await response.json()).toMatchObject({
       error: { code: "DATABASE_SEED_NOT_READY" },
     });

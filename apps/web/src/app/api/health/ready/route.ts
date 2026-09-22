@@ -1,11 +1,11 @@
-import { NextResponse } from "next/server";
 import { inspectDatabaseReleaseState, pool } from "@geo/db";
 import { inspectServerEnv } from "@/server/env";
+import { noStoreJson } from "@/server/http/cache";
 import { pingRedis } from "@/server/redis";
 export async function GET() {
   const requestId = crypto.randomUUID();
   if (!inspectServerEnv().success)
-    return NextResponse.json(
+    return noStoreJson(
       {
         error: {
           code: "CONFIGURATION_INVALID",
@@ -19,7 +19,7 @@ export async function GET() {
     if (!pool) throw new Error("DATABASE_URL is not configured");
     await pool.query("select 1");
   } catch {
-    return NextResponse.json(
+    return noStoreJson(
       {
         error: { code: "DEPENDENCY_UNAVAILABLE", message: "数据库未就绪" },
         requestId,
@@ -30,7 +30,7 @@ export async function GET() {
   try {
     await pingRedis();
   } catch {
-    return NextResponse.json(
+    return noStoreJson(
       {
         error: { code: "DEPENDENCY_UNAVAILABLE", message: "Redis 未就绪" },
         requestId,
@@ -42,7 +42,7 @@ export async function GET() {
   try {
     releaseState = await inspectDatabaseReleaseState();
   } catch {
-    return NextResponse.json(
+    return noStoreJson(
       {
         error: {
           code: "DATABASE_SCHEMA_NOT_READY",
@@ -54,7 +54,7 @@ export async function GET() {
     );
   }
   if (!releaseState.schemaReady)
-    return NextResponse.json(
+    return noStoreJson(
       {
         error: {
           code: "DATABASE_SCHEMA_NOT_READY",
@@ -65,7 +65,7 @@ export async function GET() {
       { status: 503 },
     );
   if (!releaseState.seedReady)
-    return NextResponse.json(
+    return noStoreJson(
       {
         error: {
           code: "DATABASE_SEED_NOT_READY",
@@ -75,5 +75,5 @@ export async function GET() {
       },
       { status: 503 },
     );
-  return NextResponse.json({ data: { status: "ready" }, requestId });
+  return noStoreJson({ data: { status: "ready" }, requestId });
 }

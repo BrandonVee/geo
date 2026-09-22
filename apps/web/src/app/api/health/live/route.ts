@@ -1,3 +1,4 @@
-import { NextResponse } from "next/server";
+import { noStoreJson } from "@/server/http/cache";
+
 export const GET = () =>
-  NextResponse.json({ data: { status: "ok" }, requestId: crypto.randomUUID() });
+  noStoreJson({ data: { status: "ok" }, requestId: crypto.randomUUID() });
