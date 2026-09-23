@@ -4,6 +4,16 @@ import { FrogPublicationClient, frogPriceToCents } from "./client";
 afterEach(() => vi.unstubAllGlobals());
 
 describe("FrogPublicationClient", () => {
+  it.each([
+    "https://frog.test/api",
+    "https://frog.test?tenant=1",
+    "https://user:pass@frog.test",
+  ])("拒绝非 Origin 基础地址 %s", (baseUrl) => {
+    expect(() => new FrogPublicationClient("key", baseUrl)).toThrow(
+      "FROG_PUBLICATION_BASE_URL_INVALID",
+    );
+  });
+
   it("以 multipart/form-data 提交媒体订单并隐藏鉴权实现", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(

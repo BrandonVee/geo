@@ -5,7 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./answerbit-metering": "./src/answerbit-metering.ts"
+    "./answerbit-metering": "./src/answerbit-metering.ts",
+    "./http-origin": "./src/http-origin.ts"
   },
   "scripts": {
     "build": "tsc --noEmit",

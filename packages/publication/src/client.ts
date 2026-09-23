@@ -1,6 +1,7 @@
 import {
   BoundedJsonResponseError,
   discardResponseBody,
+  isHttpOrigin,
   readBoundedJsonResponse,
 } from "@geo/core";
 import { z } from "zod";
@@ -137,11 +138,19 @@ export function frogPriceToCents(price: string) {
 }
 
 export class FrogPublicationClient {
+  private readonly apiKey: string;
+  private readonly baseUrl: string;
+
   constructor(
-    private readonly apiKey = process.env.FROG_PUBLICATION_API_KEY ?? "",
-    private readonly baseUrl = process.env.FROG_PUBLICATION_BASE_URL ??
+    apiKey = process.env.FROG_PUBLICATION_API_KEY ?? "",
+    baseUrl = process.env.FROG_PUBLICATION_BASE_URL ??
       "http://8.138.187.158:8082",
-  ) {}
+  ) {
+    if (!isHttpOrigin(baseUrl))
+      throw new Error("FROG_PUBLICATION_BASE_URL_INVALID");
+    this.apiKey = apiKey;
+    this.baseUrl = baseUrl;
+  }
 
   get configured() {
     return this.apiKey.trim().length > 0;
@@ -306,5 +315,3 @@ export class FrogPublicationClient {
     );
   }
 }
-
-export const frogPublicationClient = new FrogPublicationClient();

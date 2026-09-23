@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { isHttpOrigin } from "@geo/core/http-origin";
 import { z } from "zod";
 
 const databaseUrlSchema = z
@@ -29,24 +30,6 @@ const encryptionKeySchema = z.string().refine(
       "APP_ENCRYPTION_KEY must be a canonical base64 encoded 32-byte key",
   },
 );
-
-const isHttpOrigin = (value: string) => {
-  try {
-    const url = new URL(value);
-    return (
-      ["http:", "https:"].includes(url.protocol) &&
-      url.pathname === "/" &&
-      !value.includes("?") &&
-      !value.includes("#") &&
-      !url.search &&
-      !url.hash &&
-      !url.username &&
-      !url.password
-    );
-  } catch {
-    return false;
-  }
-};
 
 const httpOriginSchema = (name: string, fallback: string) =>
   z
@@ -99,18 +82,14 @@ const runtimeEnvSchema = databaseEnvSchema.extend({
     .default("development"),
   APP_VERSION: z.string().trim().min(1).max(128).default("development"),
   APP_ENCRYPTION_KEY: encryptionKeySchema,
-  ANSWERBIT_BASE_URL: z
-    .url()
-    .default("https://answerbit.qq.com")
-    .refine((value) => ["http:", "https:"].includes(new URL(value).protocol), {
-      message: "ANSWERBIT_BASE_URL must use HTTP or HTTPS",
-    }),
-  FROG_PUBLICATION_BASE_URL: z
-    .url()
-    .default("http://8.138.187.158:8082")
-    .refine((value) => ["http:", "https:"].includes(new URL(value).protocol), {
-      message: "FROG_PUBLICATION_BASE_URL must use HTTP or HTTPS",
-    }),
+  ANSWERBIT_BASE_URL: httpOriginSchema(
+    "ANSWERBIT_BASE_URL",
+    "https://answerbit.qq.com",
+  ),
+  FROG_PUBLICATION_BASE_URL: httpOriginSchema(
+    "FROG_PUBLICATION_BASE_URL",
+    "http://8.138.187.158:8082",
+  ),
   FROG_PUBLICATION_API_KEY: z.string().trim().default(""),
 });
 

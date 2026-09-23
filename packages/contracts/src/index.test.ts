@@ -6,6 +6,7 @@ import {
   adminCreateAnswerBitBrandSchema,
   adminCreateUserSchema,
   adminSetAnswerBitCredentialSchema,
+  adminSetFrogCredentialSchema,
   adminUpdateAnswerBitBrandIconSchema,
   adminUpdateAnswerBitBrandSchema,
   adminUpdateUserSchema,
@@ -21,6 +22,25 @@ const pngBase64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 
 describe("平台资源管理契约", () => {
+  it("小青蛙配置只接受 HTTP(S) Origin", () => {
+    expect(
+      adminSetFrogCredentialSchema.safeParse({
+        baseUrl: "https://frog.example.com",
+        apiKey: "secret",
+      }).success,
+    ).toBe(true);
+    for (const baseUrl of [
+      "https://frog.example.com/api",
+      "https://frog.example.com?tenant=1",
+      "https://user:pass@frog.example.com",
+      "ftp://frog.example.com",
+    ])
+      expect(
+        adminSetFrogCredentialSchema.safeParse({ baseUrl, apiKey: "secret" })
+          .success,
+      ).toBe(false);
+  });
+
   it("余额流水支持按企业、用户、资产和操作筛选", () => {
     expect(
       balanceTransactionQuerySchema.parse({

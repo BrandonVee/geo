@@ -134,6 +134,23 @@ describe("运行环境校验", () => {
     expect(parsed.success).toBe(false);
   });
 
+  it.each([
+    ["AnswerBit 路径", { ANSWERBIT_BASE_URL: "https://answerbit.test/api" }],
+    [
+      "AnswerBit 查询参数",
+      { ANSWERBIT_BASE_URL: "https://answerbit.test?tenant=1" },
+    ],
+    [
+      "小青蛙凭证",
+      { FROG_PUBLICATION_BASE_URL: "https://user:pass@frog.test" },
+    ],
+    ["小青蛙片段", { FROG_PUBLICATION_BASE_URL: "https://frog.test#api" }],
+  ])("拒绝包含%s的上游基础地址", (_name, override) => {
+    expect(() => workerEnv({ ...base, ...override })).toThrow(
+      /HTTP\(S\) origin/,
+    );
+  });
+
   it("拒绝非 Redis 协议的缓存地址", () => {
     const parsed = webEnvSchema.safeParse({
       ...base,

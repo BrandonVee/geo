@@ -12,6 +12,8 @@
 - [故障处置](#故障处置)
 - [安全检查](#安全检查)
 
+<a id="deployment_units"></a>
+
 ## 部署单元
 
 生产环境至少包含：
@@ -23,7 +25,7 @@
 5. 每个版本执行一次的数据库发布任务，使用独立迁移身份；
 6. TLS 终止与反向代理，将公共流量只转发到 Web。
 
-Web 与 Worker 应使用同一数据库、AnswerBit 地址和规范 Base64 编码的 32 字节加密主密钥；Web 另外通过 `REDIS_URL` 接入 Redis。小青蛙聚合发布在部署完成后由平台管理员进入“发布履约”填写 API 地址和 Key，系统验证后把 Key 加密保存到 PostgreSQL，Web 与 Worker 通过共享数据库和 `APP_ENCRYPTION_KEY` 使用同一配置。`FROG_PUBLICATION_BASE_URL` 与 `FROG_PUBLICATION_API_KEY` 只为旧部署兼容保留；数据库尚无网页配置时才回退使用。`APP_URL`、`BETTER_AUTH_URL`、trusted origins 必须配置为不含路径、查询参数、凭证或片段的生产 HTTP(S) Origin；`NODE_ENV=production` 以启用安全 Cookie。Web 启动路径统一读取 `packages/config` 的 Web schema，Worker 启动时读取不含认证与 Redis 字段的 Worker schema；数据库/Redis 协议、密钥编码、URL、可信 Origin 和版本标识不合法时不得进入正常服务。
+Web 与 Worker 应使用同一数据库、AnswerBit 地址和规范 Base64 编码的 32 字节加密主密钥；Web 另外通过 `REDIS_URL` 接入 Redis。小青蛙聚合发布在部署完成后由平台管理员进入“发布履约”填写 API 地址和 Key，系统验证后把 Key 加密保存到 PostgreSQL，Web 与 Worker 通过共享数据库和 `APP_ENCRYPTION_KEY` 使用同一配置。`FROG_PUBLICATION_BASE_URL` 与 `FROG_PUBLICATION_API_KEY` 只为旧部署兼容保留；数据库尚无网页配置时才回退使用。`APP_URL`、`BETTER_AUTH_URL`、trusted origins、`ANSWERBIT_BASE_URL` 与 `FROG_PUBLICATION_BASE_URL` 都必须配置为不含路径、查询参数、凭证或片段的 HTTP(S) Origin；网页保存的小青蛙地址使用相同规则，防止 operation 路径覆盖配置路径或凭证混入目标地址。`NODE_ENV=production` 以启用安全 Cookie。Web 启动路径统一读取 `packages/config` 的 Web schema，Worker 启动时读取不含认证与 Redis 字段的 Worker schema；数据库/Redis 协议、密钥编码、URL、可信 Origin 和版本标识不合法时不得进入正常服务。
 
 单机自托管可直接运行 `pnpm install:docker`，由交互式引导生成 `.env.production` 并使用 `docker-compose.production.yml` 构建和启动。该 Compose 支持内置 PostgreSQL/Redis 与外部托管连接两种模式，详细步骤见 [Docker 安装引导](./docker_installation.md)。
 

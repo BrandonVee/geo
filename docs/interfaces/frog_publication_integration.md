@@ -4,7 +4,7 @@
 
 ## 配置与上游接口
 
-平台管理员在 `/admin?section=publications` 的“小青蛙 API 接入设置”中填写基础地址和 API Key。`PUT /v1/admin/publication-provider-configuration` 保存前并行验证 `/api/geo/get_balance`，以及网站媒体与自媒体的 `media_list`、`get_field`、`order_info` 七类安全读取能力；订单查询使用不存在的探测 ID，不创建投稿或改变订单。任一接口拒绝或响应不符合契约时都不写入配置。全部通过后使用 `APP_ENCRYPTION_KEY` 和固定平台 AAD 做 AES-256-GCM 加密，保存到单例表 `platform_frog_credentials`；读取接口只返回 Key 掩码、版本、来源与健康时间。Web 与 Worker 每次执行聚合发布业务时从同一数据库配置解析客户端，因此保存或轮换后无需分别修改容器环境变量。
+平台管理员在 `/admin?section=publications` 的“小青蛙 API 接入设置”中填写基础地址和 API Key。基础地址必须是无路径、查询参数、凭证或片段的 HTTP(S) Origin。`PUT /v1/admin/publication-provider-configuration` 保存前并行验证 `/api/geo/get_balance`，以及网站媒体与自媒体的 `media_list`、`get_field`、`order_info` 七类安全读取能力；订单查询使用不存在的探测 ID，不创建投稿或改变订单。任一接口拒绝或响应不符合契约时都不写入配置。全部通过后使用 `APP_ENCRYPTION_KEY` 和固定平台 AAD 做 AES-256-GCM 加密，保存到单例表 `platform_frog_credentials`；读取接口只返回 Key 掩码、版本、来源与健康时间。Web 与 Worker 每次执行聚合发布业务时从同一数据库配置解析客户端，因此保存或轮换后无需分别修改容器环境变量。
 
 `FROG_PUBLICATION_BASE_URL` 和 `FROG_PUBLICATION_API_KEY` 仅作为旧部署兼容回退：数据库尚无网页配置时继续生效，网页保存后由数据库配置优先。默认基础地址为 Apifox 当前接口定义中的 `http://8.138.187.158:8082`。完整 Key 不进入浏览器读取响应、日志或明文数据库字段。没有数据库配置且环境 Key 为空时，租户端只显示人工发布渠道并跳过上游同步；任一种来源有效时只显示聚合渠道。服务端在扣款前再次拒绝未配置 Key 的聚合渠道请求。
 

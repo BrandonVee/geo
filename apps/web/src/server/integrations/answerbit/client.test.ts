@@ -4,6 +4,16 @@ import { AnswerBitClient } from "./client";
 import { AnswerBitError } from "./errors";
 afterEach(() => vi.unstubAllGlobals());
 describe("AnswerBitClient", () => {
+  it.each([
+    "https://answerbit.test/api",
+    "https://answerbit.test?tenant=1",
+    "https://user:pass@answerbit.test",
+  ])("拒绝非 Origin 基础地址 %s", (baseUrl) => {
+    expect(() => new AnswerBitClient("key", baseUrl)).toThrow(
+      "ANSWERBIT_BASE_URL_INVALID",
+    );
+  });
+
   it("解析业务响应并发送鉴权头", async () => {
     const fetchMock = vi
       .fn()

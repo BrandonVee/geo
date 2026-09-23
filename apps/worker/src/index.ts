@@ -1,6 +1,5 @@
 import {
   FrogPublicationClient,
-  frogPublicationClient,
   loadFrogPublicationChannels,
   reconcilePublicationOrders,
 } from "@geo/publication";
@@ -1935,7 +1934,10 @@ async function processPublicationReconciliation() {
           ),
           configuration.baseUrl,
         )
-      : frogPublicationClient;
+      : new FrogPublicationClient(
+          runtimeEnv.FROG_PUBLICATION_API_KEY,
+          runtimeEnv.FROG_PUBLICATION_BASE_URL,
+        );
   if (!client.configured) return { skipped: true };
   let channelSyncError: unknown;
   try {

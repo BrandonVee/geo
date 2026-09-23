@@ -6,7 +6,7 @@
 
 ## 固定 TeamID 与统一凭证
 
-上游基础地址由 `ANSWERBIT_BASE_URL` 配置，默认值为 `https://answerbit.qq.com`。平台管理员在 `/admin`“腾讯接入”只维护一组配置：固定 Tencent TeamID 和一把 API Key。系统直接调用代码中已接入的 AnswerBit OpenAPI，不在本地再配置 operation 白名单。
+上游基础地址由 `ANSWERBIT_BASE_URL` 配置，默认值为 `https://answerbit.qq.com`，且必须是无路径、查询参数、凭证或片段的 HTTP(S) Origin。平台管理员在 `/admin`“腾讯接入”只维护一组配置：固定 Tencent TeamID 和一把 API Key。系统直接调用代码中已接入的 AnswerBit OpenAPI，不在本地再配置 operation 白名单。
 
 统一配置保存在 `platform_answerbit_credentials`。API Key 使用 `APP_ENCRYPTION_KEY` 和固定平台 AAD 做 AES-256-GCM 加密；读取接口只返回掩码、版本和健康时间。保存或轮换前必须实际调用 `/geo/query/brand` 校验 TeamID 与 Key。腾讯官方控制台是 Key 最终权限边界；平台不保存管理员选择的子集。TeamID 首次配置后固定不可更改，只允许轮换 API Key。
 

@@ -1,3 +1,4 @@
+import { isHttpOrigin } from "@geo/core/http-origin";
 import { z } from "zod";
 export * from "./answerbit-response";
 export const organizationSchema = z.object({
@@ -938,8 +939,8 @@ export const adminSetFrogCredentialSchema = z
       .url()
       .max(2000)
       .refine(
-        (value) => ["http:", "https:"].includes(new URL(value).protocol),
-        "小青蛙 API 地址必须使用 HTTP 或 HTTPS",
+        isHttpOrigin,
+        "小青蛙 API 地址必须是无路径、查询参数、凭证或片段的 HTTP(S) Origin",
       ),
     apiKey: z.string().trim().min(1).max(2048),
   })

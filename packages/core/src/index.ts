@@ -41,6 +41,7 @@ export {
   type AnswerBitEnvelope,
 } from "./answerbit-envelope";
 export { InvalidSecretEnvelopeError, SecretCipher } from "./secret-cipher";
+export { isHttpOrigin } from "./http-origin";
 export const createRequestId = () => randomUUID();
 export const platformAnswerBitCredentialAad = "platform-answerbit";
 export const platformFrogCredentialAad = "platform-frog-publication";

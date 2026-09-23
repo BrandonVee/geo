@@ -3,6 +3,7 @@ import {
   BoundedJsonResponseError,
   discardResponseBody,
   InvalidAnswerBitEnvelopeError,
+  isHttpOrigin,
   parseAnswerBitEnvelope,
   readBoundedJsonResponse,
   type AnswerBitOperation,
@@ -21,11 +22,17 @@ const retryAfterMs = (value: string | null) => {
   return Number.isNaN(instant) ? undefined : Math.max(0, instant - Date.now());
 };
 export class AnswerBitClient {
+  private readonly apiKey: string;
+  private readonly baseUrl: string;
+
   constructor(
-    private readonly apiKey: string,
-    private readonly baseUrl = process.env.ANSWERBIT_BASE_URL ??
-      "https://answerbit.qq.com",
-  ) {}
+    apiKey: string,
+    baseUrl = process.env.ANSWERBIT_BASE_URL ?? "https://answerbit.qq.com",
+  ) {
+    if (!isHttpOrigin(baseUrl)) throw new Error("ANSWERBIT_BASE_URL_INVALID");
+    this.apiKey = apiKey;
+    this.baseUrl = baseUrl;
+  }
   async post<T>(
     operation: AnswerBitOperation,
     payload: unknown,
