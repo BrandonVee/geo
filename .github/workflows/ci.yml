@@ -102,6 +102,10 @@ jobs:
         run: pnpm --filter @geo/db test
         env:
           PUBLICATION_DB_TESTS: "1"
+      - name: Run content document PostgreSQL regressions
+        run: pnpm --filter @geo/web exec vitest run src/server/repositories/content-documents.integration.test.ts
+        env:
+          CONTENT_DOCUMENT_DB_TESTS: "1"
       - name: Build Web smoke target
         run: pnpm --filter @geo/web build
       - name: Run Web process smoke test

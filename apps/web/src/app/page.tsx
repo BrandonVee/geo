@@ -18,9 +18,6 @@ export default function Home() {
           </span>
         </a>
         <div className="saas-home-nav-actions">
-          <span className="saas-home-service-state">
-            <i aria-hidden="true" /> 服务正常
-          </span>
           <ThemeToggle />
           <a className="saas-home-login" href="/sign-in">
             登录工作台

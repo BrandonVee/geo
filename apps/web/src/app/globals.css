@@ -5011,14 +5011,6 @@ html[data-theme="dark"] .saas-home {
   align-items: center;
   gap: 10px;
 }
-.saas-home-service-state {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  color: var(--home-muted);
-  font-size: 12px;
-}
-.saas-home-service-state i,
 .saas-preview-live::before {
   width: 7px;
   height: 7px;
@@ -5315,9 +5307,6 @@ html[data-theme="dark"] .saas-home {
   }
 }
 @media (max-width: 720px) {
-  .saas-home-service-state {
-    display: none;
-  }
   .saas-home-brand small {
     display: none;
   }

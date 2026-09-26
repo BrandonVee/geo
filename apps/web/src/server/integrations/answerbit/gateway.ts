@@ -1,10 +1,12 @@
-import { answerbitApiCalls, db } from "@geo/db";
+import { answerbitApiCalls, db, type DatabaseTransaction } from "@geo/db";
+import { sql } from "drizzle-orm";
 import type { AnswerBitOperation } from "@geo/core";
 import {
   resolveAnswerBitCredential,
   type AnswerBitCredentialSource,
 } from "./credential-resolver";
 import { AnswerBitError } from "./errors";
+import { cachedAnswerBitRead } from "./read-cache";
 import {
   createBrand,
   createBrandBundle,
@@ -81,9 +83,24 @@ type CredentialSource = string | AnswerBitCredentialSource;
 
 async function recordApiCall(
   values: typeof answerbitApiCalls.$inferInsert,
+  tx?: DatabaseTransaction,
 ): Promise<void> {
   try {
-    await db.insert(answerbitApiCalls).values(values);
+    if (tx) {
+      await tx.execute(sql.raw("SAVEPOINT answerbit_api_call_log"));
+      try {
+        await tx.insert(answerbitApiCalls).values(values);
+        await tx.execute(sql.raw("RELEASE SAVEPOINT answerbit_api_call_log"));
+      } catch (error) {
+        await tx.execute(
+          sql.raw("ROLLBACK TO SAVEPOINT answerbit_api_call_log"),
+        );
+        await tx.execute(sql.raw("RELEASE SAVEPOINT answerbit_api_call_log"));
+        throw error;
+      }
+    } else {
+      await db.insert(answerbitApiCalls).values(values);
+    }
   } catch (error) {
     console.error(
       JSON.stringify({
@@ -102,6 +119,7 @@ async function loggedCall<T>(
   operation: AnswerBitOperation,
   context: CallContext,
   execute: () => Promise<T>,
+  tx?: DatabaseTransaction,
 ) {
   const startedAt = performance.now();
   const apiCallContext = {
@@ -112,28 +130,34 @@ async function loggedCall<T>(
   };
   try {
     const result = await execute();
-    await recordApiCall({
-      ...apiCallContext,
-      operation,
-      status: "success",
-      answerbitCode: 0,
-      httpStatus: 200,
-      durationMs: Math.round(performance.now() - startedAt),
-    });
+    await recordApiCall(
+      {
+        ...apiCallContext,
+        operation,
+        status: "success",
+        answerbitCode: 0,
+        httpStatus: 200,
+        durationMs: Math.round(performance.now() - startedAt),
+      },
+      tx,
+    );
     return result;
   } catch (error) {
     const normalized = error instanceof AnswerBitError ? error : undefined;
-    await recordApiCall({
-      ...apiCallContext,
-      operation,
-      status: normalized?.kind === "timeout" ? "timeout" : "failed",
-      answerbitCode: normalized?.businessCode,
-      httpStatus: normalized?.httpStatus,
-      errorCode: normalized
-        ? `ANSWERBIT_${normalized.kind.toUpperCase()}`
-        : "ANSWERBIT_UNKNOWN",
-      durationMs: Math.round(performance.now() - startedAt),
-    });
+    await recordApiCall(
+      {
+        ...apiCallContext,
+        operation,
+        status: normalized?.kind === "timeout" ? "timeout" : "failed",
+        answerbitCode: normalized?.businessCode,
+        httpStatus: normalized?.httpStatus,
+        errorCode: normalized
+          ? `ANSWERBIT_${normalized.kind.toUpperCase()}`
+          : "ANSWERBIT_UNKNOWN",
+        durationMs: Math.round(performance.now() - startedAt),
+      },
+      tx,
+    );
     throw error;
   }
 }
@@ -143,19 +167,26 @@ async function credentialCall<T>(
   source: CredentialSource,
   context: CallContext,
   execute: (apiKey: string) => Promise<T>,
+  cachePayload?: unknown,
 ) {
-  if (typeof source === "string")
-    return loggedCall(operation, context, () => execute(source));
-  const credential = await resolveAnswerBitCredential(
-    source,
-    operation,
-    context.brandId,
-  );
-  return loggedCall(
-    operation,
-    { ...context, connectionId: credential.connectionId },
-    () => execute(credential.apiKey),
-  );
+  const credential =
+    typeof source === "string"
+      ? { apiKey: source, connectionId: context.connectionId }
+      : await resolveAnswerBitCredential(source, operation, context.brandId);
+  const logContext = { ...context, connectionId: credential.connectionId };
+  const call = (tx?: DatabaseTransaction) =>
+    loggedCall(operation, logContext, () => execute(credential.apiKey), tx);
+  return cachePayload === undefined
+    ? call()
+    : cachedAnswerBitRead({
+        operation,
+        organizationId: context.organizationId,
+        brandId: context.brandId,
+        actorUserId: context.actorUserId,
+        apiKey: credential.apiKey,
+        payload: cachePayload,
+        execute: call,
+      });
 }
 export const queryBrandsLogged = (
   apiKey: CredentialSource,
@@ -246,40 +277,65 @@ export const queryDashboardMetricsLogged = (
   payload: Parameters<typeof queryDashboardMetrics>[1],
   context: CallContext,
 ) =>
-  credentialCall("/geo/base/dashboard", apiKey, context, (resolvedApiKey) =>
-    queryDashboardMetrics(resolvedApiKey, payload, context.requestId),
+  credentialCall(
+    "/geo/base/dashboard",
+    apiKey,
+    context,
+    (resolvedApiKey) =>
+      queryDashboardMetrics(resolvedApiKey, payload, context.requestId),
+    payload,
   );
 export const queryExposureTrendsLogged = (
   apiKey: CredentialSource,
   payload: Parameters<typeof queryExposureTrends>[1],
   context: CallContext,
 ) =>
-  credentialCall("/geo/exposure/trends", apiKey, context, (resolvedApiKey) =>
-    queryExposureTrends(resolvedApiKey, payload, context.requestId),
+  credentialCall(
+    "/geo/exposure/trends",
+    apiKey,
+    context,
+    (resolvedApiKey) =>
+      queryExposureTrends(resolvedApiKey, payload, context.requestId),
+    payload,
   );
 export const queryScoreTrendsLogged = (
   apiKey: CredentialSource,
   payload: Parameters<typeof queryScoreTrends>[1],
   context: CallContext,
 ) =>
-  credentialCall("/geo/score/trends", apiKey, context, (resolvedApiKey) =>
-    queryScoreTrends(resolvedApiKey, payload, context.requestId),
+  credentialCall(
+    "/geo/score/trends",
+    apiKey,
+    context,
+    (resolvedApiKey) =>
+      queryScoreTrends(resolvedApiKey, payload, context.requestId),
+    payload,
   );
 export const queryExposureRankLogged = (
   apiKey: CredentialSource,
   payload: Parameters<typeof queryExposureRank>[1],
   context: CallContext,
 ) =>
-  credentialCall("/geo/exposure/rank", apiKey, context, (resolvedApiKey) =>
-    queryExposureRank(resolvedApiKey, payload, context.requestId),
+  credentialCall(
+    "/geo/exposure/rank",
+    apiKey,
+    context,
+    (resolvedApiKey) =>
+      queryExposureRank(resolvedApiKey, payload, context.requestId),
+    payload,
   );
 export const queryScoreRankLogged = (
   apiKey: CredentialSource,
   payload: Parameters<typeof queryScoreRank>[1],
   context: CallContext,
 ) =>
-  credentialCall("/geo/score/rank", apiKey, context, (resolvedApiKey) =>
-    queryScoreRank(resolvedApiKey, payload, context.requestId),
+  credentialCall(
+    "/geo/score/rank",
+    apiKey,
+    context,
+    (resolvedApiKey) =>
+      queryScoreRank(resolvedApiKey, payload, context.requestId),
+    payload,
   );
 export const queryFilterPlatformsLogged = (
   apiKey: CredentialSource,
@@ -292,6 +348,7 @@ export const queryFilterPlatformsLogged = (
     context,
     (resolvedApiKey) =>
       queryFilterPlatforms(resolvedApiKey, teamId, context.requestId),
+    { teamId },
   );
 export const queryTitlesLogged = (
   apiKey: CredentialSource,
@@ -398,8 +455,13 @@ export const queryArticleTagsLogged = (
   tagType: 1 | 2 | undefined,
   context: CallContext,
 ) =>
-  credentialCall("/geo/article/tag/get", apiKey, context, (resolvedApiKey) =>
-    queryArticleTags(resolvedApiKey, teamId, tagType, context.requestId),
+  credentialCall(
+    "/geo/article/tag/get",
+    apiKey,
+    context,
+    (resolvedApiKey) =>
+      queryArticleTags(resolvedApiKey, teamId, tagType, context.requestId),
+    { teamId, tagType },
   );
 export const queryTasksLogged = (
   apiKey: CredentialSource,
@@ -423,32 +485,52 @@ export const queryDomainRankLogged = (
   payload: Parameters<typeof queryDomainRank>[1],
   context: CallContext,
 ) =>
-  credentialCall("/geo/domain/rank", apiKey, context, (resolvedApiKey) =>
-    queryDomainRank(resolvedApiKey, payload, context.requestId),
+  credentialCall(
+    "/geo/domain/rank",
+    apiKey,
+    context,
+    (resolvedApiKey) =>
+      queryDomainRank(resolvedApiKey, payload, context.requestId),
+    payload,
   );
 export const queryArticleRankLogged = (
   apiKey: CredentialSource,
   payload: Parameters<typeof queryArticleRank>[1],
   context: CallContext,
 ) =>
-  credentialCall("/geo/article/rank", apiKey, context, (resolvedApiKey) =>
-    queryArticleRank(resolvedApiKey, payload, context.requestId),
+  credentialCall(
+    "/geo/article/rank",
+    apiKey,
+    context,
+    (resolvedApiKey) =>
+      queryArticleRank(resolvedApiKey, payload, context.requestId),
+    payload,
   );
 export const queryPromptTrendsLogged = (
   apiKey: CredentialSource,
   payload: Parameters<typeof queryPromptTrends>[1],
   context: CallContext,
 ) =>
-  credentialCall("/geo/prompt/trends", apiKey, context, (resolvedApiKey) =>
-    queryPromptTrends(resolvedApiKey, payload, context.requestId),
+  credentialCall(
+    "/geo/prompt/trends",
+    apiKey,
+    context,
+    (resolvedApiKey) =>
+      queryPromptTrends(resolvedApiKey, payload, context.requestId),
+    payload,
   );
 export const queryTitleRankLogged = (
   apiKey: CredentialSource,
   payload: Parameters<typeof queryTitleRank>[1],
   context: CallContext,
 ) =>
-  credentialCall("/geo/title/rank", apiKey, context, (resolvedApiKey) =>
-    queryTitleRank(resolvedApiKey, payload, context.requestId),
+  credentialCall(
+    "/geo/title/rank",
+    apiKey,
+    context,
+    (resolvedApiKey) =>
+      queryTitleRank(resolvedApiKey, payload, context.requestId),
+    payload,
   );
 export const traceArticleLogged = (
   apiKey: CredentialSource,
@@ -489,6 +571,7 @@ export const queryArticleTemplatesLogged = (
     context,
     (resolvedApiKey) =>
       queryArticleTemplates(resolvedApiKey, localCode, context.requestId),
+    { localCode },
   );
 export const createArticleLogged = (
   apiKey: CredentialSource,

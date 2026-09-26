@@ -21,7 +21,7 @@ export const runtimeTaskDefinitions = {
   },
   "tencent-enterprise-sync": {
     label: "腾讯企业同步",
-    expectedIntervalSeconds: 5 * 60,
+    expectedIntervalSeconds: 24 * 60 * 60,
     timeoutSeconds: 4 * 60,
   },
 } as const;

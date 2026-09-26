@@ -24,7 +24,7 @@
 | Web 应用       | Next.js 16、React 19，`apps/web`         | 页面、Better Auth 认证、REST API、应用服务与 AnswerBit 同步调用 |
 | Worker         | Node.js、pg-boss，`apps/worker`          | 文章生成、CSV 导出、通知评估、腾讯目录同步、周期维护和运行心跳  |
 | 数据库发布任务 | Node.js、Drizzle，`packages/db`          | 执行迁移、记录版本、基础种子与 RLS 验证并推进数据库发布版本     |
-| PostgreSQL     | Drizzle schema/migrations，`packages/db` | 业务持久化、事务、幂等账本、队列存储和 RLS                      |
+| PostgreSQL     | Drizzle schema/migrations，`packages/db` | 业务持久化、只读分析缓存、事务、幂等账本、队列存储和 RLS                      |
 | Redis          | Better Auth secondary storage            | 分布式登录限流与会话缓存；持久 Session 仍保存在 PostgreSQL      |
 | 契约包         | Zod，`packages/contracts`                | Web 与 API 共用的输入输出约束                                   |
 | 核心包         | `packages/core`                          | 权限判断、密钥加解密、请求 ID、CSV、通知与周期任务健康判定工具  |
@@ -55,7 +55,7 @@ HTTP Route 仅处理协议、认证上下文、输入校验和响应状态；业
 - 每 5 分钟恢复过期的文章生成与报告导出任务；
 - 每 15 分钟评估企业通知规则；
 - 每 5 分钟同步聚合发布待履约及售后订单，按最久未同步选取最多 100 条，不依赖页面读取；未配置 Key 时跳过上游工作；
-- 每 5 分钟核对固定 TeamID 的腾讯品牌目录，自动新增或更新企业投影，并在连续两次缺失后关闭腾讯侧已删除的企业投影。
+- 每日核对固定 TeamID 的腾讯品牌目录，自动新增或更新企业投影，并在连续两次缺失后关闭腾讯侧已删除的企业投影。
 
 异步恢复把等待超过 10 分钟或执行超过 15 分钟的业务任务作为候选，但会先读取 pg-boss 状态，仍在等待、重试或执行的队列任务不重投。可安全重试的任务回到 `queued`；已扣费且未保存上游 ArticleID 的文章任务标记为结果不确定并幂等退款，避免重复创建。文章和报告每次领取都生成 `execution_id`，所有后续写入以该执行租约作为条件，恢复前的迟到 Worker 不能覆盖新执行结果。
 

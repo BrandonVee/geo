@@ -50,6 +50,7 @@ try {
         AND to_regclass('public.content_folders') IS NOT NULL
         AND to_regclass('public.content_documents') IS NOT NULL
         AND to_regclass('public.content_document_versions') IS NOT NULL
+        AND to_regclass('public.answerbit_read_cache') IS NOT NULL
         AND EXISTS (
           SELECT 1 FROM information_schema.columns
           WHERE table_schema = 'public'
@@ -71,7 +72,7 @@ try {
     `)
     ).rows[0]?.complete
   )
-    throw new Error("DATABASE_V4_STRUCTURE_INCOMPLETE");
+    throw new Error("DATABASE_V5_STRUCTURE_INCOMPLETE");
 
   const currentVRevision = currentVersion?.match(/^v([1-9]\d*)$/);
   if (

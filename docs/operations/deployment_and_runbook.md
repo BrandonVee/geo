@@ -45,7 +45,7 @@ docker build --target worker -t REGISTRY/answerbit-geo-worker:VERSION .
 
 镜像构建阶段只使用不可用于运行的占位配置完成静态分析，真实运行 `DATABASE_URL`、迁移 `MIGRATION_DATABASE_URL`、认证密钥、加密主密钥和腾讯地址必须由运行环境注入，禁止写入 build args、镜像层或前端变量。数据库迁移、种子和 RLS 检查不在 Web/Worker 容器启动时自动执行；`MIGRATION_DATABASE_URL` 不得注入 Web 或 Worker。
 
-当前仓库用 `packages/db/drizzle/v1.sql` 表达初始数据库基线，`v2.sql` 增加网页保存的小青蛙平台凭证，`v3.sql` 增加客户价格等级与渠道成本/售价，`v4.sql` 增加品牌文档库、不可变版本、文件夹和发布来源关联，并回填已有成功生成内容。全新环境依次执行 v1—v4；已完整应用旧 0000—0044 迁移链或 `0044_baseline` 的环境依据保留的最终时间戳跳过基线建表，再执行后续版本。版本记录步骤校验当前结构并把 schema 修订推进为 `v4`，种子修订推进为 `v2`。切换前必须确认历史库已经执行 `0044_lively_shard`；不得在发布任务之外手工清空或篡改 `drizzle.__drizzle_migrations`。未完整升级的历史库先使用旧版本补齐迁移。新结构变更继续追加迁移并递增 `vN` 发布修订。
+当前仓库用 `packages/db/drizzle/v1.sql` 表达初始数据库基线，`v2.sql` 增加网页保存的小青蛙平台凭证，`v3.sql` 增加客户价格等级与渠道成本/售价，`v4.sql` 增加品牌文档库、不可变版本、文件夹和发布来源关联，并回填已有成功生成内容，`v5.sql` 增加 AnswerBit 只读数据缓存。全新环境依次执行 v1—v5；已完整应用旧 0000—0044 迁移链或 `0044_baseline` 的环境依据保留的最终时间戳跳过基线建表，再执行后续版本。版本记录步骤校验当前结构并把 schema 修订推进为 `v5`，种子修订推进为 `v2`。切换前必须确认历史库已经执行 `0044_lively_shard`；不得在发布任务之外手工清空或篡改 `drizzle.__drizzle_migrations`。未完整升级的历史库先使用旧版本补齐迁移。新结构变更继续追加迁移并递增 `vN` 发布修订。
 
 ## 持续集成门禁
 
@@ -95,7 +95,7 @@ docker run --rm \
 - `runtime_heartbeats` 记录每个 Worker 实例的启动时间、版本与最近心跳。Worker 每 30 秒更新一次；平台控制台只把 90 秒内的记录计为在线，启用通知规则超过 30 分钟未评估时标记过期。优雅退出会删除当前实例行，异常退出由心跳超时识别；7 天前的旧 Worker 记录在下次启动时清理。
 - `runtime_task_statuses` 记录计费维护、异步任务恢复、通知评估、腾讯企业同步和聚合发布同步的当前 run ID、执行实例、最近启动/成功/失败、耗时和稳定错误码。聚合发布同步每 5 分钟核对订单，同时只在渠道缓存超过 30 分钟或网页 Key 更新后同步一次完整渠道目录；页面分页读取不会触发目录刷新。平台将失败、执行超时、超过两个调度周期未成功和未上报显示为异常；旧执行完成时因 run ID 不匹配不能覆盖新状态。`runtime-task-tracking.failed` 只表示观测写入失败，原任务仍按自己的结果完成或失败。
 - 平台总览直接统计文章与报告的等待、执行、24 小时失败和过期数量；`queued` 超过 10 分钟或 `running` 超过 15 分钟视为过期。`async-job-reconciliation.completed` 应至少每 5 分钟出现一次，`requeuedArticles`、`uncertainArticles`、`requeuedReports`、`activeJobs`、`races` 与 `errors` 用于判断恢复效果；`ASYNC_JOB_RECONCILIATION_PARTIAL_FAILURE` 或 `async-job-reconciliation.item-failed` 需要按任务 ID 排查。
-- pg-boss 表与 Worker 日志用于判断文章、报告、通知、腾讯企业自动同步和维护队列是否积压；`tencent-enterprise-sync.completed` 应至少每 5 分钟出现一次，`last_synced_at` 随成功同步推进；`notification-evaluation.completed` 应至少每 15 分钟出现一次，其 `evaluated`、`emitted`、`failed` 字段用于判断本轮规则覆盖和失败数量，规则表的 `last_evaluated_at`、`last_evaluation_error` 用于定位单条持续检测故障。
+- pg-boss 表与 Worker 日志用于判断文章、报告、通知、腾讯企业自动同步和维护队列是否积压；`tencent-enterprise-sync.completed` 应至少每日出现一次，`last_synced_at` 随成功同步推进；`notification-evaluation.completed` 应至少每 15 分钟出现一次，其 `evaluated`、`emitted`、`failed` 字段用于判断本轮规则覆盖和失败数量，规则表的 `last_evaluated_at`、`last_evaluation_error` 用于定位单条持续检测故障。
 
 建议告警：ready 连续失败、Web 5xx、`database.pool-error`/`job-database.error`、`redis.client-error`、AnswerBit 超时/失败率、Worker 无心跳或队列积压、连接池等待、PostgreSQL 连接占用/锁等待、Redis 内存与连接数、磁盘空间、企业余额异常增长。
 
@@ -148,9 +148,9 @@ Redis 可启用 AOF 并纳入基础设施备份，但它只承载登录限流和
 
 Worker 在线但存在过期异步任务时，先查看“异步任务恢复”任务卡和 `async-job-reconciliation.*` 日志，再核对业务任务的 `status`、`updated_at`、`execution_id`、`queue_job_id` 与 pg-boss 状态。恢复器会跳过仍为 created/retry/active 的队列任务；其他安全任务自动重新投递。`ARTICLE_RECOVERY_UNCERTAIN` 表示文章可能已在腾讯创建但本地没有 ArticleID，系统会退款且不会自动重建，应按调用日志和腾讯后台人工核对后再由用户决定是否新建。不要手工清除正在执行的 `execution_id`，也不要绕过状态机直接修改终态。报告恢复后仍会重新检查有效企业、成员、团队、品牌权限和额度。
 
-通知长时间没有推进时，先确认 `notification-evaluation` 定时任务和消费进程，再按 `notification-evaluation.completed` 的 `failed` 数量查询规则 `last_evaluation_error`。连接失败规则会主动调用品牌目录接口并读取最近调用历史；warning 在配置阈值触发，critical 在 `max(阈值 × 2, 5)` 次连续失败时触发。通知发布受规则级事务锁、唯一事件键和冷却窗口保护，不应通过手工插入通知补偿；根因解除后保留规则启用，等待下一周期重新评估。
+通知长时间没有推进时，先确认 `notification-evaluation` 定时任务和消费进程，再按 `notification-evaluation.completed` 的 `failed` 数量查询规则 `last_evaluation_error`。连接失败规则读取最近 24 小时真实业务调用历史及本地连接状态，不额外调用腾讯目录接口；warning 在配置阈值触发，critical 在 `max(阈值 × 2, 5)` 次连续失败时触发。通知发布受规则级事务锁、唯一事件键和冷却窗口保护，不应通过手工插入通知补偿；根因解除后保留规则启用，等待下一周期重新评估。
 
-腾讯企业目录长时间未更新时，先在“运行与审计”检查 `tencent-enterprise-sync` 最近成功时间、Worker 心跳、队列和 `tencent-enterprise-sync.failed` 日志；恢复 Worker 后会在启动时立即补做一次同步。确需绕过调度核对时，运维人员可调用 `POST /api/v1/admin/answerbit-enterprise-syncs`，该资源不作为日常页面操作。限流、超时、5xx 和非法响应不会覆盖上一次成功目录；401/403 会把当前统一凭证标记为异常，应在平台“腾讯接入”轮换或重新验证 Key。直接在腾讯删除的品牌需要连续两次成功目录核对后才关闭本地企业投影。
+腾讯企业目录长时间未更新时，先在“运行与审计”检查 `tencent-enterprise-sync` 最近成功时间、Worker 心跳、队列和 `tencent-enterprise-sync.failed` 日志；恢复 Worker 后若最近 20 小时没有成功同步，会在启动时补做一次同步。确需绕过调度核对时，运维人员可调用 `POST /api/v1/admin/answerbit-enterprise-syncs`，该资源不作为日常页面操作。限流、超时、5xx 和非法响应不会覆盖上一次成功目录；401/403 会把当前统一凭证标记为异常，应在平台“腾讯接入”轮换或重新验证 Key。直接在腾讯删除的品牌需要连续两次成功目录核对后才关闭本地企业投影。
 
 ## 安全检查
 

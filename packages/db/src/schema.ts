@@ -436,6 +436,22 @@ export const platformAnswerbitBrands = pgTable(
     ),
   ],
 );
+export const answerbitReadCache = pgTable(
+  "answerbit_read_cache",
+  {
+    cacheKey: varchar("cache_key", { length: 64 }).primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id),
+    brandId: varchar("brand_id", { length: 128 }),
+    operation: varchar("operation", { length: 128 }).notNull(),
+    response: jsonb("response").notNull(),
+    responseHash: varchar("response_hash", { length: 64 }).notNull(),
+    checkedAt: timestamp("checked_at", { withTimezone: true }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [index("answerbit_read_cache_expiry_idx").on(t.expiresAt)],
+);
 export const answerbitConnections = pgTable(
   "answerbit_connections",
   {

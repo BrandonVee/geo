@@ -126,3 +126,5 @@ pnpm verify
 CI 还会在全新 PostgreSQL 18 中连续执行两次 `pnpm db:release`，并构建三个 Docker 目标验证非 root 运行。涉及 schema 或 RLS 时，本地也应在已迁移的数据库至少执行一次 `pnpm db:release`。从旧迁移链升级的环境必须先确认旧 `0044_lively_shard` 已执行完成；不要删除或手工改写 `drizzle.__drizzle_migrations`。涉及登录时验证 `/setup` 单次初始化、登录成功、停用用户拒绝登录；涉及余额和发布时验证重复幂等键不会重复扣款或返还。
 
 发布账本的真实 PostgreSQL 回归需先完成 `pnpm db:release`，再运行 `PUBLICATION_DB_TESTS=1 node scripts/run-with-env.mjs pnpm --filter @geo/db test`。测试仅使用新建 UUID 隔离数据并在结束时清理，覆盖并发幂等扣款、退款、零元订单与上游迟到状态；默认单元测试不连接数据库执行这些用例。
+
+文档库的真实 PostgreSQL 回归在完成 `pnpm db:release` 后运行 `CONTENT_DOCUMENT_DB_TESTS=1 node scripts/run-with-env.mjs pnpm --filter @geo/web exec vitest run src/server/repositories/content-documents.integration.test.ts`。测试使用新建 UUID 范围并清理数据，覆盖文档与首版创建、并发版本递增、历史恢复及文件夹品牌隔离；默认测试跳过此用例。

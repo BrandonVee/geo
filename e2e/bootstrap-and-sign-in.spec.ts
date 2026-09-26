@@ -45,6 +45,16 @@ async function expectNoSeriousAccessibilityViolations(
   expect(violations, `${context} 存在严重无障碍问题`).toEqual([]);
 }
 
+test("公共首页不伪报服务健康，健康接口返回实际状态", async ({ page }) => {
+  const response = await page.goto("/");
+  expect(response?.status()).toBe(200);
+  await expect(page.getByText("服务正常", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "登录工作台" })).toBeVisible();
+  const live = await page.request.get("/api/health/live");
+  expect(live.status()).toBe(200);
+  expect(await live.json()).toMatchObject({ data: { status: "ok" } });
+});
+
 test("首次初始化、失败提示、登录和路由守卫形成完整闭环", async ({
   page,
   context,
@@ -115,6 +125,17 @@ test("首次初始化、失败提示、登录和路由守卫形成完整闭环",
   await expect(page).toHaveURL(/\/sign-in$/);
   await page.goto("/admin");
   await expect(page).toHaveURL(/\/sign-in$/);
+  for (const path of [
+    "/api/v1/content-documents",
+    "/api/v1/publication-orders",
+    "/api/v1/balances",
+  ]) {
+    const response = await page.request.get(path);
+    expect(response.status(), path).toBe(401);
+    expect(await response.json(), path).toMatchObject({
+      error: { code: "AUTH_REQUIRED" },
+    });
+  }
   expect(
     contentSecurityPolicyViolations,
     "浏览器报告了 Content Security Policy 违规",

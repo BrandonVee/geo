@@ -23,6 +23,11 @@ vi.mock("./credential-resolver", () => ({
   resolveAnswerBitCredential: vi.fn(),
 }));
 
+vi.mock("./read-cache", () => ({
+  cachedAnswerBitRead: ({ execute }: { execute: () => Promise<unknown> }) =>
+    execute(),
+}));
+
 import {
   queryCreditStatusLogged,
   queryDashboardMetricsLogged,

@@ -9,7 +9,6 @@ import { workerEnvSchema } from "@geo/config";
 import {
   answerBitArticleContentSchema,
   answerBitArticleRankSchema,
-  answerBitBrandListSchema,
   answerBitDashboardMetricsSchema,
   answerBitDomainRankSchema,
   answerBitIdResultSchema,
@@ -54,6 +53,7 @@ import {
 } from "drizzle-orm";
 import {
   answerbitApiCalls,
+  answerbitReadCache,
   answerbitArticleMappings,
   answerbitBrandMappings,
   answerbitConnections,
@@ -166,6 +166,13 @@ async function processTencentEnterpriseSync() {
     console.info(JSON.stringify({ event: "tencent-enterprise-sync.skipped" }));
     return;
   }
+  if (
+    configuration.lastSyncedAt &&
+    Date.now() - configuration.lastSyncedAt.getTime() < 20 * 60 * 60_000
+  ) {
+    console.info(JSON.stringify({ event: "tencent-enterprise-sync.fresh" }));
+    return;
+  }
   const teamId = configuration.teamId;
 
   let actorUserId = configuration.updatedBy;
@@ -209,6 +216,20 @@ async function processTencentEnterpriseSync() {
       expectedKeyVersion: configuration.keyVersion,
       completeDirectory: true,
     });
+    try {
+      await db
+        .delete(answerbitReadCache)
+        .where(
+          lt(
+            answerbitReadCache.checkedAt,
+            new Date(Date.now() - 7 * 24 * 60 * 60_000),
+          ),
+        );
+    } catch {
+      console.error(
+        JSON.stringify({ event: "answerbit-read-cache.prune-failed" }),
+      );
+    }
     if (
       !result.skipped &&
       (result.createdEnterpriseCount > 0 ||
@@ -1613,71 +1634,61 @@ async function processNotificationEvaluation() {
         )
           emitted += 1;
       } else if (rule.type === "connection_failure") {
-        let errorCode = "ANSWERBIT_CONNECTION_FAILED";
-        try {
-          await callAnswerBit(
-            "/geo/query/brand",
-            { team_id: team.teamId },
-            context,
-            15_000,
-            answerBitBrandListSchema,
-          );
-        } catch (error) {
-          errorCode =
-            error instanceof Error ? error.message.slice(0, 128) : errorCode;
-          const selectionFailure = [
-            "ANSWERBIT_KEY_NOT_CONFIGURED",
-            "ANSWERBIT_KEY_SCOPE_MISMATCH",
-            "ANSWERBIT_KEY_PERMISSION_DENIED",
-            "ANSWERBIT_TEAM_SCOPE_MISMATCH",
-          ].includes(errorCode);
-          const teamCredentials = await db
-            .select({
-              connectionId: answerbitCredentialAssignments.connectionId,
-            })
-            .from(answerbitCredentialAssignments)
-            .where(eq(answerbitCredentialAssignments.teamBindingId, team.id));
-          const connectionIds = [
-            ...new Set([
-              team.connectionId,
-              ...teamCredentials.map((credential) => credential.connectionId),
-            ]),
-          ];
-          const checks = connectionIds.length
-            ? await db
-                .select({ status: answerbitApiCalls.status })
-                .from(answerbitApiCalls)
-                .where(
-                  and(
-                    inArray(answerbitApiCalls.connectionId, connectionIds),
-                    eq(answerbitApiCalls.operation, "/geo/query/brand"),
+        const teamCredentials = await db
+          .select({ connectionId: answerbitCredentialAssignments.connectionId })
+          .from(answerbitCredentialAssignments)
+          .where(eq(answerbitCredentialAssignments.teamBindingId, team.id));
+        const connectionIds = [
+          ...new Set([
+            team.connectionId,
+            ...teamCredentials.map((credential) => credential.connectionId),
+          ]),
+        ];
+        const checks = connectionIds.length
+          ? await db
+              .select({
+                status: answerbitApiCalls.status,
+                errorCode: answerbitApiCalls.errorCode,
+              })
+              .from(answerbitApiCalls)
+              .where(
+                and(
+                  eq(answerbitApiCalls.organizationId, rule.organizationId),
+                  inArray(answerbitApiCalls.connectionId, connectionIds),
+                  gte(
+                    answerbitApiCalls.createdAt,
+                    new Date(Date.now() - 24 * 60 * 60_000),
                   ),
-                )
-                .orderBy(desc(answerbitApiCalls.createdAt))
-                .limit(connectionFailureLookbackLimit(rule.threshold))
-            : [];
-          const consecutive = selectionFailure
-            ? rule.threshold
+                ),
+              )
+              .orderBy(desc(answerbitApiCalls.createdAt))
+              .limit(connectionFailureLookbackLimit(rule.threshold))
+          : [];
+        const consecutive =
+          team.status === "invalid"
+            ? Math.max(rule.threshold, countConsecutiveFailures(checks))
             : countConsecutiveFailures(checks);
-          const classification = classifyConnectionFailure(
-            consecutive,
-            rule.threshold,
-          );
-          if (
-            classification.triggered &&
-            (await publishNotification(rule, {
-              severity: classification.severity,
-              title: "AnswerBit 连接连续失败",
-              message: `连接测试已连续失败 ${classification.consecutiveFailures} 次，请检查 API Key、TeamID 与上游服务状态。`,
-              payload: {
-                consecutiveFailures: classification.consecutiveFailures,
-                threshold: rule.threshold,
-                errorCode,
-              },
-            }))
-          )
-            emitted += 1;
-        }
+        const classification = classifyConnectionFailure(
+          consecutive,
+          rule.threshold,
+        );
+        if (
+          classification.triggered &&
+          (await publishNotification(rule, {
+            severity: classification.severity,
+            title: "AnswerBit 连接连续失败",
+            message: `最近业务调用连续失败 ${classification.consecutiveFailures} 次，请检查 API Key、TeamID 与上游服务状态。`,
+            payload: {
+              consecutiveFailures: classification.consecutiveFailures,
+              threshold: rule.threshold,
+              errorCode:
+                team.status === "invalid"
+                  ? (team.lastErrorCode ?? "ANSWERBIT_CONNECTION_INVALID")
+                  : (checks[0]?.errorCode ?? "ANSWERBIT_CONNECTION_FAILED"),
+            },
+          }))
+        )
+          emitted += 1;
       } else {
         if (!rule.brandId || !rule.metric || !rule.windowDays)
           throw new Error("INVALID_METRIC_RULE");
@@ -2050,7 +2061,7 @@ await boss.schedule("async-job-reconciliation", "*/5 * * * *", null, {
   expireInSeconds: 240,
 });
 await boss.schedule("notification-evaluation", "*/15 * * * *");
-await boss.schedule("tencent-enterprise-sync", "*/5 * * * *", null, {
+await boss.schedule("tencent-enterprise-sync", "0 3 * * *", null, {
   retryLimit: 0,
   expireInSeconds: 240,
 });

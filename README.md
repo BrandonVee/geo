@@ -49,9 +49,10 @@ openssl rand -base64 32
 
 - `/dashboard/monitoring`：问题分类、单条/批量问题、启停、改写、移动和删除。
 - `/dashboard/answers`：回答筛选、评分详情、大模型原文、引用域名与文章证据。
-- `/dashboard/content`：公开文章追踪、引用详情、AnswerBit 模板和异步文章生成任务。
+- `/dashboard/content`：通过“AI 生成 / 文档库 / 效果追踪”管理 AnswerBit 模板、异步文章任务、本地文档版本与公开文章追踪。
 - `/dashboard/metering`：AnswerBit 上游订阅、周期配额、积分趋势、品牌排行与计量流水。
-- `/dashboard/billing`：查询腾讯调用积分和发布人民币余额；企业管理员或代理商可把企业余额划分到品牌，并提交媒体发布单。
+- `/dashboard/balances`：查询企业和品牌余额；有划拨权限的企业管理员或代理商可把企业余额划分到品牌。
+- `/dashboard/publication/channels`、`/dashboard/publication/new`、`/dashboard/publication/orders`：分别选择媒体渠道、提交发布单和跟踪履约；旧 `/dashboard/billing` 仅作兼容跳转。
 - `/dashboard/notifications`：企业级积分、连接与核心指标阈值规则，以及按用户隔离的站内已读状态。
 - `/admin`：全局平台管理端，以固定 TeamID/统一 Key 接入为强制第一步，接入后开放腾讯企业直连增删改、自动目录同步、腾讯计量与官方积分扩容、用户类型切换及代理商有效期、企业成员权限、企业余额人工入账、业务功能积分单价、发布渠道价格、发布履约、Worker 与周期任务健康、AnswerBit 调用健康和操作审计。
 
@@ -65,7 +66,7 @@ openssl rand -base64 32
 pnpm worker
 ```
 
-Worker 每 5 分钟执行资源周期维护、异步任务恢复和腾讯企业同步，并每 15 分钟评估站内通知规则。运行心跳、四项周期任务状态以及文章/报告队列健康会展示在平台“运行与审计”。等待超过 10 分钟或执行超过 15 分钟的异步任务会进入恢复检查；执行租约阻止旧 Worker 覆盖新结果，已经扣费但没有腾讯 ArticleID 的不确定文章任务会终止并幂等退款。AnswerBit 接口调用本身不计费；完整业务功能按管理员配置的功能积分单价一次性扣减，功能失败自动返还，异步文章任务同样按品牌积分账户结算。任务、余额流水和通知均以幂等键去重。
+Worker 每 5 分钟执行资源周期维护、异步任务恢复和聚合发布履约同步，每日执行腾讯企业目录同步，并每 15 分钟评估站内通知规则。运行心跳、五项周期任务状态以及文章/报告队列健康会展示在平台“运行与审计”。等待超过 10 分钟或执行超过 15 分钟的异步任务会进入恢复检查；执行租约阻止旧 Worker 覆盖新结果，已经扣费但没有腾讯 ArticleID 的不确定文章任务会终止并幂等退款。AnswerBit 接口调用本身不计费；完整业务功能按管理员配置的功能积分单价一次性扣减，功能失败自动返还，异步文章任务同样按品牌积分账户结算。任务、余额流水和通知均以幂等键去重。
 
 生产部署可从根目录多阶段 Dockerfile 构建非 root 的独立运行镜像和一次性数据库发布镜像：
 
@@ -87,7 +88,7 @@ docker build --target worker -t answerbit-geo-worker:VERSION .
 
 平台管理员可在发布履约台验证并加密保存小青蛙 API Key，查看上游余额与算力；发布单提交时按渠道人民币价格快照从品牌发布余额扣减，聚合订单自动同步、人工渠道由管理员履约，失败和取消会自动返还原品牌余额。
 
-数据库以 `packages/db/drizzle/v1.sql` 初始化 44 张表的完整基线，`v2.sql` 增加网页保存的小青蛙平台凭证，`v3.sql` 增加客户价格等级、采购成本、上游状态与渠道固定售价；`system_release_state` 当前记录 schema `v3`、seed `v2`。v1 基线包含当时的枚举、约束、索引、8 个触发器函数、RLS 与授权，不再重放历史增删过程。基线会创建无登录权限的 `geo_tenant_app` 与 `geo_platform_app` 角色。新增 Repository 事务应分别使用 `withTenantDbContext` 或 `withPlatformDbContext`，上下文通过事务级 `set_config` 注入且在提交后自动清除；迁移账号仅用于迁移与本地开发，不应作为生产 Web 直连账号。旧环境升级前必须完整执行原 0000—0044 迁移链，并保留 `drizzle.__drizzle_migrations`。
+数据库以 `packages/db/drizzle/v1.sql` 初始化 44 张表的完整基线，`v2.sql` 增加网页保存的小青蛙平台凭证，`v3.sql` 增加客户价格等级、采购成本、上游状态与渠道固定售价，`v4.sql` 增加品牌文档库、不可变版本、文件夹及发布来源关联，`v5.sql` 增加 AnswerBit 只读分析缓存；`system_release_state` 当前记录 schema `v5`、seed `v2`。v1 基线包含当时的枚举、约束、索引、8 个触发器函数、RLS 与授权，不再重放历史增删过程。基线会创建无登录权限的 `geo_tenant_app` 与 `geo_platform_app` 角色。新增 Repository 事务应分别使用 `withTenantDbContext` 或 `withPlatformDbContext`，上下文通过事务级 `set_config` 注入且在提交后自动清除；迁移账号仅用于迁移与本地开发，不应作为生产 Web 直连账号。旧环境升级前必须完整执行原 0000—0044 迁移链，并保留 `drizzle.__drizzle_migrations`。
 
 ## 后端分层
 
