@@ -27,8 +27,8 @@
     "@types/node": "latest",
     "@types/pg": "latest",
     "drizzle-kit": "latest",
-    "typescript": "^5.9.3",
-    "vitest": "^4.0.0",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.1",
     "tsx": "latest"
   }
 }
