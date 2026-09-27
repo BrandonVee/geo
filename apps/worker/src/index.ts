@@ -18,7 +18,6 @@ import {
   answerBitAvailableCredits,
   BoundedJsonResponseError,
   type AnswerBitOperation,
-  type BillableFeatureCode,
   classifyConnectionFailure,
   classifyMetricAnomaly,
   connectionFailureLookbackLimit,
@@ -64,11 +63,9 @@ import {
   balanceTransactions,
   brandAccess,
   commitQuota,
-  consumeBalance,
   contentDocuments,
   contentDocumentVersions,
   db,
-  getFeaturePointCost,
   memberRoles,
   notificationRules,
   notifications,
@@ -79,7 +76,6 @@ import {
   platformFrogCredentials,
   platformUserRoles,
   pool,
-  restoreBalance,
   releaseQuota,
   reportExports,
   roles,
@@ -101,6 +97,7 @@ import {
   InvalidAnswerBitDataError,
   parseAnswerBitData,
 } from "./answerbit-response";
+import { consumeFeaturePoints, restoreFeaturePoints } from "./feature-billing";
 import {
   InvalidArticleJobPayloadError,
   parseArticleJobPayload,
@@ -566,57 +563,6 @@ async function callAnswerBit<T>(
   }
 }
 
-async function consumeFeaturePoints(
-  featureCode: BillableFeatureCode,
-  featureName: string,
-  context: {
-    organizationId: string;
-    brandId: string;
-    actorUserId?: string;
-    referenceId: string;
-  },
-) {
-  const points = await getFeaturePointCost(featureCode);
-  if (points <= 0) return 0;
-  const consumed = await consumeBalance({
-    organizationId: context.organizationId,
-    brandId: context.brandId,
-    asset: "answerbit_points",
-    amount: points,
-    referenceType: "feature_usage",
-    referenceId: context.referenceId,
-    idempotencyKey: `feature:${featureCode}:${context.referenceId}:consume`,
-    reason: `${featureName}功能计费`,
-    actorUserId: context.actorUserId,
-  });
-  if (!consumed.ok) throw new Error("ANSWERBIT_POINTS_INSUFFICIENT");
-  return "transaction" in consumed ? consumed.transaction.amount : 0;
-}
-
-async function restoreFeaturePoints(
-  featureCode: BillableFeatureCode,
-  featureName: string,
-  points: number,
-  context: {
-    organizationId: string;
-    brandId: string;
-    actorUserId?: string;
-    referenceId: string;
-  },
-) {
-  if (points <= 0) return;
-  await restoreBalance({
-    organizationId: context.organizationId,
-    brandId: context.brandId,
-    asset: "answerbit_points",
-    amount: points,
-    referenceType: "feature_usage_failed",
-    referenceId: context.referenceId,
-    idempotencyKey: `feature:${featureCode}:${context.referenceId}:restore`,
-    reason: `${featureName}失败返还`,
-    actorUserId: context.actorUserId,
-  });
-}
 // @project-doc docs/domains/geo_operations.md#article_jobs
 async function processArticleGeneration(data: {
   organizationId: string;
@@ -650,6 +596,7 @@ async function processArticleGeneration(data: {
     brandId: context.job.brandId,
     actorUserId: context.job.requestedBy,
     referenceId: context.job.id,
+    pricingSnapshot: context.job.pricingSnapshot,
   };
   try {
     const requestPayload = parseArticleJobPayload(

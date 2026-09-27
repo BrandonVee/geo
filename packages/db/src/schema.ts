@@ -716,7 +716,7 @@ export const pricingTierRules = pgTable(
     tier: pricingTier("tier").primaryKey(),
     displayName: varchar("display_name", { length: 32 }).notNull(),
     publicationMarkupBps: integer("publication_markup_bps").notNull(),
-    pointMultiplierBps: integer("point_multiplier_bps").notNull(),
+    pointMarkupBps: integer("point_markup_bps").notNull(),
     updatedBy: uuid("updated_by").references(() => users.id),
     ...timestamps,
   },
@@ -726,8 +726,8 @@ export const pricingTierRules = pgTable(
       sql`${t.publicationMarkupBps} >= 0 AND ${t.publicationMarkupBps} <= 100000`,
     ),
     check(
-      "pricing_tier_rules_point_multiplier_ck",
-      sql`${t.pointMultiplierBps} >= 0 AND ${t.pointMultiplierBps} <= 100000`,
+      "pricing_tier_rules_point_markup_ck",
+      sql`${t.pointMarkupBps} >= -10000 AND ${t.pointMarkupBps} <= 100000`,
     ),
   ],
 );
@@ -1141,6 +1141,12 @@ export const articleGenerationJobs = pgTable(
     requestedBy: uuid("requested_by")
       .notNull()
       .references(() => users.id),
+    pricingSnapshot: jsonb("pricing_snapshot").$type<{
+      tier: "retail" | "bronze" | "silver" | "gold";
+      basePoints: number;
+      pointMarkupBps: number;
+      points: number;
+    }>(),
     idempotencyKey: varchar("idempotency_key", { length: 128 }).notNull(),
     queueJobId: varchar("queue_job_id", { length: 128 }),
     executionId: uuid("execution_id"),

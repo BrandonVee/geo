@@ -52,7 +52,7 @@ AnswerBit 是 GEO 指标和内容数据的上游事实源；本地映射承担�
 
 AI 生成成功时，Worker 在完成生成任务和上游文章映射的同一数据库事务中，以 `source_job_id` 幂等创建状态为 `ready` 的本地文档及首个版本；迁移会把升级前已成功的生成任务补入文档库。生成任务仍保留用于队列状态、计费、恢复和审计，文档库负责后续编辑、分组和发布。文档定稿后可把 `sourceDocumentId` 交给发布单，服务端重新验证品牌范围、`ready` 状态和非空正文，再把数据库中的正文提交给所选渠道。
 
-Worker 执行时重新加载任务、内部腾讯范围与品牌授权，并在计费和外部调用前解密、校验任务请求载荷。载荷必须通过共享的 AnswerBit operation Schema，且 BrandID、模板与语言必须和任务的不可变字段一致；密文损坏、旧数据结构异常或范围不一致时以 `INVALID_ARTICLE_JOB_PAYLOAD` 终止，不产生积分扣减，也不向腾讯发送请求。校验通过后解密统一 Key，按一次 AI 文章生成功能预扣品牌积分，再免费调用所需 AnswerBit operation。任务状态为 `queued`、`running`、`succeeded`、`failed` 或 `cancelled`；完整功能失败时返还积分；等待中的任务取消时尚未开始计费。
+Worker 执行时重新加载任务、内部腾讯范围与品牌授权，并在计费和外部调用前解密、校验任务请求载荷。载荷必须通过共享的 AnswerBit operation Schema，且 BrandID、模板与语言必须和任务的不可变字段一致；密文损坏、旧数据结构异常或范围不一致时以 `INVALID_ARTICLE_JOB_PAYLOAD` 终止，不产生积分扣减，也不向腾讯发送请求。Web 在创建新任务时校验用户看到的积分报价，并把等级、基础积分、加价率和最终积分保存为任务价格快照；Worker 校验载荷后按快照预扣一次，再免费调用所需 AnswerBit operation。升级前未保存快照的等待任务仍按执行时的规则计价。任务状态为 `queued`、`running`、`succeeded`、`failed` 或 `cancelled`；完整功能失败时按原扣款金额返还积分；等待中的任务取消时尚未开始计费。
 
 Worker 每 5 分钟对账文章和报告任务：`queued` 超过 10 分钟、`running` 超过 15 分钟才进入恢复候选；pg-boss 中仍为等待、重试或执行状态的任务保持不变。安全候选会清除旧执行租约并重新投递；文章已经保存腾讯 ArticleID 时只恢复内容读取，不重复创建文章。已经扣除功能积分但没有 ArticleID 的中断文章存在上游结果不确定性，因此终止为 `ARTICLE_RECOVERY_UNCERTAIN` 并幂等返还原扣款，不再次调用创建接口。每次 Worker 领取任务都会写入新的 `execution_id`，后续中间态和终态更新必须匹配该值，旧执行即使迟到也不能覆盖恢复后的新执行。
 

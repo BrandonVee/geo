@@ -10,7 +10,7 @@
 - `agent`：代理商账号，可作为企业管理员或企业成员参与企业运营；可通过 `agent_valid_from` 与 `agent_expires_at` 设置生效和到期时间，两者为空表示长期有效；
 - `customer`：企业客户账号，通过成员关系获得企业或品牌角色。
 
-`users.pricing_tier` 独立表达商业价格等级：普通用户为 `retail`，代理商可选择 `bronze`、`silver` 或 `gold`。客户和管理员固定使用 `retail`；账户从代理商切为客户时同步回到 `retail`，客户切为代理商时默认使用铜牌等级。价格等级不授予任何权限，只决定聚合发布售价与完整业务功能的积分计费系数。
+`users.pricing_tier` 独立表达商业价格等级：普通用户为 `retail`，代理商可选择 `bronze`、`silver` 或 `gold`。客户和管理员固定使用 `retail`；账户从代理商切为客户时同步回到 `retail`，客户切为代理商时默认使用铜牌等级。价格等级不授予任何权限，只决定聚合发布售价与完整业务功能的积分加价率。
 
 账号类型不直接等于权限。有效权限来自角色：`super_admin`、`tenant_admin`、`brand_admin`、`brand_editor`、`brand_viewer`。`super_admin` 为平台范围；其余角色为企业范围。品牌管理员、编辑者和查看者还受 `brand_access` 限定；平台还可用目标企业功能范围进一步收窄单个用户在单家企业内可使用的模块。
 

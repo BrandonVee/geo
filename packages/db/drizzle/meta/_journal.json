@@ -36,6 +36,20 @@
       "when": 1789836073924,
       "tag": "v5",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1790515800842,
+      "tag": "v6",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1790524014007,
+      "tag": "v7",
+      "breakpoints": true
     }
   ]
 }

@@ -66,13 +66,25 @@ try {
         AND EXISTS (
           SELECT 1 FROM information_schema.columns
           WHERE table_schema = 'public'
+            AND table_name = 'pricing_tier_rules'
+            AND column_name = 'point_markup_bps'
+        )
+        AND EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'article_generation_jobs'
+            AND column_name = 'pricing_snapshot'
+        )
+        AND EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_schema = 'public'
             AND table_name = 'publication_orders'
             AND column_name = 'source_document_id'
         ) AS complete
     `)
     ).rows[0]?.complete
   )
-    throw new Error("DATABASE_V5_STRUCTURE_INCOMPLETE");
+    throw new Error("DATABASE_V7_STRUCTURE_INCOMPLETE");
 
   const currentVRevision = currentVersion?.match(/^v([1-9]\d*)$/);
   if (

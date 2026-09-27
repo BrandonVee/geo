@@ -13,6 +13,7 @@ type FeatureCharge = {
   brandId: string;
   actorUserId: string;
   referenceId: string;
+  expectedPoints: number;
 };
 
 export async function getPointBilledFeatureQuote(
@@ -22,14 +23,31 @@ export async function getPointBilledFeatureQuote(
   return getEffectiveFeaturePointCost(featureCode, userId);
 }
 
+export async function assertPointBilledFeatureQuote(
+  featureCode: BillableFeatureCode,
+  userId: string,
+  expectedPoints: number,
+) {
+  const pricing = await getEffectiveFeaturePointCost(featureCode, userId);
+  if (pricing.points !== expectedPoints)
+    throw new ApiError(
+      409,
+      "FEATURE_PRICE_CHANGED",
+      `积分价格已调整为 ${pricing.points}，请确认新价格后重试`,
+      { currentPoints: pricing.points },
+    );
+  return pricing;
+}
+
 /** Charges once for a complete business feature, regardless of API call count. */
 export async function runPointBilledFeature<T>(
   input: FeatureCharge,
   execute: () => Promise<T>,
 ): Promise<T> {
-  const pricing = await getEffectiveFeaturePointCost(
+  const pricing = await assertPointBilledFeatureQuote(
     input.featureCode,
     input.actorUserId,
+    input.expectedPoints,
   );
   const configuredPoints = pricing.points;
   let chargedPoints = 0;

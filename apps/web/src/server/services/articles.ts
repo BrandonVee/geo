@@ -25,7 +25,10 @@ import { authorizeBrand } from "@/server/permissions/brand-scope";
 import { articleRepository } from "@/server/repositories/articles";
 import { getSecretCipher } from "@/server/security/secret-cipher";
 import { mapUpstreamError } from "./answerbit-connections";
-import { runPointBilledFeature } from "./feature-billing";
+import {
+  assertPointBilledFeatureQuote,
+  runPointBilledFeature,
+} from "./feature-billing";
 type Scope = { organizationId: string; teamBindingId: string; brandId: string };
 const logContext = (
   scope: Scope,
@@ -129,6 +132,7 @@ export const articleService = {
           brandId: input.brandId,
           actorUserId: userId,
           referenceId: requestId,
+          expectedPoints: input.expectedPoints,
         },
         async () => {
           const articleId = await traceArticleLogged(
@@ -253,6 +257,11 @@ export const articleService = {
       idempotencyKey,
     );
     if (existing) return { ...publicJob(existing), replayed: true };
+    const pricingSnapshot = await assertPointBilledFeatureQuote(
+      "ai_article_generation",
+      userId,
+      input.expectedPoints,
+    );
     const requestPayload = answerBitArticleCreatePayloadSchema.parse({
       brand_id: input.brandId,
       template_type: input.templateType,
@@ -276,6 +285,7 @@ export const articleService = {
         teamBindingId: input.teamBindingId,
         brandId: input.brandId,
         requestedBy: userId,
+        pricingSnapshot,
         idempotencyKey,
         requestPayload: encryptedRequestPayload,
         templateType: input.templateType,

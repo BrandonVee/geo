@@ -39,7 +39,7 @@ describe("database release readiness", () => {
         "utf8",
       ),
     ) as { entries: Array<{ idx: number; tag: string }> };
-    expect(journal.entries).toHaveLength(5);
+    expect(journal.entries).toHaveLength(7);
     expect(journal.entries[0]?.idx).toBe(0);
     expect(journal.entries[0]?.tag).toBe("v1");
     expect(journal.entries.at(-1)?.tag).toBe(CURRENT_SCHEMA_VERSION);
@@ -49,7 +49,21 @@ describe("database release readiness", () => {
       "utf8",
     );
     expect(migration).toContain(`('schema', '${CURRENT_SCHEMA_VERSION}')`);
-    expect(migration).toContain(
+    expect(migration).toContain("pricing_snapshot");
+
+    const pointMarkupMigration = await readFile(
+      new URL("../drizzle/v6.sql", import.meta.url),
+      "utf8",
+    );
+    expect(pointMarkupMigration).toContain(
+      "RENAME COLUMN point_multiplier_bps TO point_markup_bps",
+    );
+
+    const readCacheMigration = await readFile(
+      new URL("../drizzle/v5.sql", import.meta.url),
+      "utf8",
+    );
+    expect(readCacheMigration).toContain(
       "GRANT SELECT, INSERT, UPDATE, DELETE ON public.answerbit_read_cache TO geo_tenant_app, geo_platform_app",
     );
 

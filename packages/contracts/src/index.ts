@@ -456,6 +456,7 @@ const optionalQueryBoolean = z.preprocess(
 export const traceArticleSchema = z
   .object({
     ...brandScopeShape,
+    expectedPoints: z.number().int().nonnegative().max(11_000_000),
     title: z.string().trim().min(1).max(500),
     urls: z.array(z.string().url().max(2000)).min(1).max(20),
     tagIds: z
@@ -552,6 +553,7 @@ const highReferenceSchema = z
 export const createArticleJobSchema = z
   .object({
     ...brandScopeShape,
+    expectedPoints: z.number().int().nonnegative().max(11_000_000),
     templateType: z.number().int().positive(),
     promptIds: idListSchema.max(20),
     knowledgeIds: z
@@ -1135,7 +1137,7 @@ export const pricingTierRuleSchema = z
     tier: pricingTierSchema,
     displayName: z.string().trim().min(2).max(32),
     publicationMarkupBps: z.number().int().min(0).max(100_000),
-    pointMultiplierBps: z.number().int().min(0).max(100_000),
+    pointMarkupBps: z.number().int().min(-10_000).max(100_000),
   })
   .strict();
 const publicationTierPricesSchema = z

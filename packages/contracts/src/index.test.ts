@@ -437,6 +437,7 @@ describe("文章追踪与生成契约", () => {
         ...scope,
         title: "文章",
         urls: ["https://example.com"],
+        expectedPoints: 3,
         language: "zh-CN",
       }).success,
     ).toBe(true);
@@ -458,6 +459,25 @@ describe("文章追踪与生成契约", () => {
       }).success,
     ).toBe(false);
   });
+  it("计费操作必须提交用户看到的积分报价", async () => {
+    const { createArticleJobSchema, traceArticleSchema } = await import(
+      "./index"
+    );
+    expect(
+      createArticleJobSchema.safeParse({
+        ...scope,
+        templateType: 2,
+        promptIds: ["p1"],
+      }).success,
+    ).toBe(false);
+    expect(
+      traceArticleSchema.safeParse({
+        ...scope,
+        title: "文章",
+        urls: ["https://example.com"],
+      }).success,
+    ).toBe(false);
+  });
   it("生成内容支持保存平台自定义标签并拒绝重复", async () => {
     const { createArticleJobSchema } = await import("./index");
     expect(
@@ -465,6 +485,7 @@ describe("文章追踪与生成契约", () => {
         ...scope,
         templateType: 2,
         promptIds: ["p1"],
+        expectedPoints: 13,
         contentTags: ["品牌故事", "产品指南"],
       }).contentTags,
     ).toEqual(["品牌故事", "产品指南"]);
@@ -473,6 +494,7 @@ describe("文章追踪与生成契约", () => {
         ...scope,
         templateType: 2,
         promptIds: ["p1"],
+        expectedPoints: 13,
         contentTags: ["SEO", "seo"],
       }).success,
     ).toBe(false);

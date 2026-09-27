@@ -259,25 +259,25 @@ await db
       tier: "retail",
       displayName: "普通用户",
       publicationMarkupBps: 3000,
-      pointMultiplierBps: 10000,
+      pointMarkupBps: 3000,
     },
     {
       tier: "bronze",
       displayName: "铜牌代理",
       publicationMarkupBps: 2000,
-      pointMultiplierBps: 9000,
+      pointMarkupBps: 2000,
     },
     {
       tier: "silver",
       displayName: "银牌代理",
       publicationMarkupBps: 1500,
-      pointMultiplierBps: 8000,
+      pointMarkupBps: 1500,
     },
     {
       tier: "gold",
       displayName: "金牌代理",
       publicationMarkupBps: 1000,
-      pointMultiplierBps: 7000,
+      pointMarkupBps: 1000,
     },
   ])
   .onConflictDoNothing();

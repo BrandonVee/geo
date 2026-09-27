@@ -1,4 +1,5 @@
 import { eq } from "drizzle-orm";
+import { calculateMarkedUpPoints } from "@geo/core";
 import { db } from "./client";
 import { featurePointCosts, pricingTierRules, users } from "./schema";
 
@@ -8,22 +9,22 @@ const defaultRule = {
   retail: {
     displayName: "普通用户",
     publicationMarkupBps: 3000,
-    pointMultiplierBps: 10000,
+    pointMarkupBps: 3000,
   },
   bronze: {
     displayName: "铜牌代理",
     publicationMarkupBps: 2000,
-    pointMultiplierBps: 9000,
+    pointMarkupBps: 2000,
   },
   silver: {
     displayName: "银牌代理",
     publicationMarkupBps: 1500,
-    pointMultiplierBps: 8000,
+    pointMarkupBps: 1500,
   },
   gold: {
     displayName: "金牌代理",
     publicationMarkupBps: 1000,
-    pointMultiplierBps: 7000,
+    pointMarkupBps: 1000,
   },
 } satisfies Record<
   PricingTier,
@@ -61,7 +62,7 @@ export async function setPricingTierRule(input: {
   tier: PricingTier;
   displayName: string;
   publicationMarkupBps: number;
-  pointMultiplierBps: number;
+  pointMarkupBps: number;
   updatedBy: string;
 }) {
   const [row] = await db
@@ -72,7 +73,7 @@ export async function setPricingTierRule(input: {
       set: {
         displayName: input.displayName,
         publicationMarkupBps: input.publicationMarkupBps,
-        pointMultiplierBps: input.pointMultiplierBps,
+        pointMarkupBps: input.pointMarkupBps,
         updatedBy: input.updatedBy,
         updatedAt: new Date(),
       },
@@ -98,7 +99,7 @@ export async function getEffectiveFeaturePointCost(
   return {
     tier,
     basePoints,
-    pointMultiplierBps: rule.pointMultiplierBps,
-    points: Math.ceil((basePoints * rule.pointMultiplierBps) / 10_000),
+    pointMarkupBps: rule.pointMarkupBps,
+    points: calculateMarkedUpPoints(basePoints, rule.pointMarkupBps),
   };
 }

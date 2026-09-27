@@ -35,6 +35,7 @@ const input = {
   brandId: "brand-1",
   actorUserId: "d5ddb2bc-44ad-4395-a05b-e3a2ad0129f8",
   referenceId: "request-1",
+  expectedPoints: 29,
 };
 
 describe("业务功能积分计费", () => {
@@ -43,13 +44,13 @@ describe("业务功能积分计费", () => {
     mocks.getEffectiveFeaturePointCost.mockResolvedValue({
       tier: "silver",
       basePoints: 25,
-      pointMultiplierBps: 8000,
-      points: 20,
+      pointMarkupBps: 1500,
+      points: 29,
     });
     mocks.consumeBalance.mockResolvedValue({
       ok: true,
       replayed: false,
-      transaction: { amount: 20 },
+      transaction: { amount: 29 },
     });
   });
 
@@ -59,8 +60,8 @@ describe("业务功能积分计费", () => {
     ).resolves.toEqual({
       tier: "silver",
       basePoints: 25,
-      pointMultiplierBps: 8000,
-      points: 20,
+      pointMarkupBps: 1500,
+      points: 29,
     });
     expect(mocks.getEffectiveFeaturePointCost).toHaveBeenCalledWith(
       "ai_article_generation",
@@ -79,12 +80,24 @@ describe("业务功能积分计费", () => {
     expect(mocks.consumeBalance).toHaveBeenCalledTimes(1);
     expect(mocks.consumeBalance).toHaveBeenCalledWith(
       expect.objectContaining({
-        amount: 20,
+        amount: 29,
         referenceType: "feature_usage",
         idempotencyKey: "feature:effect_tracking:request-1:consume",
       }),
     );
     expect(mocks.restoreBalance).not.toHaveBeenCalled();
+  });
+
+  it("显示价格过期时拒绝扣费和外部调用", async () => {
+    const execute = vi.fn();
+    await expect(
+      runPointBilledFeature({ ...input, expectedPoints: 28 }, execute),
+    ).rejects.toMatchObject({
+      status: 409,
+      code: "FEATURE_PRICE_CHANGED",
+    });
+    expect(mocks.consumeBalance).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it("功能失败按原扣减金额返还", async () => {
@@ -98,7 +111,7 @@ describe("业务功能积分计费", () => {
 
     expect(mocks.restoreBalance).toHaveBeenCalledWith(
       expect.objectContaining({
-        amount: 20,
+        amount: 29,
         referenceType: "feature_usage_failed",
         idempotencyKey: "feature:effect_tracking:request-1:restore",
       }),
@@ -109,12 +122,15 @@ describe("业务功能积分计费", () => {
     mocks.getEffectiveFeaturePointCost.mockResolvedValue({
       tier: "gold",
       basePoints: 0,
-      pointMultiplierBps: 7000,
+      pointMarkupBps: 1000,
       points: 0,
     });
 
     await expect(
-      runPointBilledFeature(input, async () => "free"),
+      runPointBilledFeature(
+        { ...input, expectedPoints: 0 },
+        async () => "free",
+      ),
     ).resolves.toBe("free");
 
     expect(mocks.consumeBalance).not.toHaveBeenCalled();

@@ -60,7 +60,7 @@ pnpm db:release
 pnpm dev
 ```
 
-全新数据库先由 `packages/db/drizzle/v1.sql` 建立基线，再依次执行 `v2.sql` 小青蛙平台凭证、`v3.sql` 分级定价结构与 `v4.sql` 本地文档库结构及历史生成内容回填，记录 schema `v4`、执行 seed `v2` 的幂等种子并完成 RLS 检查。后续 schema 变化继续通过 `pnpm db:generate` 生成增量迁移并递增 `vN`，不直接修改已发布迁移。
+全新数据库先由 `packages/db/drizzle/v1.sql` 建立基线，再依次执行 `v2.sql` 小青蛙平台凭证、`v3.sql` 分级定价结构、`v4.sql` 本地文档库结构及历史生成内容回填、`v5.sql` AnswerBit 读取缓存、`v6.sql` 积分加价规则与 `v7.sql` 异步文章价格快照，记录 schema `v7`、执行 seed `v2` 的幂等种子并完成 RLS 检查。升级到 v6 时，未修改的旧等级规则转为当前发布加价率；已由管理员修改的规则保留原实际扣费，旧折扣显示为负加价率。v7 为新文章任务保存提交时的价格快照，旧任务仍按执行时规则计价。后续 schema 变化继续通过 `pnpm db:generate` 生成增量迁移并递增 `vN`，不直接修改已发布迁移。
 
 访问：
 

@@ -292,7 +292,10 @@ export function ContentClient({
   async function request(url: string, options?: RequestInit) {
     const response = await fetch(url, options);
     const body = await response.json();
-    if (!response.ok) throw new Error(body.error?.message ?? "操作失败");
+    if (!response.ok)
+      throw Object.assign(new Error(body.error?.message ?? "操作失败"), {
+        code: body.error?.code,
+      });
     return body;
   }
   async function trace() {
@@ -308,6 +311,7 @@ export function ContentClient({
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           ...apiScope(scope),
+          expectedPoints: featurePointCosts.effectTracking,
           title: traceTitle,
           urls,
           tagIds: selectedTraceTags,
@@ -322,6 +326,8 @@ export function ContentClient({
       await load();
     } catch (error) {
       setMessage((error as Error).message);
+      if ((error as Error & { code?: string }).code === "FEATURE_PRICE_CHANGED")
+        router.refresh();
     } finally {
       setSubmitting("");
     }
@@ -364,6 +370,7 @@ export function ContentClient({
         },
         body: JSON.stringify({
           ...apiScope(scope),
+          expectedPoints: featurePointCosts.articleGeneration,
           templateType: Number(templateType),
           promptIds: selectedPrompts,
           supplementalKnowledge: supplement || undefined,
@@ -384,6 +391,8 @@ export function ContentClient({
       await load();
     } catch (error) {
       setMessage((error as Error).message);
+      if ((error as Error & { code?: string }).code === "FEATURE_PRICE_CHANGED")
+        router.refresh();
     } finally {
       setSubmitting("");
     }

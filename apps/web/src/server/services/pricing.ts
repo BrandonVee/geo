@@ -24,7 +24,7 @@ export const pricingService = {
       operation: "pricing.tier.update",
       resourceType: "pricing_tier_rule",
       resourceId: row.tier,
-      summary: `更新${row.displayName}价格规则：发布加价 ${(row.publicationMarkupBps / 100).toFixed(2)}%，积分系数 ${(row.pointMultiplierBps / 100).toFixed(2)}%`,
+      summary: `更新${row.displayName}价格规则：发布加价 ${(row.publicationMarkupBps / 100).toFixed(2)}%，积分加价 ${(row.pointMarkupBps / 100).toFixed(2)}%`,
     });
     return row;
   },

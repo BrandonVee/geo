@@ -4,7 +4,7 @@
 - 日期：2026-09-15
 - 决策范围：腾讯能力的功能积分计费
 
-> 修订说明：本文“按完整业务功能而非 HTTP 接口计费”的决策继续有效；第 5 条“不维护价格档位”已由 [ADR-0014](./adr_0014_user_pricing_tiers_and_channel_margin.md) 的用户价格等级与积分系数替代。
+> 修订说明：本文“按完整业务功能而非 HTTP 接口计费”的决策继续有效；第 5 条“不维护价格档位”已由 [ADR-0014](./adr_0014_user_pricing_tiers_and_channel_margin.md) 的用户价格等级替代，积分计算现由 [ADR-0015](./adr_0015_point_markup_pricing.md) 的等级加价率决定。
 
 ## 背景
 

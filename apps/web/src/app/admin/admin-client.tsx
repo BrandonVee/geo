@@ -1,6 +1,6 @@
 "use client";
 
-import { billableFeatures } from "@geo/core";
+import { billableFeatures, calculateMarkedUpPoints } from "@geo/core";
 import {
   ApiOutlined,
   ArrowLeftOutlined,
@@ -283,7 +283,7 @@ type PricingTierRule = {
   tier: PricingTier;
   displayName: string;
   publicationMarkupBps: number;
-  pointMultiplierBps: number;
+  pointMarkupBps: number;
 };
 type PublicationProviderBalance = {
   configured: boolean;
@@ -384,7 +384,7 @@ type ChannelForm = { name: string; category: string; price: number };
 type PricingTierRuleForm = {
   displayName: string;
   publicationMarkupPercent: number;
-  pointMultiplierPercent: number;
+  pointMarkupPercent: number;
 };
 type MemberForm = {
   userId: string;
@@ -1805,7 +1805,7 @@ export function AdminClient({
     pricingTierRuleForm.setFieldsValue({
       displayName: rule.displayName,
       publicationMarkupPercent: rule.publicationMarkupBps / 100,
-      pointMultiplierPercent: rule.pointMultiplierBps / 100,
+      pointMarkupPercent: rule.pointMarkupBps / 100,
     });
   }
   async function savePricingTierRule(values: PricingTierRuleForm) {
@@ -1821,12 +1821,12 @@ export function AdminClient({
           publicationMarkupBps: Math.round(
             values.publicationMarkupPercent * 100,
           ),
-          pointMultiplierBps: Math.round(values.pointMultiplierPercent * 100),
+          pointMarkupBps: Math.round(values.pointMarkupPercent * 100),
         }),
       });
       setEditingPricingTier(null);
       pricingTierRuleForm.resetFields();
-      setMessage("分级售价与积分折扣规则已更新");
+      setMessage("分级发布与积分加价规则已更新");
       await load();
     } catch (error) {
       setMessage((error as Error).message);
@@ -2997,7 +2997,7 @@ export function AdminClient({
                     className="admin-platform-panel"
                     extra={
                       <Typography.Text type="secondary">
-                        统一控制发布利润与平台积分折扣
+                        分别设置发布和积分加价率
                       </Typography.Text>
                     }
                     title="客户等级与利润策略"
@@ -3030,8 +3030,8 @@ export function AdminClient({
                           render: (value: number) => `${value / 100}%`,
                         },
                         {
-                          title: "积分计费系数",
-                          dataIndex: "pointMultiplierBps",
+                          title: "积分加价率",
+                          dataIndex: "pointMarkupBps",
                           render: (value: number) => `${value / 100}%`,
                         },
                         {
@@ -3042,8 +3042,9 @@ export function AdminClient({
                             `采购 ¥100 → 售价 ¥${(
                               100 *
                               (1 + rule.publicationMarkupBps / 10_000)
-                            ).toFixed(2)}；基础 100 积分 → ${Math.ceil(
-                              (100 * rule.pointMultiplierBps) / 10_000,
+                            ).toFixed(2)}；基础 100 积分 → ${calculateMarkedUpPoints(
+                              100,
+                              rule.pointMarkupBps,
                             )} 积分`,
                         },
                         {
@@ -6187,12 +6188,12 @@ export function AdminClient({
             </Col>
             <Col sm={12} xs={24}>
               <Form.Item
-                extra="按功能基础积分乘算，70 表示基础 100 积分实际扣 70。"
-                label="积分计费系数"
-                name="pointMultiplierPercent"
-                rules={[{ required: true, message: "请输入积分计费系数" }]}
+                extra="按功能基础积分调价，30 表示基础 100 积分扣 130；-10 表示扣 90。"
+                label="积分加价率"
+                name="pointMarkupPercent"
+                rules={[{ required: true, message: "请输入积分加价率" }]}
               >
-                <InputNumber min={0} style={{ width: "100%" }} suffix="%" />
+                <InputNumber min={-100} style={{ width: "100%" }} suffix="%" />
               </Form.Item>
             </Col>
           </Row>

@@ -1350,6 +1350,8 @@ paths:
           $ref: "#/components/responses/UnsupportedMediaType"
         "201":
           description: 文章已加入追踪
+        "409":
+          description: FEATURE_PRICE_CHANGED，用户看到的积分报价已变化，未扣费也未调用上游
         "403":
           $ref: "#/components/responses/Forbidden"
   /v1/answerbit/articles/{articleId}:
@@ -1472,6 +1474,8 @@ paths:
           description: 任务已进入队列
         "200":
           description: 幂等重放，返回已有任务
+        "409":
+          description: FEATURE_PRICE_CHANGED，用户看到的积分报价已变化，未创建任务
         "503":
           description: 任务队列不可用
   /v1/answerbit/article-jobs/{jobId}:
@@ -3477,7 +3481,7 @@ paths:
       security: *id001
       responses:
         "200":
-          description: 四级发布加价率与功能积分计费系数
+          description: 四级发布加价率与功能积分加价率
     put:
       summary: 更新一个客户等级的发布与积分计费规则
       tags:
@@ -4578,6 +4582,7 @@ components:
         - organizationId
         - teamBindingId
         - brandId
+        - expectedPoints
         - title
         - urls
       properties:
@@ -4590,6 +4595,11 @@ components:
         brandId:
           type: string
           maxLength: 128
+        expectedPoints:
+          type: integer
+          minimum: 0
+          maximum: 11000000
+          description: 页面展示的本次积分报价；提交时服务端不一致则返回 409
         title:
           type: string
           minLength: 1
@@ -4778,6 +4788,7 @@ components:
         - organizationId
         - teamBindingId
         - brandId
+        - expectedPoints
         - templateType
         - promptIds
       properties:
@@ -4790,6 +4801,11 @@ components:
         brandId:
           type: string
           maxLength: 128
+        expectedPoints:
+          type: integer
+          minimum: 0
+          maximum: 11000000
+          description: 页面展示的本次积分报价；创建任务时服务端不一致则返回 409
         templateType:
           type: integer
           minimum: 1
@@ -5120,7 +5136,7 @@ components:
         - tier
         - displayName
         - publicationMarkupBps
-        - pointMultiplierBps
+        - pointMarkupBps
       properties:
         tier:
           type: string
@@ -5134,11 +5150,11 @@ components:
           minimum: 0
           maximum: 100000
           description: 发布采购成本加价基点；10000 等于 100%
-        pointMultiplierBps:
+        pointMarkupBps:
           type: integer
-          minimum: 0
+          minimum: -10000
           maximum: 100000
-          description: 功能基础积分计费系数基点；10000 等于 100%
+          description: 功能基础积分加价基点；0 表示按基价计费，10000 表示加价 100%，负值表示折扣
     PublicationTierPrices:
       type: object
       additionalProperties: false
