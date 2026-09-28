@@ -4,12 +4,15 @@ import type {
   UpdateMemberInput,
 } from "@geo/contracts";
 import type { AuditContext } from "@/server/audit/write-audit";
+import { hashPassword } from "better-auth/crypto";
 import { writeAudit } from "@/server/audit/write-audit";
 import { getUserAccessState } from "@/server/auth/user-access";
-import { ApiError } from "@/server/http/errors";
+import { ApiError, databaseErrorCode } from "@/server/http/errors";
+import { adminRepository } from "@/server/repositories/admin";
 import { memberRepository as repository } from "@/server/repositories/members";
 import { organizationService } from "./organizations";
 import { assertEntitlementCapacity } from "./billing";
+import { memberCapacityApiError } from "./member-write-error";
 
 export const memberService = {
   async list(organizationId: string, userId: string) {
@@ -74,7 +77,6 @@ export const memberService = {
       userId,
       "tenant.member.manage",
     );
-    await assertEntitlementCapacity(organizationId, "members");
     const brandScope =
       input.role === "tenant_admin"
         ? undefined
@@ -85,6 +87,47 @@ export const memberService = {
         "ENTERPRISE_BRAND_SCOPE_NOT_FOUND",
         "当前企业尚未建立可用的腾讯品牌范围",
       );
+    if ("name" in input) {
+      if (!brandScope)
+        throw new ApiError(
+          422,
+          "ENTERPRISE_BRAND_SCOPE_NOT_FOUND",
+          "当前企业尚未建立可用的腾讯品牌范围",
+        );
+      await assertEntitlementCapacity(organizationId, "members");
+      let created;
+      try {
+        created = await repository.createCustomerMember(organizationId, {
+          name: input.name,
+          username: input.username,
+          role: input.role,
+          teamBindingId: brandScope.teamBindingId,
+          brandId: brandScope.brandId,
+          passwordHash: await hashPassword(input.password),
+        });
+      } catch (error) {
+        if (databaseErrorCode(error) === "23505")
+          throw new ApiError(
+            409,
+            "USERNAME_EXISTS",
+            "该登录账号已存在，请改用绑定已有账号",
+          );
+        const capacityError = memberCapacityApiError(error);
+        if (capacityError) throw capacityError;
+        throw error;
+      }
+      await writeAudit(audit, {
+        operation: "tenant.member.create_account",
+        resourceType: "organization_member",
+        resourceId: created.member.id,
+        summary: `创建客户账号 ${input.username} 并授予 ${input.role}`,
+      });
+      return {
+        memberId: created.member.id,
+        username: created.user.username,
+        role: input.role,
+      };
+    }
     const existingUser = await repository.findUserByUsername(input.username);
     if (!existingUser)
       throw new ApiError(
@@ -114,11 +157,48 @@ export const memberService = {
         "ACCOUNT_TYPE_MISMATCH",
         "代理账户应配置为企业管理员",
       );
-    const member = await repository.addExistingMember(
+    const existingMembership = await repository.findMemberByUser(
       organizationId,
       existingUser.id,
-      { ...input, ...brandScope },
     );
+    if (!existingMembership || existingMembership.status === "disabled")
+      await assertEntitlementCapacity(organizationId, "members");
+    if (input.role === "tenant_admin" && existingUser.accountType === "agent") {
+      const alreadyTenantAdmin = existingMembership
+        ? existingMembership.status === "active" &&
+          (await repository.isTenantAdmin(existingMembership.id))
+        : false;
+      if (!alreadyTenantAdmin && existingUser.agentEnterpriseLimit !== null) {
+        const usage = await adminRepository.getAgentQuotaUsage(existingUser.id);
+        if (usage.enterpriseCount >= existingUser.agentEnterpriseLimit)
+          throw new ApiError(
+            422,
+            "AGENT_ENTERPRISE_QUOTA_EXCEEDED",
+            "代理商企业额度已用尽，请联系平台管理员调整额度",
+          );
+      }
+    }
+    let member;
+    try {
+      member = await repository.addExistingMember(
+        organizationId,
+        existingUser.id,
+        { ...input, ...brandScope },
+      );
+    } catch (error) {
+      const capacityError = memberCapacityApiError(error);
+      if (capacityError) throw capacityError;
+      if (
+        error instanceof Error &&
+        error.message === "AGENT_ENTERPRISE_QUOTA_EXCEEDED"
+      )
+        throw new ApiError(
+          422,
+          "AGENT_ENTERPRISE_QUOTA_EXCEEDED",
+          "代理商企业额度已用尽，请联系平台管理员调整额度",
+        );
+      throw error;
+    }
     await writeAudit(audit, {
       operation: "tenant.member.add",
       resourceType: "organization_member",
@@ -141,6 +221,19 @@ export const memberService = {
     );
     const member = await repository.findMember(organizationId, memberId);
     if (!member) throw new ApiError(404, "MEMBER_NOT_FOUND", "企业成员不存在");
+    if (input.status === "active" && member.status !== "active") {
+      const account = await repository.findUserById(member.userId);
+      if (!account) throw new ApiError(404, "USER_NOT_FOUND", "用户不存在");
+      const state = getUserAccessState(account);
+      if (state === "disabled")
+        throw new ApiError(422, "ACCOUNT_DISABLED", "该账户已停用");
+      if (state === "scheduled")
+        throw new ApiError(422, "AGENT_NOT_YET_VALID", "代理商账户尚未生效");
+      if (state === "expired")
+        throw new ApiError(422, "AGENT_EXPIRED", "代理商账户有效期已结束");
+      if (member.status === "disabled")
+        await assertEntitlementCapacity(organizationId, "members");
+    }
     if (
       input.status === "disabled" &&
       (await repository.isTenantAdmin(memberId)) &&
@@ -151,11 +244,27 @@ export const memberService = {
         "LAST_TENANT_ADMIN",
         "企业必须保留至少一名可用管理员",
       );
-    const updated = await repository.updateMember(
-      organizationId,
-      memberId,
-      input.status,
-    );
+    let updated;
+    try {
+      updated = await repository.updateMember(
+        organizationId,
+        memberId,
+        input.status,
+      );
+    } catch (error) {
+      const capacityError = memberCapacityApiError(error);
+      if (capacityError) throw capacityError;
+      if (
+        error instanceof Error &&
+        error.message === "AGENT_ENTERPRISE_QUOTA_EXCEEDED"
+      )
+        throw new ApiError(
+          422,
+          "AGENT_ENTERPRISE_QUOTA_EXCEEDED",
+          "代理商企业额度已用尽，请联系平台管理员调整额度",
+        );
+      throw error;
+    }
     await writeAudit(audit, {
       operation: "tenant.member.update",
       resourceType: "organization_member",

@@ -106,6 +106,10 @@ jobs:
         run: pnpm --filter @geo/web exec vitest run src/server/repositories/content-documents.integration.test.ts
         env:
           CONTENT_DOCUMENT_DB_TESTS: "1"
+      - name: Run member capacity PostgreSQL regressions
+        run: pnpm --filter @geo/web exec vitest run src/server/repositories/members.integration.test.ts
+        env:
+          MEMBER_CAPACITY_DB_TESTS: "1"
       - name: Build Web smoke target
         run: pnpm --filter @geo/web build
       - name: Run Web process smoke test

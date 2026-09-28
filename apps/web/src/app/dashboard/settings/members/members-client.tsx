@@ -23,6 +23,7 @@ import {
   Input,
   Modal,
   Row,
+  Segmented,
   Select,
   Skeleton,
   Space,
@@ -51,7 +52,9 @@ type Member = {
 };
 
 type MemberForm = {
+  name?: string;
   username: string;
+  password?: string;
   role: string;
 };
 
@@ -129,6 +132,9 @@ export function MemberSettings({
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [selectedRole, setSelectedRole] = useState("brand_viewer");
+  const [accountMode, setAccountMode] = useState<"create" | "existing">(
+    "create",
+  );
 
   const load = useCallback(
     async (showSkeleton = true) => {
@@ -170,6 +176,7 @@ export function MemberSettings({
   );
 
   function openMemberModal() {
+    setAccountMode("create");
     setSelectedRole("brand_viewer");
     setMemberOpen(true);
   }
@@ -181,17 +188,26 @@ export function MemberSettings({
 
   async function addMember() {
     const values = await memberForm.validateFields();
-    await runAction("add-member", "账号已加入企业，权限立即生效", async () => {
-      await request(
-        `/api/v1/organizations/${organizationId}/members`,
-        jsonRequest("POST", {
-          username: values.username.trim().toLowerCase(),
-          role: values.role,
-        }),
-      );
-      memberForm.resetFields();
-      setMemberOpen(false);
-    });
+    await runAction(
+      "add-member",
+      accountMode === "create"
+        ? "客户账号已创建并加入企业"
+        : "账号已加入企业，权限立即生效",
+      async () => {
+        await request(
+          `/api/v1/organizations/${organizationId}/members`,
+          jsonRequest("POST", {
+            username: values.username.trim().toLowerCase(),
+            role: values.role,
+            ...(accountMode === "create"
+              ? { name: values.name?.trim(), password: values.password }
+              : {}),
+          }),
+        );
+        memberForm.resetFields();
+        setMemberOpen(false);
+      },
+    );
   }
 
   function openAccessModal(member: Member) {
@@ -575,8 +591,23 @@ export function MemberSettings({
         }
         width={760}
       >
-        <Typography.Paragraph type="secondary">
-          输入平台已创建的登录账号，并授予最小必要权限。
+        <Segmented
+          block
+          onChange={(value) => {
+            setAccountMode(value as "create" | "existing");
+            setSelectedRole("brand_viewer");
+            memberForm.setFieldValue("role", "brand_viewer");
+          }}
+          options={[
+            { label: "创建客户账号", value: "create" },
+            { label: "绑定已有账号", value: "existing" },
+          ]}
+          value={accountMode}
+        />
+        <Typography.Paragraph style={{ marginTop: 16 }} type="secondary">
+          {accountMode === "create"
+            ? "填写登录信息并选择品牌权限，保存后账号即可登录。请将初始密码私下交给成员。"
+            : "输入已有账号并授权。代理商账号由平台管理员创建，绑定为企业管理员后即可负责本企业。"}
         </Typography.Paragraph>
         <Form
           form={memberForm}
@@ -586,8 +617,28 @@ export function MemberSettings({
           requiredMark="optional"
           size="large"
         >
+          {accountMode === "create" ? (
+            <Form.Item
+              label="成员姓名"
+              name="name"
+              preserve={false}
+              rules={[
+                {
+                  required: true,
+                  min: 2,
+                  max: 80,
+                  message: "请输入 2–80 字的成员姓名",
+                },
+              ]}
+            >
+              <Input
+                autoComplete="name"
+                placeholder="例如：张三"
+                size="large"
+              />
+            </Form.Item>
+          ) : null}
           <Form.Item
-            extra="新账号需先由平台管理员在平台管理端创建。"
             label="登录账号"
             name="username"
             normalize={(value: string) => value.trim().toLowerCase()}
@@ -599,15 +650,43 @@ export function MemberSettings({
               },
             ]}
           >
-            <Input placeholder="例如：brand_operator" size="large" />
+            <Input
+              autoComplete={
+                accountMode === "create" ? "new-username" : "username"
+              }
+              placeholder="例如：brand_operator"
+              size="large"
+            />
           </Form.Item>
+          {accountMode === "create" ? (
+            <Form.Item
+              extra="至少 12 位，包含字母和数字。"
+              label="初始密码"
+              name="password"
+              preserve={false}
+              rules={[
+                { required: true, message: "请输入初始密码" },
+                { min: 12, max: 128, message: "密码长度须为 12–128 位" },
+                {
+                  validator: async (_, value: string) => {
+                    if (value && (!/[A-Za-z]/.test(value) || !/\d/.test(value)))
+                      throw new Error("密码必须同时包含字母和数字");
+                  },
+                },
+              ]}
+            >
+              <Input.Password autoComplete="new-password" size="large" />
+            </Form.Item>
+          ) : null}
           <Form.Item label="职责角色" name="role" rules={[{ required: true }]}>
             <Select
               onChange={setSelectedRole}
-              options={Object.entries(roleMeta).map(([value, item]) => ({
-                value,
-                label: item.label,
-              }))}
+              options={Object.entries(roleMeta)
+                .filter(
+                  ([value]) =>
+                    accountMode === "existing" || value !== "tenant_admin",
+                )
+                .map(([value, item]) => ({ value, label: item.label }))}
               size="large"
             />
           </Form.Item>

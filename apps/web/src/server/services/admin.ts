@@ -13,6 +13,7 @@ import { adminRepository } from "@/server/repositories/admin";
 import { memberRepository } from "@/server/repositories/members";
 import { identityService } from "@/server/modules/identity/identity.service";
 import { assertEntitlementCapacity } from "./billing";
+import { memberCapacityApiError } from "./member-write-error";
 
 type Page = { page: number; pageSize: number; q?: string; status?: string };
 type UserPage = Page & {
@@ -330,7 +331,7 @@ export const adminService = {
       organizationId,
       input.userId,
     );
-    if (!existingMembership)
+    if (!existingMembership || existingMembership.status === "disabled")
       await assertEntitlementCapacity(organizationId, "members");
     const account = await memberRepository.findUserById(input.userId);
     if (!account) throw new ApiError(404, "USER_NOT_FOUND", "用户不存在");
@@ -341,7 +342,8 @@ export const adminService = {
         adminRepository.getAgentQuotaUsage(input.userId),
       ]);
       const alreadyTenantAdmin = existingMembership
-        ? await memberRepository.isTenantAdmin(existingMembership.id)
+        ? existingMembership.status === "active" &&
+          (await memberRepository.isTenantAdmin(existingMembership.id))
         : false;
       if (
         !alreadyTenantAdmin &&
@@ -377,11 +379,27 @@ export const adminService = {
         "ENTERPRISE_BRAND_SCOPE_NOT_FOUND",
         "当前企业尚未建立可用的腾讯品牌范围",
       );
-    const member = await memberRepository.addExistingMember(
-      organizationId,
-      input.userId,
-      { ...input, ...brandScope },
-    );
+    let member;
+    try {
+      member = await memberRepository.addExistingMember(
+        organizationId,
+        input.userId,
+        { ...input, ...brandScope },
+      );
+    } catch (error) {
+      const capacityError = memberCapacityApiError(error);
+      if (capacityError) throw capacityError;
+      if (
+        error instanceof Error &&
+        error.message === "AGENT_ENTERPRISE_QUOTA_EXCEEDED"
+      )
+        throw new ApiError(
+          422,
+          "AGENT_ENTERPRISE_QUOTA_EXCEEDED",
+          "代理商企业额度已用尽，请先提高额度再分配企业",
+        );
+      throw error;
+    }
     await writeAudit(
       { ...audit, organizationId },
       {
@@ -403,6 +421,13 @@ export const adminService = {
     await allowed(userId, "platform.tenant.manage");
     const member = await memberRepository.findMember(organizationId, memberId);
     if (!member) throw new ApiError(404, "MEMBER_NOT_FOUND", "企业成员不存在");
+    if (status === "active" && member.status !== "active") {
+      const account = await memberRepository.findUserById(member.userId);
+      if (!account) throw new ApiError(404, "USER_NOT_FOUND", "用户不存在");
+      assertAccountIsEffective(account);
+      if (member.status === "disabled")
+        await assertEntitlementCapacity(organizationId, "members");
+    }
     if (
       status === "disabled" &&
       (await memberRepository.isTenantAdmin(memberId)) &&
@@ -413,11 +438,27 @@ export const adminService = {
         "LAST_TENANT_ADMIN",
         "企业必须保留至少一名可用管理员",
       );
-    const updated = await memberRepository.updateMember(
-      organizationId,
-      memberId,
-      status,
-    );
+    let updated;
+    try {
+      updated = await memberRepository.updateMember(
+        organizationId,
+        memberId,
+        status,
+      );
+    } catch (error) {
+      const capacityError = memberCapacityApiError(error);
+      if (capacityError) throw capacityError;
+      if (
+        error instanceof Error &&
+        error.message === "AGENT_ENTERPRISE_QUOTA_EXCEEDED"
+      )
+        throw new ApiError(
+          422,
+          "AGENT_ENTERPRISE_QUOTA_EXCEEDED",
+          "代理商企业额度已用尽，请先提高额度再恢复成员",
+        );
+      throw error;
+    }
     await writeAudit(
       { ...audit, organizationId },
       {

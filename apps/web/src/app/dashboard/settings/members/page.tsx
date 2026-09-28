@@ -38,7 +38,7 @@ export default async function MemberSettingsPage({ searchParams }: PageProps) {
     >
       <SettingsFrame
         active="members"
-        description="把平台已创建的账号加入企业，并以角色和品牌范围控制最小访问权限。"
+        description="可直接创建客户账号并授予品牌权限，也可绑定已有账号或代理商管理本企业。"
         organizationId={organization?.id}
         organizations={organizations.map(({ id, name, role, status }) => ({
           id,

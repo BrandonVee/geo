@@ -21,19 +21,37 @@ export const memberRoleSchema = z.enum([
   "brand_editor",
   "brand_viewer",
 ]);
-export const addOrganizationMemberSchema = z
-  .object({
-    username: z
-      .string()
-      .trim()
-      .toLowerCase()
-      .regex(
-        /^[a-z][a-z0-9_]{2,31}$/,
-        "账号需以字母开头，只能包含小写字母、数字和下划线",
-      ),
-    role: memberRoleSchema,
-  })
-  .strict();
+const memberUsernameSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .regex(
+    /^[a-z][a-z0-9_]{2,31}$/,
+    "账号需以字母开头，只能包含小写字母、数字和下划线",
+  );
+export const addOrganizationMemberSchema = z.union([
+  z
+    .object({
+      username: memberUsernameSchema,
+      role: memberRoleSchema,
+    })
+    .strict(),
+  z
+    .object({
+      name: z.string().trim().min(2).max(80),
+      username: memberUsernameSchema,
+      password: z
+        .string()
+        .min(12, "密码至少 12 位")
+        .max(128, "密码最多 128 位")
+        .refine(
+          (value) => /[A-Za-z]/.test(value) && /\d/.test(value),
+          "密码必须同时包含字母和数字",
+        ),
+      role: z.enum(["brand_admin", "brand_editor", "brand_viewer"]),
+    })
+    .strict(),
+]);
 export const updateMemberSchema = z
   .object({ status: z.enum(["active", "disabled"]) })
   .strict();

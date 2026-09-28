@@ -215,6 +215,34 @@ describe("成员邀请契约", () => {
         role: "brand_editor",
       }).success,
     ).toBe(true));
+  it("允许创建客户账号并立即授予品牌权限", () =>
+    expect(
+      addOrganizationMemberSchema.safeParse({
+        name: "张三",
+        username: "brand_editor",
+        password: "safePassword123",
+        role: "brand_editor",
+      }).success,
+    ).toBe(true));
+  it("不允许企业端创建企业管理员或代理商账号", () => {
+    expect(
+      addOrganizationMemberSchema.safeParse({
+        name: "代理商",
+        username: "new_agent",
+        password: "safePassword123",
+        role: "tenant_admin",
+      }).success,
+    ).toBe(false);
+    expect(
+      addOrganizationMemberSchema.safeParse({
+        name: "张三",
+        username: "brand_editor",
+        password: "safePassword123",
+        role: "brand_editor",
+        accountType: "agent",
+      }).success,
+    ).toBe(false);
+  });
   it("拒绝不合法账号", () =>
     expect(
       addOrganizationMemberSchema.safeParse({

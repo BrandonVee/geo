@@ -368,7 +368,7 @@ paths:
         "403":
           $ref: "#/components/responses/Forbidden"
     post:
-      summary: 按账号绑定企业管理员或品牌成员
+      summary: 创建客户账号并授权，或绑定已有企业管理员或品牌成员
       tags:
         - Members
       security:
@@ -378,31 +378,65 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              additionalProperties: false
-              required:
-                - username
-                - role
-              properties:
-                username:
-                  type: string
-                  pattern: ^[a-z][a-z0-9_]{2,31}$
-                role:
-                  type: string
-                  enum:
-                    - tenant_admin
-                    - brand_admin
-                    - brand_editor
-                    - brand_viewer
+              oneOf:
+                - type: object
+                  additionalProperties: false
+                  description: 绑定已有账号；代理商只能绑定为企业管理员
+                  required:
+                    - username
+                    - role
+                  properties:
+                    username:
+                      type: string
+                      pattern: ^[a-z][a-z0-9_]{2,31}$
+                    role:
+                      type: string
+                      enum:
+                        - tenant_admin
+                        - brand_admin
+                        - brand_editor
+                        - brand_viewer
+                - type: object
+                  additionalProperties: false
+                  description: 创建普通客户账号并原子性授予本企业品牌权限
+                  required:
+                    - name
+                    - username
+                    - password
+                    - role
+                  properties:
+                    name:
+                      type: string
+                      minLength: 2
+                      maxLength: 80
+                    username:
+                      type: string
+                      pattern: ^[a-z][a-z0-9_]{2,31}$
+                    password:
+                      type: string
+                      format: password
+                      minLength: 12
+                      maxLength: 128
+                      description: 必须同时包含字母和数字
+                    role:
+                      type: string
+                      enum:
+                        - brand_admin
+                        - brand_editor
+                        - brand_viewer
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
         "415":
           $ref: "#/components/responses/UnsupportedMediaType"
         "201":
-          description: 已绑定账号并立即生效；品牌角色自动使用本企业 Tencent BrandID
+          description: 账号创建或绑定成功并立即生效；品牌角色自动使用本企业 Tencent BrandID
+        "402":
+          description: 成员权益未配置或有效成员名额已满
+        "409":
+          description: 创建的登录账号已存在
         "422":
-          description: 当前企业尚未形成有效品牌范围
+          description: 当前企业尚未形成有效品牌范围、代理商无效或企业额度已用尽
   /v1/organizations/{organizationId}/members/{memberId}:
     patch:
       summary: 启用或停用企业成员
@@ -432,6 +466,8 @@ paths:
           $ref: "#/components/responses/UnsupportedMediaType"
         "200":
           description: 状态已更新
+        "402":
+          description: 恢复成员时成员权益未配置或有效成员名额已满
         "409":
           description: 操作会导致企业没有可用管理员
     delete:
@@ -2129,10 +2165,10 @@ paths:
           $ref: "#/components/responses/UnsupportedMediaType"
         "201":
           description: 成员关系或本企业品牌权限已创建
-        "409":
-          description: 成员额度已满
+        "402":
+          description: 成员权益未配置或有效成员名额已满
         "422":
-          description: 账户类型或当前企业品牌范围不符合角色要求
+          description: 账户类型、代理商企业额度或当前企业品牌范围不符合角色要求
   /v1/admin/organizations/{organizationId}/members/{memberId}:
     patch:
       summary: 启用或停用企业成员
@@ -2175,6 +2211,8 @@ paths:
           $ref: "#/components/responses/UnsupportedMediaType"
         "200":
           description: 成员状态已更新
+        "402":
+          description: 恢复成员时成员权益未配置或有效成员名额已满
         "409":
           description: 操作会导致企业没有可用管理员
     delete:

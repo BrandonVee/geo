@@ -128,3 +128,5 @@ CI 还会在全新 PostgreSQL 18 中连续执行两次 `pnpm db:release`，并�
 发布账本的真实 PostgreSQL 回归需先完成 `pnpm db:release`，再运行 `PUBLICATION_DB_TESTS=1 node scripts/run-with-env.mjs pnpm --filter @geo/db test`。测试仅使用新建 UUID 隔离数据并在结束时清理，覆盖并发幂等扣款、退款、零元订单与上游迟到状态；默认单元测试不连接数据库执行这些用例。
 
 文档库的真实 PostgreSQL 回归在完成 `pnpm db:release` 后运行 `CONTENT_DOCUMENT_DB_TESTS=1 node scripts/run-with-env.mjs pnpm --filter @geo/web exec vitest run src/server/repositories/content-documents.integration.test.ts`。测试使用新建 UUID 范围并清理数据，覆盖文档与首版创建、并发版本递增、历史恢复及文件夹品牌隔离；默认测试跳过此用例。
+
+成员额度的真实 PostgreSQL 并发回归在完成 `pnpm db:release` 后运行 `MEMBER_CAPACITY_DB_TESTS=1 node scripts/run-with-env.mjs pnpm --filter @geo/web exec vitest run src/server/repositories/members.integration.test.ts`。测试使用新建 UUID 范围并清理数据，覆盖并发新增、并发恢复与新增共同争用最后一个名额；默认测试跳过此用例。

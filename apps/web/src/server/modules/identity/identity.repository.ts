@@ -13,7 +13,7 @@ export type NewLocalAccount = {
 
 const syntheticEmail = (username: string) => `${username}@accounts.invalid`;
 
-async function insertLocalAccount(
+export async function insertLocalAccount(
   tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
   input: NewLocalAccount,
 ) {

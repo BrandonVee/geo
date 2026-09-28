@@ -10,10 +10,14 @@ import {
   memberRoles,
   organizationMembers,
   organizationUserFeatureScopes,
+  organizations,
+  platformSubscriptions,
   roles,
+  subscriptionEntitlements,
   users,
 } from "@geo/db";
-import { and, count, eq } from "drizzle-orm";
+import { and, count, eq, gt, ne, sql } from "drizzle-orm";
+import { insertLocalAccount } from "@/server/modules/identity/identity.repository";
 
 type MemberScopeInput = {
   role: AddOrganizationMemberInput["role"];
@@ -25,6 +29,170 @@ type BrandAccessScopeInput = CreateBrandAccessInput & {
   teamBindingId: string;
   brandId: string;
 };
+
+type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+async function lockOrganization(tx: Transaction, organizationId: string) {
+  const [organization] = await tx
+    .select({ id: organizations.id })
+    .from(organizations)
+    .where(eq(organizations.id, organizationId))
+    .for("update");
+  if (!organization) throw new Error("ORGANIZATION_NOT_FOUND");
+}
+
+async function assertMemberCapacity(tx: Transaction, organizationId: string) {
+  const [entitlement] = await tx
+    .select({ limitAmount: subscriptionEntitlements.limitAmount })
+    .from(subscriptionEntitlements)
+    .innerJoin(
+      platformSubscriptions,
+      eq(platformSubscriptions.id, subscriptionEntitlements.subscriptionId),
+    )
+    .where(
+      and(
+        eq(subscriptionEntitlements.organizationId, organizationId),
+        eq(subscriptionEntitlements.entitlementKey, "members"),
+        eq(platformSubscriptions.status, "active"),
+        gt(platformSubscriptions.currentPeriodEnd, new Date()),
+      ),
+    )
+    .limit(1);
+  if (!entitlement) throw new Error("ENTITLEMENT_NOT_FOUND");
+  if (entitlement.limitAmount === null) return;
+
+  const [current] = await tx
+    .select({ value: sql<number>`count(*)::int` })
+    .from(organizationMembers)
+    .where(
+      and(
+        eq(organizationMembers.organizationId, organizationId),
+        ne(organizationMembers.status, "disabled"),
+      ),
+    );
+  if ((current?.value ?? 0) >= entitlement.limitAmount)
+    throw new Error("ENTITLEMENT_LIMIT_REACHED");
+}
+
+async function countActiveAgentEnterprises(tx: Transaction, userId: string) {
+  const [row] = await tx
+    .select({
+      value: sql<number>`count(distinct ${organizationMembers.organizationId})::int`,
+    })
+    .from(organizationMembers)
+    .innerJoin(memberRoles, eq(memberRoles.memberId, organizationMembers.id))
+    .innerJoin(roles, eq(roles.id, memberRoles.roleId))
+    .innerJoin(
+      organizations,
+      eq(organizations.id, organizationMembers.organizationId),
+    )
+    .where(
+      and(
+        eq(organizationMembers.userId, userId),
+        eq(organizationMembers.status, "active"),
+        eq(roles.code, "tenant_admin"),
+        ne(organizations.status, "closed"),
+      ),
+    );
+  return row?.value ?? 0;
+}
+
+async function upsertMember(
+  tx: Transaction,
+  organizationId: string,
+  userId: string,
+  input: MemberScopeInput,
+) {
+  await lockOrganization(tx, organizationId);
+  const [existing] = await tx
+    .select({ status: organizationMembers.status })
+    .from(organizationMembers)
+    .where(
+      and(
+        eq(organizationMembers.organizationId, organizationId),
+        eq(organizationMembers.userId, userId),
+      ),
+    )
+    .limit(1);
+  if (!existing || existing.status === "disabled")
+    await assertMemberCapacity(tx, organizationId);
+
+  let agentEnterpriseLimit: number | null = null;
+  let priorAgentEnterpriseCount = 0;
+  if (input.role === "tenant_admin") {
+    const [account] = await tx
+      .select({
+        accountType: users.accountType,
+        agentEnterpriseLimit: users.agentEnterpriseLimit,
+      })
+      .from(users)
+      .where(eq(users.id, userId))
+      .for("update");
+    if (account?.accountType === "agent") {
+      agentEnterpriseLimit = account.agentEnterpriseLimit;
+      if (agentEnterpriseLimit !== null)
+        priorAgentEnterpriseCount = await countActiveAgentEnterprises(
+          tx,
+          userId,
+        );
+    }
+  }
+  const [member] = await tx
+    .insert(organizationMembers)
+    .values({
+      organizationId,
+      userId,
+      status: "active",
+      joinedAt: new Date(),
+    })
+    .onConflictDoUpdate({
+      target: [organizationMembers.organizationId, organizationMembers.userId],
+      set: { status: "active", joinedAt: new Date() },
+    })
+    .returning();
+
+  if (input.role === "tenant_admin") {
+    const [role] = await tx
+      .select({ id: roles.id })
+      .from(roles)
+      .where(eq(roles.code, "tenant_admin"))
+      .limit(1);
+    if (!role) throw new Error("TENANT_ADMIN_ROLE_NOT_SEEDED");
+    await tx
+      .insert(memberRoles)
+      .values({ memberId: member.id, roleId: role.id })
+      .onConflictDoNothing();
+    if (agentEnterpriseLimit !== null) {
+      const nextCount = await countActiveAgentEnterprises(tx, userId);
+      if (
+        nextCount > priorAgentEnterpriseCount &&
+        nextCount > agentEnterpriseLimit
+      )
+        throw new Error("AGENT_ENTERPRISE_QUOTA_EXCEEDED");
+    }
+  } else {
+    await tx
+      .insert(brandAccess)
+      .values({
+        organizationId,
+        userId,
+        teamBindingId: input.teamBindingId!,
+        brandId: input.brandId!,
+        role: input.role,
+      })
+      .onConflictDoUpdate({
+        target: [
+          brandAccess.organizationId,
+          brandAccess.teamBindingId,
+          brandAccess.brandId,
+          brandAccess.userId,
+        ],
+        set: { role: input.role },
+      });
+  }
+
+  return member;
+}
 
 export const memberRepository = {
   async findUserByUsername(username: string) {
@@ -103,57 +271,32 @@ export const memberRepository = {
     userId: string,
     input: MemberScopeInput,
   ) {
+    return db.transaction((tx) =>
+      upsertMember(tx, organizationId, userId, input),
+    );
+  },
+
+  async createCustomerMember(
+    organizationId: string,
+    input: {
+      name: string;
+      username: string;
+      passwordHash: string;
+      role: "brand_admin" | "brand_editor" | "brand_viewer";
+      teamBindingId: string;
+      brandId: string;
+    },
+  ) {
     return db.transaction(async (tx) => {
-      const [member] = await tx
-        .insert(organizationMembers)
-        .values({
-          organizationId,
-          userId,
-          status: "active",
-          joinedAt: new Date(),
-        })
-        .onConflictDoUpdate({
-          target: [
-            organizationMembers.organizationId,
-            organizationMembers.userId,
-          ],
-          set: { status: "active", joinedAt: new Date() },
-        })
-        .returning();
-
-      if (input.role === "tenant_admin") {
-        const [role] = await tx
-          .select({ id: roles.id })
-          .from(roles)
-          .where(eq(roles.code, "tenant_admin"))
-          .limit(1);
-        if (!role) throw new Error("TENANT_ADMIN_ROLE_NOT_SEEDED");
-        await tx
-          .insert(memberRoles)
-          .values({ memberId: member.id, roleId: role.id })
-          .onConflictDoNothing();
-      } else {
-        await tx
-          .insert(brandAccess)
-          .values({
-            organizationId,
-            userId,
-            teamBindingId: input.teamBindingId!,
-            brandId: input.brandId!,
-            role: input.role,
-          })
-          .onConflictDoUpdate({
-            target: [
-              brandAccess.organizationId,
-              brandAccess.teamBindingId,
-              brandAccess.brandId,
-              brandAccess.userId,
-            ],
-            set: { role: input.role },
-          });
-      }
-
-      return member;
+      const user = await insertLocalAccount(tx, {
+        name: input.name,
+        username: input.username,
+        passwordHash: input.passwordHash,
+        accountType: "customer",
+        pricingTier: "retail",
+      });
+      const member = await upsertMember(tx, organizationId, user.id, input);
+      return { user, member };
     });
   },
 
@@ -221,21 +364,67 @@ export const memberRepository = {
     memberId: string,
     status: "active" | "disabled",
   ) {
-    const [member] = await db
-      .update(organizationMembers)
-      .set({ status })
-      .where(
-        and(
-          eq(organizationMembers.organizationId, organizationId),
-          eq(organizationMembers.id, memberId),
-        ),
-      )
-      .returning();
-    return member;
+    return db.transaction(async (tx) => {
+      await lockOrganization(tx, organizationId);
+      const [current] = await tx
+        .select({
+          userId: organizationMembers.userId,
+          status: organizationMembers.status,
+        })
+        .from(organizationMembers)
+        .where(
+          and(
+            eq(organizationMembers.organizationId, organizationId),
+            eq(organizationMembers.id, memberId),
+          ),
+        );
+      let agentEnterpriseLimit: number | null = null;
+      let priorAgentEnterpriseCount = 0;
+      if (current && current.status !== "active" && status === "active") {
+        if (current.status === "disabled")
+          await assertMemberCapacity(tx, organizationId);
+        const [account] = await tx
+          .select({
+            accountType: users.accountType,
+            agentEnterpriseLimit: users.agentEnterpriseLimit,
+          })
+          .from(users)
+          .where(eq(users.id, current.userId))
+          .for("update");
+        if (account?.accountType === "agent") {
+          agentEnterpriseLimit = account.agentEnterpriseLimit;
+          if (agentEnterpriseLimit !== null)
+            priorAgentEnterpriseCount = await countActiveAgentEnterprises(
+              tx,
+              current.userId,
+            );
+        }
+      }
+      const [member] = await tx
+        .update(organizationMembers)
+        .set({ status })
+        .where(
+          and(
+            eq(organizationMembers.organizationId, organizationId),
+            eq(organizationMembers.id, memberId),
+          ),
+        )
+        .returning();
+      if (member && agentEnterpriseLimit !== null) {
+        const nextCount = await countActiveAgentEnterprises(tx, member.userId);
+        if (
+          nextCount > priorAgentEnterpriseCount &&
+          nextCount > agentEnterpriseLimit
+        )
+          throw new Error("AGENT_ENTERPRISE_QUOTA_EXCEEDED");
+      }
+      return member;
+    });
   },
 
   async removeMember(organizationId: string, memberId: string, userId: string) {
     return db.transaction(async (tx) => {
+      await lockOrganization(tx, organizationId);
       await tx
         .delete(brandAccess)
         .where(

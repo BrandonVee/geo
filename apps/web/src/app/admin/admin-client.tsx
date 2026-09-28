@@ -3042,7 +3042,9 @@ export function AdminClient({
                             `采购 ¥100 → 售价 ¥${(
                               100 *
                               (1 + rule.publicationMarkupBps / 10_000)
-                            ).toFixed(2)}；基础 100 积分 → ${calculateMarkedUpPoints(
+                            ).toFixed(
+                              2,
+                            )}；基础 100 积分 → ${calculateMarkedUpPoints(
                               100,
                               rule.pointMarkupBps,
                             )} 积分`,
@@ -5626,7 +5628,7 @@ export function AdminClient({
                             label: `${user.name} · @${user.username} · ${user.accountType === "agent" ? "代理商" : user.accountType === "admin" ? "管理员" : "客户"}`,
                             value: user.id,
                           }))}
-                        placeholder="选择已创建的平台账户"
+                        placeholder="选择已有账户；代理商请分配企业管理员角色"
                         showSearch
                       />
                     </Form.Item>
