@@ -1,6 +1,7 @@
 import {
   contentDocumentListQuerySchema,
   createContentDocumentSchema,
+  idempotencyKeySchema,
 } from "@geo/contracts";
 import { createRequestId } from "@geo/core";
 import { auditContextFromRequest } from "@/server/audit/write-audit";
@@ -40,12 +41,15 @@ export async function POST(request: Request) {
     const parsed = createContentDocumentSchema.safeParse(
       await readJsonBody(request),
     );
-    if (!parsed.success)
+    const key = idempotencyKeySchema
+      .optional()
+      .safeParse(request.headers.get("Idempotency-Key") ?? undefined);
+    if (!parsed.success || !key.success)
       throw new ApiError(
         400,
         "VALIDATION_ERROR",
-        "请求参数有误",
-        parsed.error.issues,
+        !key.success ? "Idempotency-Key 格式错误" : "请求参数有误",
+        parsed.success ? undefined : parsed.error.issues,
       );
     const data = await contentDocumentService.create(
       parsed.data,
@@ -56,11 +60,12 @@ export async function POST(request: Request) {
         user.id,
         requestId,
       ),
+      key.data,
     );
     return apiJson(
       { data, requestId },
       {
-        status: 201,
+        status: data.replayed ? 200 : 201,
         headers: { Location: `/api/v1/content-documents/${data.id}` },
       },
     );

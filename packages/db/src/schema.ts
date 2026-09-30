@@ -856,10 +856,16 @@ export const contentDocuments = pgTable(
       .$type<string[]>()
       .default(sql`'[]'::jsonb`)
       .notNull(),
+    creationKey: varchar("creation_key", { length: 128 }),
+    creationFingerprint: varchar("creation_fingerprint", { length: 64 }),
     currentVersion: integer("current_version").default(1).notNull(),
     ...timestamps,
   },
   (t) => [
+    uniqueIndex("content_documents_org_creation_key_ux").on(
+      t.organizationId,
+      t.creationKey,
+    ),
     uniqueIndex("content_documents_source_job_ux").on(t.sourceJobId),
     index("content_documents_scope_updated_idx").on(
       t.organizationId,

@@ -57,6 +57,13 @@
       "when": 1790704335275,
       "tag": "v8",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1790799067400,
+      "tag": "v9",
+      "breakpoints": true
     }
   ]
 }

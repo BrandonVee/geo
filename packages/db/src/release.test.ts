@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import {
   CURRENT_SCHEMA_VERSION,
@@ -32,6 +32,26 @@ describe("database release readiness", () => {
     ).toEqual({ schemaReady: false, seedReady: true });
   });
 
+  it("keeps migration snapshots ordered with a single ancestry chain", async () => {
+    const root = new URL("../drizzle/meta/", import.meta.url);
+    const names = (await readdir(root))
+      .filter((name) => name.endsWith("_snapshot.json"))
+      .sort();
+    let previous = "00000000-0000-0000-0000-000000000000";
+    for (const name of names) {
+      expect(name).toMatch(/^\d{4}_snapshot\.json$/);
+      const snapshot = JSON.parse(await readFile(new URL(name, root), "utf8"));
+      expect(snapshot.prevId).toBe(previous);
+      previous = snapshot.id;
+    }
+    const journal = JSON.parse(
+      await readFile(new URL("_journal.json", root), "utf8"),
+    );
+    expect(names.at(-1)).toBe(
+      `${String(journal.entries.at(-1).idx).padStart(4, "0")}_snapshot.json`,
+    );
+  });
+
   it("keeps the readiness revision aligned with the latest migration", async () => {
     const journal = JSON.parse(
       await readFile(
@@ -39,7 +59,7 @@ describe("database release readiness", () => {
         "utf8",
       ),
     ) as { entries: Array<{ idx: number; tag: string }> };
-    expect(journal.entries).toHaveLength(8);
+    expect(journal.entries).toHaveLength(9);
     expect(journal.entries[0]?.idx).toBe(0);
     expect(journal.entries[0]?.tag).toBe("v1");
     expect(journal.entries.at(-1)?.tag).toBe(CURRENT_SCHEMA_VERSION);
@@ -49,8 +69,15 @@ describe("database release readiness", () => {
       "utf8",
     );
     expect(migration).toContain(`('schema', '${CURRENT_SCHEMA_VERSION}')`);
-    expect(migration).toContain("service_expires_at");
-    expect(migration).toContain("points_expires_at");
+    expect(migration).toContain("creation_key");
+    expect(migration).toContain("creation_fingerprint");
+    expect(migration).toContain("content_documents_org_creation_key_ux");
+    const validityMigration = await readFile(
+      new URL("../drizzle/v8.sql", import.meta.url),
+      "utf8",
+    );
+    expect(validityMigration).toContain("service_expires_at");
+    expect(validityMigration).toContain("points_expires_at");
 
     const pointMarkupMigration = await readFile(
       new URL("../drizzle/v6.sql", import.meta.url),

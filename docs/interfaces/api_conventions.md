@@ -77,6 +77,8 @@ JSON 请求使用 `Content-Type: application/json`；允许标准的 `applicatio
 
 文章生成在企业范围内保存幂等键，并校验原操作者、品牌、内部绑定和请求内容；不一致返回 `409 ARTICLE_JOB_IDEMPOTENCY_CONFLICT`。网络失败重试必须继续使用同一个键，明确失败或取消的任务重新生成使用新键。
 
+文档新建和导入支持可选的 `Idempotency-Key` 请求头；工作台和平台文档库必须提供稳定键。首次创建返回 `201` 和 `data.replayed=false`，相同键、操作者、范围及创建内容重放返回当前文档、`200` 和 `data.replayed=true`，不新建版本；参数或操作者不一致返回 `409 CONTENT_DOCUMENT_IDEMPOTENCY_CONFLICT`。原始创建指纹不随后续编辑改变。兼容不带键的调用，但此类调用每次都是独立创建，不能安全重试。
+
 文档编辑与历史恢复请求体、归档查询参数必须包含正整数 `expectedVersion`。版本不一致返回 `409 CONTENT_DOCUMENT_VERSION_CONFLICT` 和 `details.currentVersion`，不写入内容或版本；客户端保留未保存编辑，核对最新版后重新提交。
 
 报告导出同样校验原操作者、品牌、内部绑定、报告类型和完整筛选；不一致返回 `409 REPORT_EXPORT_IDEMPOTENCY_CONFLICT`。网络失败重试保留原键，确认失败或文件过期后按原条件重新导出使用新键。报告元数据返回规范化的原筛选、即时过期状态、下载地址和 `errorMessage`；元数据响应不包含 CSV 正文。

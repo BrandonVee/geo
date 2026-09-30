@@ -1607,6 +1607,16 @@ paths:
         - Content Library
       security:
         - cookieSession: []
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: false
+          description: 首次提交前生成并持久化；网络失败重试使用原键和原内容。省略时每次创建独立文档。
+          schema:
+            type: string
+            minLength: 8
+            maxLength: 128
+            pattern: "^[A-Za-z0-9._:-]+$"
       requestBody:
         required: true
         content:
@@ -1619,7 +1629,11 @@ paths:
         "415":
           $ref: "#/components/responses/UnsupportedMediaType"
         "201":
-          description: 文档及首个版本已保存
+          description: 文档及首个版本已保存，replayed=false
+        "200":
+          description: 相同创建请求已存在，返回文档当前状态，replayed=true
+        "409":
+          description: CONTENT_DOCUMENT_IDEMPOTENCY_CONFLICT；同一键对应的操作者、品牌范围或原始内容不同
   /v1/content-documents/{documentId}:
     get:
       summary: 查询文档正文与版本目录

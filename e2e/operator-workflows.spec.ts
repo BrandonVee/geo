@@ -156,7 +156,7 @@ async function mockAnswerReads(
 test.describe("真实运营操作闭环", () => {
   test.skip(
     process.env.WORKFLOW_E2E !== "1",
-    "需本机已迁移数据库、Redis 与已接入的开发服务",
+    "使用 scripts/test-operator-workflows.mjs 创建一次性测试数据库",
   );
   test.beforeAll(async () => {
     if (
@@ -255,10 +255,22 @@ test.describe("真实运营操作闭环", () => {
       ]);
       fixture.scopes.push({ organizationId, teamBindingId, brandId, name });
     }
-    const login = await page.request.post("/api/auth/sign-in/username", {
-      headers: { Origin: process.env.APP_URL ?? "http://localhost:3000" },
-      data: { username: fixture.username, password: fixture.password },
-    });
+    const loginRequest = () =>
+      page.request.post("/api/auth/sign-in/username", {
+        headers: { Origin: process.env.APP_URL ?? "http://localhost:3000" },
+        data: { username: fixture.username, password: fixture.password },
+      });
+    let login = await loginRequest();
+    if (login.status() === 429) {
+      // The suite shares one client IP; respect the real authentication rate limit.
+      test.info().setTimeout(120_000);
+      const seconds = Number(login.headers()["retry-after"]);
+      if (!Number.isFinite(seconds) || seconds < 0 || seconds > 60)
+        throw new Error("Unexpected authentication Retry-After in workflow QA");
+      console.info(`QA login throttled; waiting ${seconds}s before retry`);
+      await new Promise((resolve) => setTimeout(resolve, seconds * 1000 + 500));
+      login = await loginRequest();
+    }
     expect(login.ok()).toBeTruthy();
   });
   test.afterEach(async ({ page }) => {
@@ -702,14 +714,14 @@ test.describe("真实运营操作闭环", () => {
       }
       return route.continue();
     });
-    await editor.getByRole("button", { name: /保存文档/ }).click();
+    await editor.getByRole("button", { name: /保存文档|确认上次保存/ }).click();
     await expect(
       page.getByText("连接中断，编辑内容已保留，请重试", { exact: true }),
     ).toBeVisible();
     await expect(editor.getByLabel("正文", { exact: true })).toHaveValue(
       "尚未保存的正文",
     );
-    await editor.getByRole("button", { name: /保存文档/ }).click();
+    await editor.getByRole("button", { name: /保存文档|确认上次保存/ }).click();
     await expect(editor).toHaveCount(0);
     await expect(
       page.getByText("有尚未保存的编辑", { exact: true }),
@@ -729,6 +741,176 @@ test.describe("真实运营操作闭环", () => {
       body: "尚未保存的正文",
     });
   });
+
+  for (const source of ["manual", "imported"] as const) {
+    test(`${source === "manual" ? "新建" : "导入"}文档成功响应丢失，刷新重试找回原文档并保留之后的编辑`, async ({
+      page,
+    }) => {
+      await page.addInitScript({ content: axe.source });
+      await mockBusinessApis(page);
+      await page.route("**/api/v1/content-documents**", (route) =>
+        route.continue(),
+      );
+      await page.route("**/api/v1/content-folders**", (route) =>
+        route.continue(),
+      );
+      await page.goto(`${scopedPath("/dashboard/content")}&stage=library`);
+      await page
+        .getByRole("button", {
+          name: source === "manual" ? /新建文档/ : /导入文章/,
+        })
+        .click();
+      let editor = page.getByRole("dialog", { name: "保存到文档库" });
+      await editor.getByLabel("标题", { exact: true }).fill("确认后丢失的文章");
+      if (source === "manual") {
+        await editor.getByLabel("状态", { exact: true }).press("ArrowDown");
+        await page.getByTitle("已定稿", { exact: true }).click();
+        await editor.getByRole("button", { name: /保存文档/ }).click();
+        await expect(
+          page.getByText("定稿文档必须包含正文", { exact: true }),
+        ).toBeVisible();
+        await expect(editor).toBeVisible();
+      }
+      await editor.getByLabel("正文", { exact: true }).fill("首次提交正文");
+      if (source === "imported")
+        await editor
+          .getByLabel("来源链接", { exact: true })
+          .fill("https://example.com/imported");
+      const submissions: { key: string; body: unknown; status: number }[] = [];
+      await page.route("**/api/v1/content-documents", async (route) => {
+        if (route.request().method() !== "POST") return route.continue();
+        const response = await route.fetch();
+        submissions.push({
+          key: route.request().headers()["idempotency-key"],
+          body: route.request().postDataJSON(),
+          status: response.status(),
+        });
+        if (submissions.length === 1) return route.abort("failed");
+        return route.fulfill({ response });
+      });
+      await editor.getByRole("button", { name: /保存文档/ }).click();
+      await expect(
+        editor.getByText("上次保存结果尚未确认", { exact: true }),
+      ).toBeVisible();
+      await editor
+        .getByLabel("正文", { exact: true })
+        .fill("响应丢失后继续修改");
+      await editor.getByRole("button", { name: "暂存并关闭" }).click();
+      await expect(editor).toHaveCount(0);
+      await page.reload();
+      await page.getByRole("button", { name: "继续编辑", exact: true }).click();
+      editor = page.getByRole("dialog", { name: "保存到文档库" });
+      await expect(editor.getByLabel("正文", { exact: true })).toHaveValue(
+        "响应丢失后继续修改",
+      );
+      await editor
+        .getByRole("button", { name: "确认上次保存", exact: true })
+        .click();
+      editor = page.getByRole("dialog", { name: /编辑文档/ });
+      await expect(editor).toBeVisible();
+      await expect(editor.getByLabel("正文", { exact: true })).toHaveValue(
+        "响应丢失后继续修改",
+      );
+      expect(submissions).toHaveLength(2);
+      expect(submissions[0].key).toMatch(/^[0-9a-f-]{36}$/);
+      expect(submissions[0].status).toBe(201);
+      expect(submissions[1]).toEqual({ ...submissions[0], status: 200 });
+      const beforeSave = await database.db
+        .select()
+        .from(database.contentDocuments)
+        .where(
+          operators.eq(
+            database.contentDocuments.organizationId,
+            fixture.scopes[0].organizationId,
+          ),
+        );
+      expect(beforeSave).toHaveLength(1);
+      expect(beforeSave[0]).toMatchObject({
+        body: "首次提交正文",
+        currentVersion: 1,
+      });
+      await editor
+        .getByRole("button", { name: "保存新版本", exact: true })
+        .click();
+      await expect(editor).toHaveCount(0);
+      await expect(
+        page.getByRole("dialog", { name: "确认后丢失的文章", exact: true }),
+      ).toBeVisible();
+      for (const mode of ["light", "dark"]) {
+        if (mode === "dark") {
+          await page
+            .getByRole("dialog", { name: "确认后丢失的文章", exact: true })
+            .getByRole("button", { name: /close|关闭/i })
+            .click();
+          await expect(
+            page.getByRole("dialog", { name: "确认后丢失的文章", exact: true }),
+          ).toHaveCount(0);
+
+          await page
+            .getByRole("button", { name: "切换亮暗色模式", exact: true })
+            .click();
+          await expect(page.locator("html")).toHaveAttribute(
+            "data-theme",
+            "dark",
+          );
+          await expect
+            .poll(() =>
+              page
+                .locator(".ant-menu-item-group-title")
+                .first()
+                .evaluate((element) => getComputedStyle(element).color),
+            )
+            .toBe("rgb(165, 175, 191)");
+        }
+        const violations = await page.evaluate(async () => {
+          const result = await (
+            window as typeof window & { axe: typeof axe }
+          ).axe.run(document, {
+            runOnly: {
+              type: "tag",
+              values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"],
+            },
+          });
+          return result.violations.map(({ id, nodes }) => ({
+            id,
+            targets: nodes.map(({ target }) => target.join(" ")),
+          }));
+        });
+        expect(violations).toEqual([]);
+      }
+      const rows = await database.db
+        .select()
+        .from(database.contentDocuments)
+        .where(
+          operators.eq(
+            database.contentDocuments.organizationId,
+            fixture.scopes[0].organizationId,
+          ),
+        );
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        body: "响应丢失后继续修改",
+        currentVersion: 2,
+      });
+      const versions = await database.db
+        .select()
+        .from(database.contentDocumentVersions)
+        .where(
+          operators.eq(database.contentDocumentVersions.documentId, rows[0].id),
+        );
+      expect(versions).toHaveLength(2);
+      expect(versions.map((version) => version.body)).toEqual(
+        expect.arrayContaining(["首次提交正文", "响应丢失后继续修改"]),
+      );
+      const audits = await database.db
+        .select()
+        .from(database.operationLogs)
+        .where(operators.eq(database.operationLogs.resourceId, rows[0].id));
+      expect(
+        audits.filter((log) => log.operation === "content.document.create"),
+      ).toHaveLength(1);
+    });
+  }
 
   test("多人编辑冲突保留表单，合并保存后仍保留两人的历史内容", async ({
     page,
@@ -846,10 +1028,39 @@ test.describe("真实运营操作闭环", () => {
     await editor
       .getByRole("button", { name: "保存新版本", exact: true })
       .click();
+    const copies: { key: string; body: unknown; status: number }[] = [];
+    await page.route("**/api/v1/content-documents", async (route) => {
+      if (route.request().method() !== "POST") return route.continue();
+      const response = await route.fetch();
+      copies.push({
+        key: route.request().headers()["idempotency-key"],
+        body: route.request().postDataJSON(),
+        status: response.status(),
+      });
+      if (copies.length === 1) return route.abort("failed");
+      return route.fulfill({ response });
+    });
     await editor
       .getByRole("button", { name: "另存为新文档", exact: true })
       .click();
+    await expect(
+      editor.getByText("上次保存结果尚未确认", { exact: true }),
+    ).toBeVisible();
+    await editor.getByRole("button", { name: "暂存并关闭" }).click();
     await expect(editor).toHaveCount(0);
+    await page.reload();
+    await page.getByRole("button", { name: "继续编辑", exact: true }).click();
+    editor = page.getByRole("dialog", { name: /编辑文档/ });
+    await expect(
+      editor.getByText("上次保存结果尚未确认", { exact: true }),
+    ).toBeVisible();
+    await editor
+      .getByRole("button", { name: "确认上次保存", exact: true })
+      .click();
+    await expect(editor).toHaveCount(0);
+    expect(copies).toHaveLength(2);
+    expect(copies[0].status).toBe(201);
+    expect(copies[1]).toEqual({ ...copies[0], status: 200 });
     const copied = await database.db
       .select()
       .from(database.contentDocuments)

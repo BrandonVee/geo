@@ -60,7 +60,7 @@ pnpm db:release
 pnpm dev
 ```
 
-全新数据库先由 `packages/db/drizzle/v1.sql` 建立基线，再依次执行 `v2.sql` 媒体发布平台凭证、`v3.sql` 分级定价结构、`v4.sql` 本地文档库结构及历史生成内容回填、`v5.sql` AnswerBit 读取缓存、`v6.sql` 积分加价规则与 `v7.sql` 异步文章价格快照，随后执行 `v8.sql` 企业服务与积分到期日，记录 schema `v8`、执行 seed `v2` 的幂等种子并完成 RLS 检查。升级到 v6 时，未修改的旧等级规则转为当前发布加价率；已由管理员修改的规则保留原实际扣费，旧折扣显示为负加价率。v7 为新文章任务保存提交时的价格快照，旧任务仍按执行时规则计价。后续 schema 变化继续通过 `pnpm db:generate` 生成增量迁移并递增 `vN`，不直接修改已发布迁移。
+全新数据库先由 `packages/db/drizzle/v1.sql` 建立基线，再依次执行 `v2.sql` 媒体发布平台凭证、`v3.sql` 分级定价结构、`v4.sql` 本地文档库结构及历史生成内容回填、`v5.sql` AnswerBit 读取缓存、`v6.sql` 积分加价规则与 `v7.sql` 异步文章价格快照，随后执行 `v8.sql` 企业服务与积分到期日及 `v9.sql` 文档创建幂等键和原请求指纹，记录 schema `v9`、执行 seed `v2` 的幂等种子并完成 RLS 检查。升级到 v6 时，未修改的旧等级规则转为当前发布加价率；已由管理员修改的规则保留原实际扣费，旧折扣显示为负加价率。v7 为新文章任务保存提交时的价格快照，旧任务仍按执行时规则计价。后续 schema 变化继续通过 `pnpm db:generate` 生成增量迁移并递增 `vN`，不直接修改已发布迁移。Drizzle 快照使用四位序号文件名（如 `0008_snapshot.json`）并以 `prevId` 串联，避免混用版本名导致生成器误读旧快照或产生分叉。
 
 访问：
 
@@ -127,12 +127,12 @@ CI 还会在全新 PostgreSQL 18 中连续执行两次 `pnpm db:release`，并�
 
 发布账本的真实 PostgreSQL 回归需先完成 `pnpm db:release`，再运行 `PUBLICATION_DB_TESTS=1 node scripts/run-with-env.mjs pnpm --filter @geo/db test`。测试仅使用新建 UUID 隔离数据并在结束时清理，覆盖并发幂等扣款、退款、零元订单与上游迟到状态；默认单元测试不连接数据库执行这些用例。
 
-文档库的真实 PostgreSQL 回归在完成 `pnpm db:release` 后运行 `CONTENT_DOCUMENT_DB_TESTS=1 node scripts/run-with-env.mjs pnpm --filter @geo/web exec vitest run src/server/repositories/content-documents.integration.test.ts`。测试使用新建 UUID 范围并清理数据，覆盖文档与首版创建、过期并发保存拒绝、历史恢复与归档版本校验及文件夹品牌隔离；默认测试跳过此用例。
+文档库的真实 PostgreSQL 回归在完成 `pnpm db:release` 后运行 `CONTENT_DOCUMENT_DB_TESTS=1 node scripts/run-with-env.mjs pnpm --filter @geo/web exec vitest run src/server/repositories/content-documents.integration.test.ts`。测试使用新建 UUID 范围并清理数据，覆盖文档并发创建重放、原操作者与内容校验、编辑后创建重放、过期并发保存拒绝、历史恢复与归档版本校验及文件夹品牌隔离；默认测试跳过此用例。
 
 成员额度的真实 PostgreSQL 并发回归在完成 `pnpm db:release` 后运行 `MEMBER_CAPACITY_DB_TESTS=1 node scripts/run-with-env.mjs pnpm --filter @geo/web exec vitest run src/server/repositories/members.integration.test.ts`。测试使用新建 UUID 范围并清理数据，覆盖并发新增、并发恢复与新增共同争用最后一个名额；默认测试跳过此用例。
 
 企业有效期与手动扣减的真实 PostgreSQL 回归：先执行 `pnpm db:release`，再运行 `ENTERPRISE_BALANCE_DB_TESTS=1 node scripts/run-with-env.mjs pnpm --filter @geo/db exec vitest run src/enterprise-balances.integration.test.ts`。用例仅创建独立 UUID 数据并清理，覆盖重复扣减、余额不足、到期阻止消费、续期恢复和冻结后退款。
 
-运营页面回归在 Redis 可用且 `MIGRATION_DATABASE_URL` 账号可创建、删除数据库时，安装 Playwright Chromium 后运行 `node scripts/test-operator-workflows.mjs`。脚本创建独立 `geo_workflow_qa_*` 数据库并完成迁移、种子和 RLS 检查，写入测试接入配置，再构建与启动生产 Web，以临时端口运行浏览器回归，结束后关闭服务并删除测试库。腾讯和发布地址指向测试服务，业务调用在浏览器中模拟；无需真实上游 Key 或已运行的开发服务。用例覆盖草稿恢复、企业切换、生成重试、积分查看、个人视图管理、报告重试、文档暂存恢复与多人编辑冲突合并；审计记录保持不可变，由测试库整体删除完成清理。测试文件要求一次性数据库标识，禁止直接对日常开发数据库执行。脚本支持透传 `--grep` 等 Playwright 参数。
+运营页面回归在 Redis 可用且 `MIGRATION_DATABASE_URL` 账号可创建、删除数据库时，安装 Playwright Chromium 后运行 `node scripts/test-operator-workflows.mjs`。脚本创建独立 `geo_workflow_qa_*` 数据库并完成两次迁移、种子和 RLS 检查及文档 PostgreSQL 回归，写入测试接入配置，再构建与启动生产 Web，以临时端口运行浏览器回归，结束后关闭服务并删除测试库。腾讯和发布地址指向测试服务，业务调用在浏览器中模拟；无需真实上游 Key 或已运行的开发服务。用例覆盖草稿恢复、企业切换、生成重试、积分查看、个人视图管理、报告重试、文档暂存恢复、成功响应丢失后的创建重放与多人编辑冲突合并；审计记录保持不可变，由测试库整体删除完成清理。测试文件要求一次性数据库标识，禁止直接对日常开发数据库执行。脚本支持透传 `--grep` 等 Playwright 参数。多用例登录共享同一客户端 IP，达到真实登录限流时按服务端 `Retry-After` 等待后重试，不关闭限流。
 
 Worker 等待任务的权限复核回归在已迁移数据库执行 `WORKER_ACCESS_DB_TESTS=1 node scripts/run-with-env.mjs pnpm --filter @geo/worker exec vitest run src/job-access.integration.test.ts`。只创建独立 UUID 数据并清理，不创建任务或调用上游，覆盖成员／账号停用、角色降级、功能模块关闭、代理商到期和品牌归属。

@@ -40,6 +40,45 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllGlobals());
 describe("文档未保存编辑", () => {
+  it("网络响应丢失后保留原创建请求，继续编辑不会更改重试正文", () => {
+    const creation = {
+      key: "22222222-2222-4222-8222-222222222222",
+      input: {
+        organizationId: "33333333-3333-4333-8333-333333333333",
+        teamBindingId: "44444444-4444-4444-8444-444444444444",
+        brandId: scope.brandId,
+        title: "首次提交",
+        body: "首次正文",
+        status: "draft" as const,
+        source: "manual" as const,
+        language: "zh-CN" as const,
+        tags: [],
+      },
+    };
+    const currentScope = {
+      ...scope,
+      organizationId: creation.input.organizationId,
+      teamBindingId: creation.input.teamBindingId,
+    };
+    const pending = {
+      ...draft,
+      creation,
+      values: { ...draft.values, body: "后续编辑" },
+    };
+    saveDocumentDraft(currentScope, pending);
+    expect(readDocumentDrafts(currentScope, 1000)).toEqual([pending]);
+    expect(readDocumentDrafts(currentScope, 1000)[0].creation?.input.body).toBe(
+      "首次正文",
+    );
+    saveDocumentDraft(currentScope, {
+      ...pending,
+      creation: {
+        ...creation,
+        input: { ...creation.input, brandId: "other-brand" },
+      },
+    });
+    expect(readDocumentDrafts(currentScope, 1000)).toEqual([]);
+  });
   it("保存的迟到确认不会清掉用户之后写入的暂存", () => {
     saveDocumentDraft(scope, draft);
     const submitted = readDocumentDrafts(scope, 1000)[0];

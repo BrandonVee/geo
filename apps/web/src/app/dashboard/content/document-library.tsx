@@ -37,13 +37,15 @@ import {
   Typography,
   type TableColumnsType,
 } from "antd";
+import { createContentDocumentSchema } from "@geo/contracts";
+import { ZodError } from "zod";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { scopeQuery } from "../use-answerbit-scope";
 import { AccessibleSelect } from "../../accessible-select";
 import {
   readDocumentDrafts,
   removeDocumentDraft,
-  saveDocumentDraft,
+  saveDocumentDraftNow,
   type DocumentDraft,
 } from "./document-draft";
 
@@ -104,12 +106,12 @@ type EditorValues = {
 
 const statusMeta: Record<DocumentStatus, { label: string; color: string }> = {
   draft: { label: "草稿", color: "warning" },
-  ready: { label: "已定稿", color: "green" },
+  ready: { label: "已定稿", color: "success" },
   archived: { label: "已归档", color: "default" },
 };
 const sourceMeta: Record<DocumentSource, { label: string; color: string }> = {
   manual: { label: "手工创作", color: "blue" },
-  imported: { label: "外部导入", color: "cyan" },
+  imported: { label: "外部导入", color: "default" },
   ai_generated: { label: "AI 生成", color: "purple" },
 };
 const languageOptions = [
@@ -127,6 +129,7 @@ async function api<T>(url: string, init?: RequestInit) {
     throw new DocumentApiError(
       body.error?.message ?? "操作失败",
       body.error?.code,
+      response.status,
     );
   return body.data as T;
 }
@@ -135,6 +138,7 @@ class DocumentApiError extends Error {
   constructor(
     message: string,
     readonly code?: string,
+    readonly status?: number,
   ) {
     super(message);
   }
@@ -180,6 +184,7 @@ export function DocumentLibrary({
   const [editorOpen, setEditorOpen] = useState(false);
   const [editing, setEditing] = useState<DocumentDetail>();
   const [saving, setSaving] = useState(false);
+  const [confirmingCreation, setConfirmingCreation] = useState(false);
   const [folderModalOpen, setFolderModalOpen] = useState(false);
   const [editingFolder, setEditingFolder] = useState<Folder>();
   const [folderSaving, setFolderSaving] = useState(false);
@@ -197,6 +202,7 @@ export function DocumentLibrary({
   const detailRead = useRef(0);
   const editorRead = useRef(0);
   const submitting = useRef(false);
+  const pendingCreation = useRef<DocumentDraft["creation"]>(undefined);
   const { modal } = App.useApp();
   const [folderForm] = Form.useForm<{ name: string }>();
   useEffect(() => {
@@ -241,10 +247,10 @@ export function DocumentLibrary({
   }
   function keepEditorDraft(values: EditorValues) {
     setEditorDirty(true);
-    const stored = saveDocumentDraft(draftScope, {
+    const stored = saveDocumentDraftNow(draftScope, {
       documentId: editing?.id,
       expectedVersion: editing?.currentVersion,
-      updatedAt: Date.now(),
+      creation: pendingCreation.current,
       values: {
         ...values,
         source:
@@ -278,6 +284,8 @@ export function DocumentLibrary({
           ? { ...current, currentVersion: draft.expectedVersion! }
           : undefined,
       );
+      pendingCreation.current = draft.creation;
+      setConfirmingCreation(Boolean(draft.creation));
       setEditorInitialValues(draft.values);
       setEditorDirty(true);
       const changed = Boolean(
@@ -378,6 +386,8 @@ export function DocumentLibrary({
       return;
     }
     editorRead.current += 1;
+    pendingCreation.current = undefined;
+    setConfirmingCreation(false);
     setConflictLoading(false);
     setEditorConflict(false);
     setLatestDocument(undefined);
@@ -407,6 +417,8 @@ export function DocumentLibrary({
       return;
     }
     editorRead.current += 1;
+    pendingCreation.current = undefined;
+    setConfirmingCreation(false);
     setConflictLoading(false);
     setEditorConflict(false);
     setLatestDocument(undefined);
@@ -438,7 +450,9 @@ export function DocumentLibrary({
     }
     modal.confirm({
       title: "放弃尚未保存的修改？",
-      content: "关闭后本次编辑内容不会保存。",
+      content: confirmingCreation
+        ? "上次保存可能已完成。关闭会放弃本地暂存，已保存的文档仍在文档库中。"
+        : "关闭后本次编辑内容不会保存。",
       okText: "放弃修改",
       cancelText: "继续编辑",
       okButtonProps: { danger: true },
@@ -479,11 +493,7 @@ export function DocumentLibrary({
   ) {
     if (submitting.current) return;
     submitting.current = true;
-    const submittedDraft = readDocumentDrafts(draftScope).find((draft) =>
-      editing
-        ? draft.documentId === editing.id
-        : !draft.documentId && draft.values.source === values.source,
-    );
+    let submittedDraft: DocumentDraft | undefined;
     setSaving(true);
     try {
       const payload = {
@@ -506,40 +516,119 @@ export function DocumentLibrary({
                 (editing?.source === "imported" ? "imported" : "manual"),
             }),
       };
-      const saved =
-        editing && !asCopy
-          ? await api<DocumentDetail>(
-              `/api/v1/content-documents/${editing.id}`,
-              {
-                method: "PATCH",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify(payload),
-              },
-            )
-          : await api<DocumentDetail>("/api/v1/content-documents", {
-              method: "POST",
+      const creating = !editing || asCopy || Boolean(pendingCreation.current);
+      const currentInput = creating
+        ? createContentDocumentSchema.parse({
+            ...scopeParams,
+            title: values.title,
+            body: values.body ?? "",
+            status: values.status,
+            source:
+              values.source ??
+              (editing?.source === "imported" ? "imported" : "manual"),
+            sourceUrl: values.sourceUrl || undefined,
+            folderId: values.folderId ?? null,
+            language: values.language,
+            tags: values.tags ?? [],
+          })
+        : undefined;
+      if (creating && !pendingCreation.current) {
+        pendingCreation.current = {
+          key: crypto.randomUUID(),
+          input: currentInput!,
+        };
+        // Persist the submitted input before sending; later edits must not change a retry.
+        keepEditorDraft(values);
+      }
+      submittedDraft = readDocumentDrafts(draftScope).find((draft) =>
+        editing
+          ? draft.documentId === editing.id
+          : !draft.documentId && draft.values.source === values.source,
+      );
+      const creation = pendingCreation.current;
+      const saved = !creating
+        ? await api<DocumentDetail>(
+            `/api/v1/content-documents/${editing!.id}`,
+            {
+              method: "PATCH",
               headers: { "content-type": "application/json" },
               body: JSON.stringify(payload),
-            });
+            },
+          )
+        : await api<DocumentDetail>("/api/v1/content-documents", {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "Idempotency-Key": creation!.key,
+            },
+            body: JSON.stringify(creation!.input),
+          });
+      if (
+        creating &&
+        JSON.stringify(currentInput) !== JSON.stringify(creation!.input)
+      ) {
+        const current = await api<DocumentDetail>(
+          `/api/v1/content-documents/${saved.id}?${scopeQuery(scopeParams)}`,
+        );
+        if (!mounted.current) return;
+        if (submittedDraft)
+          removeDocumentDraft(draftScope, submittedDraft, submittedDraft);
+        // Retain subsequent edits as a new version of the confirmed document.
+        saveDocumentDraftNow(draftScope, {
+          documentId: current.id,
+          expectedVersion: current.currentVersion,
+          values: {
+            ...values,
+            source: current.source === "imported" ? "imported" : "manual",
+          },
+        });
+        pendingCreation.current = undefined;
+        editorRead.current += 1;
+        setConflictLoading(false);
+        setConfirmingCreation(false);
+        setEditing(current);
+        setEditorInitialValues({
+          ...values,
+          source: current.source === "imported" ? "imported" : "manual",
+        });
+        setEditorDirty(true);
+        setEditorConflict(current.currentVersion > 1);
+        setLatestDocument(current.currentVersion > 1 ? current : undefined);
+        setDrafts(readDocumentDrafts(draftScope));
+        onMessage("上次保存已确认，后续修改仍在编辑框，可保存为新版本");
+        await load();
+        return;
+      }
       // Clear the old scope's draft even if navigation completed during saving.
       if (submittedDraft)
         removeDocumentDraft(draftScope, submittedDraft, submittedDraft);
       if (!mounted.current) return;
+      pendingCreation.current = undefined;
+      setConfirmingCreation(false);
       setDrafts(readDocumentDrafts(draftScope));
       editorRead.current += 1;
       setEditorOpen(false);
       setEditorDirty(false);
       onMessage(
-        asCopy
-          ? "编辑内容已另存为新文档"
-          : editing
-            ? "文档已保存为新版本"
-            : "文档已保存到内容库",
+        creating
+          ? editing
+            ? "编辑内容已另存为新文档"
+            : "文档已保存到内容库"
+          : "文档已保存为新版本",
       );
       await load();
       await loadDetail(saved.id);
     } catch (error) {
       if (!mounted.current) return;
+      if (
+        pendingCreation.current &&
+        error instanceof DocumentApiError &&
+        [400, 404, 422].includes(error.status ?? 0)
+      ) {
+        pendingCreation.current = undefined;
+        keepEditorDraft(values);
+      }
+      setConfirmingCreation(Boolean(pendingCreation.current));
       if (isConflict(error)) {
         setEditorConflict(true);
         setLatestDocument(undefined);
@@ -548,9 +637,12 @@ export function DocumentLibrary({
       onMessage(
         error instanceof TypeError
           ? "连接中断，编辑内容已保留，请重试"
-          : error instanceof Error
-            ? error.message
-            : "文档保存失败",
+          : error instanceof ZodError
+            ? (error.issues.find((issue) => issue.code === "custom")?.message ??
+              "请检查标题、正文、来源链接和标签格式后重试。")
+            : error instanceof Error
+              ? error.message
+              : "文档保存失败",
       );
     } finally {
       submitting.current = false;
@@ -1041,6 +1133,15 @@ export function DocumentLibrary({
         }
         width={900}
       >
+        {confirmingCreation ? (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message="上次保存结果尚未确认"
+            description="重试会先确认上次保存，避免重复创建。之后继续修改的内容仍会保留在编辑框。"
+          />
+        ) : null}
         {editorConflict ? (
           <Alert
             type="warning"
@@ -1109,7 +1210,7 @@ export function DocumentLibrary({
                     载入最新版本
                   </Button>
                   <Button
-                    disabled={saving}
+                    disabled={saving || confirmingCreation}
                     onClick={() =>
                       void editorForm
                         .validateFields()
@@ -1125,10 +1226,11 @@ export function DocumentLibrary({
           />
         ) : null}
         <Form<EditorValues>
+          disabled={saving}
           form={editorForm}
           layout="vertical"
           onFinish={(values) =>
-            editorConflict
+            editorConflict && !confirmingCreation
               ? void saveMergedDocument()
               : void saveDocument(values)
           }
@@ -1250,14 +1352,18 @@ export function DocumentLibrary({
             <Button
               htmlType="submit"
               loading={saving}
-              disabled={editorConflict && !latestDocument}
+              disabled={
+                editorConflict && !latestDocument && !confirmingCreation
+              }
               type="primary"
             >
-              {editorConflict
-                ? "合并后保存新版本"
-                : editing
-                  ? "保存新版本"
-                  : "保存文档"}
+              {confirmingCreation
+                ? "确认上次保存"
+                : editorConflict
+                  ? "合并后保存新版本"
+                  : editing
+                    ? "保存新版本"
+                    : "保存文档"}
             </Button>
           </Flex>
         </Form>

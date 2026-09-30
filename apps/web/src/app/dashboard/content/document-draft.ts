@@ -1,9 +1,16 @@
 import { z } from "zod";
+import { createContentDocumentSchema } from "@geo/contracts";
 
 const draftSchema = z
   .object({
     documentId: z.string().uuid().optional(),
     expectedVersion: z.number().int().positive().optional(),
+    creation: z
+      .object({
+        key: z.string().uuid(),
+        input: createContentDocumentSchema,
+      })
+      .optional(),
     updatedAt: z.number().int().nonnegative(),
     values: z.object({
       title: z.string().max(10_000).optional(),
@@ -59,7 +66,11 @@ export function readDocumentDrafts(
         !parsed?.success ||
         parsed.data.updatedAt > now ||
         now - parsed.data.updatedAt > lifetime ||
-        key(scope, parsed.data) !== storedKey
+        key(scope, parsed.data) !== storedKey ||
+        (parsed.data.creation &&
+          (parsed.data.creation.input.organizationId !== scope.organizationId ||
+            parsed.data.creation.input.teamBindingId !== scope.teamBindingId ||
+            parsed.data.creation.input.brandId !== scope.brandId))
       ) {
         sessionStorage.removeItem(storedKey);
         continue;
@@ -103,4 +114,11 @@ export function removeDocumentDraft(
     }
     sessionStorage.removeItem(key(scope, draft));
   } catch {}
+}
+
+export function saveDocumentDraftNow(
+  scope: DocumentDraftScope,
+  draft: Omit<DocumentDraft, "updatedAt">,
+) {
+  return saveDocumentDraft(scope, { ...draft, updatedAt: Date.now() });
 }

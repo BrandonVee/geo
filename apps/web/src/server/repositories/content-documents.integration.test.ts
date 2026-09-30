@@ -109,6 +109,99 @@ describe.skipIf(process.env.CONTENT_DOCUMENT_DB_TESTS !== "1")(
       ).toBeUndefined();
     });
 
+    it("新建并发重放只产生一份文档与首版，后续编辑不会改变原始创建校验", async () => {
+      const key = randomUUID();
+      const input = createContentDocumentSchema.parse({
+        ...scope,
+        title: "幂等稿",
+        body: "提交正文",
+      });
+      const results = await Promise.all(
+        Array.from({ length: 4 }, () =>
+          contentDocumentRepository.create(input, userId, key),
+        ),
+      );
+      expect(results.every((result) => result.ok)).toBe(true);
+      const successes = results.filter((result) => result.ok);
+      expect(new Set(successes.map((result) => result.document.id)).size).toBe(
+        1,
+      );
+      expect(successes.filter((result) => !result.replayed)).toHaveLength(1);
+      const id = successes[0]!.document.id;
+      expect(
+        (await contentDocumentRepository.find(scope, id))?.versions,
+      ).toHaveLength(1);
+      for (const [changed, actor] of [
+        [{ ...input, body: "不同正文" }, userId],
+        [{ ...input, brandId: "另一个品牌" }, userId],
+        [input, randomUUID()],
+      ] as const) {
+        expect(
+          await contentDocumentRepository.create(changed, actor, key),
+        ).toMatchObject({ ok: false, code: "IDEMPOTENCY_CONFLICT" });
+      }
+      await contentDocumentRepository.update(
+        scope,
+        id,
+        updateContentDocumentSchema.parse({
+          ...scope,
+          expectedVersion: 1,
+          body: "保存后的新版",
+        }),
+        userId,
+      );
+      expect(
+        await contentDocumentRepository.create(
+          { ...input, folderId: null },
+          userId,
+          key,
+        ),
+      ).toMatchObject({
+        ok: true,
+        replayed: true,
+        document: { id, body: "保存后的新版", currentVersion: 2 },
+      });
+      expect(
+        (await contentDocumentRepository.find(scope, id))?.versions,
+      ).toHaveLength(2);
+      const second = await contentDocumentRepository.create(
+        input,
+        userId,
+        randomUUID(),
+      );
+      expect(second).toMatchObject({ ok: true, replayed: false });
+      if (second.ok) expect(second.document.id).not.toBe(id);
+    });
+
+    it("创建审计失败时文档与首版一并回滚，同一键可以重新提交", async () => {
+      const creationKey = randomUUID();
+      const input = createContentDocumentSchema.parse({
+        ...scope,
+        title: "审计回滚稿",
+      });
+      await expect(
+        contentDocumentRepository.create(input, userId, creationKey, {
+          context: {
+            organizationId,
+            actorUserId: userId,
+            requestId: "x".repeat(500),
+          },
+          input: {
+            operation: "content.document.create",
+            resourceType: "content_document",
+          },
+        }),
+      ).rejects.toThrow();
+      const committed = await db
+        .select()
+        .from(contentDocuments)
+        .where(eq(contentDocuments.creationKey, creationKey));
+      expect(committed).toHaveLength(0);
+      expect(
+        await contentDocumentRepository.create(input, userId, creationKey),
+      ).toMatchObject({ ok: true, replayed: false });
+    });
+
     it("同一旧版并发保存只接受一次，历史恢复也校验当前版本", async () => {
       const updates = await Promise.all(
         ["第二版", "第三版"].map((body) =>

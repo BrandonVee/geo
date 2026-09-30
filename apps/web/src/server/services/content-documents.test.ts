@@ -103,6 +103,43 @@ describe("内容文档服务", () => {
       });
     expect(mocks.writeAudit).not.toHaveBeenCalled();
   });
+  it("创建重放不重复审计、不暴露内部指纹；内容或操作者冲突返回 409", async () => {
+    const input = createContentDocumentSchema.parse({
+      ...scope,
+      title: document.title,
+      body: document.body,
+    });
+    mocks.create.mockResolvedValueOnce({
+      ok: true,
+      replayed: true,
+      document: {
+        ...document,
+        creationKey: "create-key",
+        creationFingerprint: "private",
+      },
+    });
+    await expect(
+      contentDocumentService.create(input, userId, audit, "create-key"),
+    ).resolves.toEqual({ ...document, replayed: true });
+    expect(mocks.create).toHaveBeenCalledWith(
+      input,
+      userId,
+      "create-key",
+      expect.objectContaining({ context: audit }),
+    );
+    expect(mocks.writeAudit).not.toHaveBeenCalled();
+    mocks.create.mockResolvedValueOnce({
+      ok: false,
+      code: "IDEMPOTENCY_CONFLICT",
+    });
+    await expect(
+      contentDocumentService.create(input, userId, audit, "create-key"),
+    ).rejects.toMatchObject({
+      status: 409,
+      code: "CONTENT_DOCUMENT_IDEMPOTENCY_CONFLICT",
+    });
+    expect(mocks.writeAudit).not.toHaveBeenCalled();
+  });
   it("先验证品牌权限，再读取文档", async () => {
     mocks.authorizeBrand.mockRejectedValueOnce(new Error("权限不足"));
     await expect(
@@ -135,7 +172,7 @@ describe("内容文档服务", () => {
     mocks.create.mockResolvedValueOnce({ ok: true, document });
     await expect(
       contentDocumentService.create(input, userId, audit),
-    ).resolves.toEqual(document);
+    ).resolves.toEqual({ ...document, replayed: false });
     expect(mocks.authorizeBrand).toHaveBeenCalledWith(
       scope.organizationId,
       scope.teamBindingId,
@@ -143,15 +180,15 @@ describe("内容文档服务", () => {
       userId,
       "resource.create",
     );
-    expect(mocks.create).toHaveBeenCalledWith(input, userId);
-    expect(mocks.writeAudit).toHaveBeenCalledWith(
-      audit,
-      expect.objectContaining({
+    expect(mocks.create).toHaveBeenCalledWith(input, userId, undefined, {
+      context: audit,
+      input: {
         operation: "content.document.create",
-        resourceId: documentId,
+        resourceType: "content_document",
         summary: "导入文档：测试文档",
-      }),
-    );
+      },
+    });
+    expect(mocks.writeAudit).not.toHaveBeenCalled();
 
     mocks.create.mockResolvedValueOnce({ ok: false, code: "FOLDER_NOT_FOUND" });
     await expect(
@@ -160,7 +197,7 @@ describe("内容文档服务", () => {
       status: 404,
       code: "CONTENT_FOLDER_NOT_FOUND",
     });
-    expect(mocks.writeAudit).toHaveBeenCalledTimes(1);
+    expect(mocks.writeAudit).not.toHaveBeenCalled();
   });
 
   it.each([

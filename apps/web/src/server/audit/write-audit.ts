@@ -6,17 +6,19 @@ export type AuditContext = {
   ipAddress?: string;
   userAgent?: string;
 };
+export type AuditEntry = {
+  operation: string;
+  resourceType: string;
+  resourceId?: string;
+  summary?: string;
+  result?: "success" | "failed";
+};
 export async function writeAudit(
   context: AuditContext,
-  input: {
-    operation: string;
-    resourceType: string;
-    resourceId?: string;
-    summary?: string;
-    result?: "success" | "failed";
-  },
+  input: AuditEntry,
+  executor: Pick<typeof db, "insert"> = db,
 ) {
-  await db.insert(operationLogs).values({
+  await executor.insert(operationLogs).values({
     organizationId: context.organizationId,
     actorUserId: context.actorUserId,
     requestId: context.requestId,

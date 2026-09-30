@@ -98,18 +98,40 @@ export const contentDocumentService = {
     input: CreateContentDocumentInput,
     userId: string,
     audit: AuditContext,
+    creationKey?: string,
   ) {
     await authorize(input, userId, "resource.create");
-    const result = await contentDocumentRepository.create(input, userId);
-    if (!result.ok)
+    const result = await contentDocumentRepository.create(
+      input,
+      userId,
+      creationKey,
+      {
+        context: audit,
+        input: {
+          operation: "content.document.create",
+          resourceType: "content_document",
+          summary: `${input.source === "imported" ? "导入" : "创建"}文档：${input.title}`,
+        },
+      },
+    );
+    if (!result.ok) {
+      if (result.code === "IDEMPOTENCY_CONFLICT")
+        throw new ApiError(
+          409,
+          "CONTENT_DOCUMENT_IDEMPOTENCY_CONFLICT",
+          "本次保存标识已用于其他文档内容，请先核对已保存的文档。",
+        );
       throw new ApiError(404, "CONTENT_FOLDER_NOT_FOUND", "目标文件夹不存在");
-    await writeAudit(audit, {
-      operation: "content.document.create",
-      resourceType: "content_document",
-      resourceId: result.document.id,
-      summary: `${input.source === "imported" ? "导入" : "创建"}文档：${input.title}`,
-    });
-    return result.document;
+    }
+    const {
+      creationKey: storedKey,
+      creationFingerprint,
+      ...document
+    } = result.document;
+    void storedKey;
+    void creationFingerprint;
+    if (result.replayed) return { ...document, replayed: true };
+    return { ...document, replayed: false };
   },
 
   async update(

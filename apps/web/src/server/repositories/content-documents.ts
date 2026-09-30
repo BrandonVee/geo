@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   and,
   asc,
@@ -21,6 +22,12 @@ import type {
   CreateContentDocumentInput,
   UpdateContentDocumentInput,
 } from "@geo/contracts";
+
+import {
+  writeAudit,
+  type AuditContext,
+  type AuditEntry,
+} from "@/server/audit/write-audit";
 
 type Scope = {
   organizationId: string;
@@ -166,8 +173,60 @@ export const contentDocumentRepository = {
     return { ...document, versions };
   },
 
-  async create(input: CreateContentDocumentInput, userId: string) {
+  // @project-doc docs/domains/geo_operations.md#article_jobs
+  async create(
+    input: CreateContentDocumentInput,
+    userId: string,
+    creationKey?: string,
+    audit?: { context: AuditContext; input: Omit<AuditEntry, "resourceId"> },
+  ) {
+    // A fixed field order and normalized nulls make omitted/default fields equivalent.
+    const creationFingerprint = createHash("sha256")
+      .update(
+        JSON.stringify({
+          organizationId: input.organizationId,
+          teamBindingId: input.teamBindingId,
+          brandId: input.brandId,
+          title: input.title,
+          body: input.body,
+          status: input.status,
+          source: input.source,
+          sourceUrl: input.sourceUrl ?? null,
+          folderId: input.folderId ?? null,
+          language: input.language,
+          tags: input.tags,
+        }),
+      )
+      .digest("hex");
     return db.transaction(async (tx) => {
+      if (creationKey) {
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${JSON.stringify(["content-document-create", input.organizationId, creationKey])}, 0))`,
+        );
+        const [existing] = await tx
+          .select()
+          .from(contentDocuments)
+          .where(
+            and(
+              eq(contentDocuments.organizationId, input.organizationId),
+              eq(contentDocuments.creationKey, creationKey),
+            ),
+          )
+          .limit(1);
+        if (existing) {
+          if (
+            existing.createdBy !== userId ||
+            existing.teamBindingId !== input.teamBindingId ||
+            existing.brandId !== input.brandId ||
+            existing.creationFingerprint !== creationFingerprint
+          )
+            return {
+              ok: false as const,
+              code: "IDEMPOTENCY_CONFLICT" as const,
+            };
+          return { ok: true as const, document: existing, replayed: true };
+        }
+      }
       if (
         input.folderId &&
         !(await folderExists(tx as unknown as typeof db, input, input.folderId))
@@ -179,6 +238,8 @@ export const contentDocumentRepository = {
           organizationId: input.organizationId,
           teamBindingId: input.teamBindingId,
           brandId: input.brandId,
+          creationKey,
+          creationFingerprint: creationKey ? creationFingerprint : undefined,
           folderId: input.folderId,
           createdBy: userId,
           updatedBy: userId,
@@ -203,7 +264,13 @@ export const contentDocumentRepository = {
         changeSummary: input.source === "imported" ? "导入文章" : "创建文档",
         createdBy: userId,
       });
-      return { ok: true as const, document: document! };
+      if (audit)
+        await writeAudit(
+          audit.context,
+          { ...audit.input, resourceId: document!.id },
+          tx,
+        );
+      return { ok: true as const, document: document!, replayed: false };
     });
   },
 

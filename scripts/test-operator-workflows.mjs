@@ -41,9 +41,13 @@ const env = {
   WORKFLOW_DISPOSABLE_DB: "1",
 };
 const pnpm = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
-const run = (command, args) =>
+const run = (command, args, extraEnv = {}) =>
   new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd: root, env, stdio: "inherit" });
+    const child = spawn(command, args, {
+      cwd: root,
+      env: { ...env, ...extraEnv },
+      stdio: "inherit",
+    });
     child.on("error", reject);
     child.on("exit", (code) =>
       code === 0
@@ -62,6 +66,19 @@ try {
   await admin.query(`CREATE DATABASE "${databaseName}"`);
   created = true;
   await run(process.execPath, ["scripts/release-database.mjs"]);
+  await run(process.execPath, ["scripts/release-database.mjs"]);
+  await run(
+    pnpm,
+    [
+      "--filter",
+      "@geo/web",
+      "exec",
+      "vitest",
+      "run",
+      "src/server/repositories/content-documents.integration.test.ts",
+    ],
+    { CONTENT_DOCUMENT_DB_TESTS: "1" },
+  );
   const seed = new Client({ connectionString: databaseUrl.href });
   await seed.connect();
   try {
