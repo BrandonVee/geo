@@ -16,7 +16,7 @@
     "@geo/contracts": "workspace:*",
     "@geo/core": "workspace:*",
     "@geo/db": "workspace:*",
-    "drizzle-orm": "^0.45.2",
+    "drizzle-orm": "^0.45.3",
     "pg-boss": "latest",
     "@geo/publication": "workspace:*"
   },
@@ -24,7 +24,7 @@
     "@types/node": "latest",
     "esbuild": "0.28.2",
     "tsx": "latest",
-    "typescript": "^5.9.3",
-    "vitest": "^4.0.0"
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.2"
   }
 }
