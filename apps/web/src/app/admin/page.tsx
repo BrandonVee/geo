@@ -31,6 +31,7 @@ export default async function AdminPage({
     redirect("/admin?section=integration");
   return (
     <AdminClient
+      userId={session.user.id}
       meteringOrganizations={meteringOrganizations}
       userName={session.user.name}
     />

@@ -1,10 +1,10 @@
 import "@ant-design/v5-patch-for-react-19";
 import type { Metadata } from "next";
 import { headers } from "next/headers";
-import { AntdRegistry } from "@ant-design/nextjs-registry";
 import "antd/dist/reset.css";
 import "./globals.css";
 import { Providers } from "./providers";
+import { StyleRegistry } from "./style-registry";
 
 export const metadata: Metadata = {
   title: "AnswerBit GEO · AI 品牌增长情报",
@@ -16,7 +16,9 @@ const themeInitScript = `(function(){try{var m=localStorage.getItem("ab-theme");
 export default async function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
-  const nonce = (await headers()).get("X-Nonce") ?? undefined;
+  const requestHeaders = await headers();
+  const nonce = requestHeaders.get("X-Nonce") ?? undefined;
+  const insertServerStyles = requestHeaders.get("RSC") !== "1";
   return (
     <html lang="zh-CN" data-theme="light" suppressHydrationWarning>
       <head>
@@ -26,9 +28,9 @@ export default async function RootLayout({
         />
       </head>
       <body>
-        <AntdRegistry>
+        <StyleRegistry nonce={nonce} insertServerStyles={insertServerStyles}>
           <Providers nonce={nonce}>{children}</Providers>
-        </AntdRegistry>
+        </StyleRegistry>
       </body>
     </html>
   );

@@ -77,6 +77,8 @@ JSON 请求使用 `Content-Type: application/json`；允许标准的 `applicatio
 
 文章生成在企业范围内保存幂等键，并校验原操作者、品牌、内部绑定和请求内容；不一致返回 `409 ARTICLE_JOB_IDEMPOTENCY_CONFLICT`。网络失败重试必须继续使用同一个键，明确失败或取消的任务重新生成使用新键。
 
+文档编辑与历史恢复请求体、归档查询参数必须包含正整数 `expectedVersion`。版本不一致返回 `409 CONTENT_DOCUMENT_VERSION_CONFLICT` 和 `details.currentVersion`，不写入内容或版本；客户端保留未保存编辑，核对最新版后重新提交。
+
 报告导出同样校验原操作者、品牌、内部绑定、报告类型和完整筛选；不一致返回 `409 REPORT_EXPORT_IDEMPOTENCY_CONFLICT`。网络失败重试保留原键，确认失败或文件过期后按原条件重新导出使用新键。报告元数据返回规范化的原筛选、即时过期状态、下载地址和 `errorMessage`；元数据响应不包含 CSV 正文。
 
 GET、PUT、DELETE 按 HTTP 语义保持幂等；POST 中具有财务或外部副作用的端点必须在契约中显式包含幂等语义。腾讯监控品牌扩容的上游契约未提供幂等键：明确返回 429 表示请求被拒绝，可按 `Retry-After` 有限退避；超时或 5xx 的结果不确定，服务端不自动重放，管理员应先刷新积分、配额和流水再决定是否再次提交。

@@ -566,10 +566,45 @@ describe("内容文档库契约", () => {
     expect(
       updateContentDocumentSchema.safeParse({
         ...scope,
+        expectedVersion: 1,
         body: "更新后的正文",
         changeSummary: "补充案例",
       }).success,
     ).toBe(true);
+  });
+  it("修改、恢复、归档都必须携带看到的正整数版本", async () => {
+    const {
+      updateContentDocumentSchema,
+      restoreContentDocumentVersionSchema,
+      archiveContentDocumentQuerySchema,
+    } = await import("./index");
+    for (const version of [undefined, 0, -1, 1.5]) {
+      expect(
+        updateContentDocumentSchema.safeParse({
+          ...scope,
+          title: "新标题",
+          expectedVersion: version,
+        }).success,
+      ).toBe(false);
+      expect(
+        restoreContentDocumentVersionSchema.safeParse({
+          ...scope,
+          expectedVersion: version,
+        }).success,
+      ).toBe(false);
+      expect(
+        archiveContentDocumentQuerySchema.safeParse({
+          ...scope,
+          expectedVersion: version,
+        }).success,
+      ).toBe(false);
+    }
+    expect(
+      archiveContentDocumentQuerySchema.parse({
+        ...scope,
+        expectedVersion: "2",
+      }).expectedVersion,
+    ).toBe(2);
   });
   it("文档列表不允许同时选择文件夹和未归档", async () => {
     const { contentDocumentListQuerySchema } = await import("./index");

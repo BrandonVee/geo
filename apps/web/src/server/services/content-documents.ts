@@ -23,6 +23,15 @@ type Scope = {
   brandId: string;
 };
 
+function versionConflict(currentVersion: number): never {
+  throw new ApiError(
+    409,
+    "CONTENT_DOCUMENT_VERSION_CONFLICT",
+    "文档已被更新，本次内容未保存。请核对最新版本后再保存。",
+    { currentVersion },
+  );
+}
+
 async function authorize(
   scope: Scope,
   userId: string,
@@ -118,6 +127,8 @@ export const contentDocumentService = {
       userId,
     );
     if (!result.ok) {
+      if (result.code === "VERSION_CONFLICT")
+        versionConflict(result.currentVersion);
       if (
         result.code === "CONTENT_REQUIRED" ||
         result.code === "SOURCE_URL_REQUIRED"
@@ -149,7 +160,7 @@ export const contentDocumentService = {
   },
 
   async archive(
-    scope: Scope,
+    scope: Scope & { expectedVersion: number },
     documentId: string,
     userId: string,
     audit: AuditContext,
@@ -161,8 +172,11 @@ export const contentDocumentService = {
       { ...scope, status: "archived", changeSummary: "归档文档" },
       userId,
     );
-    if (!result.ok)
+    if (!result.ok) {
+      if (result.code === "VERSION_CONFLICT")
+        versionConflict(result.currentVersion);
       throw new ApiError(404, "CONTENT_DOCUMENT_NOT_FOUND", "文档不存在");
+    }
     await writeAudit(audit, {
       operation: "content.document.archive",
       resourceType: "content_document",
@@ -187,8 +201,11 @@ export const contentDocumentService = {
       version,
       input.changeSummary,
       userId,
+      input.expectedVersion,
     );
-    if (!result.ok)
+    if (!result.ok) {
+      if (result.code === "VERSION_CONFLICT")
+        versionConflict(result.currentVersion);
       throw new ApiError(
         404,
         result.code === "VERSION_NOT_FOUND"
@@ -196,6 +213,7 @@ export const contentDocumentService = {
           : "CONTENT_DOCUMENT_NOT_FOUND",
         result.code === "VERSION_NOT_FOUND" ? "历史版本不存在" : "文档不存在",
       );
+    }
     await writeAudit(audit, {
       operation: "content.document.version.restore",
       resourceType: "content_document",

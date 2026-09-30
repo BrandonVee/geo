@@ -1,4 +1,5 @@
 import {
+  archiveContentDocumentQuerySchema,
   brandResourceQuerySchema,
   updateContentDocumentSchema,
 } from "@geo/contracts";
@@ -91,7 +92,7 @@ export async function DELETE(request: Request, context: Context) {
     const [id, scope] = await Promise.all([
       documentId(context),
       Promise.resolve(
-        brandResourceQuerySchema.safeParse(
+        archiveContentDocumentQuerySchema.safeParse(
           Object.fromEntries(new URL(request.url).searchParams),
         ),
       ),

@@ -688,6 +688,7 @@ export const createContentDocumentSchema = z
 export const updateContentDocumentSchema = z
   .object({
     ...brandScopeShape,
+    expectedVersion: z.number().int().positive().max(2_147_483_647),
     title: z.string().trim().min(1).max(500).optional(),
     body: z.string().max(500_000).optional(),
     status: contentDocumentStatusSchema.optional(),
@@ -724,7 +725,14 @@ export const updateContentFolderSchema = createContentFolderSchema;
 export const restoreContentDocumentVersionSchema = z
   .object({
     ...brandScopeShape,
+    expectedVersion: z.number().int().positive().max(2_147_483_647),
     changeSummary: z.string().trim().max(500).default("恢复历史版本"),
+  })
+  .strict();
+export const archiveContentDocumentQuerySchema = z
+  .object({
+    ...brandScopeShape,
+    expectedVersion: z.coerce.number().int().positive().max(2_147_483_647),
   })
   .strict();
 export const idempotencyKeySchema = z

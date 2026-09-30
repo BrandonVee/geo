@@ -1,0 +1,34 @@
+diff --git a/es/useScrollLocker.js b/es/useScrollLocker.js
+index db462e45c18f2428b7f0b8b678b206c253926d85..d987e3ec69a01a9d263bc63c825df4b81568d19b 100644
+--- a/es/useScrollLocker.js
++++ b/es/useScrollLocker.js
+@@ -16,9 +16,11 @@ export default function useScrollLocker(lock) {
+     id = _React$useState2[0];
+   useLayoutEffect(function () {
+     if (mergedLock) {
++      var nonceScript = document.querySelector("script[nonce]");
++      var csp = nonceScript && nonceScript.nonce ? { nonce: nonceScript.nonce } : undefined;
+       var scrollbarSize = getTargetScrollBarSize(document.body).width;
+       var isOverflow = isBodyOverflowing();
+-      updateCSS("\nhtml body {\n  overflow-y: hidden;\n  ".concat(isOverflow ? "width: calc(100% - ".concat(scrollbarSize, "px);") : '', "\n}"), id);
++      updateCSS("\nhtml body {\n  overflow-y: hidden;\n  ".concat(isOverflow ? "width: calc(100% - ".concat(scrollbarSize, "px);") : '', "\n}"), id, { csp: csp });
+     } else {
+       removeCSS(id);
+     }
+diff --git a/lib/useScrollLocker.js b/lib/useScrollLocker.js
+index dcf927574e9c1d9772b92d15c0efec128dc087fb..836f4d80569eeac9a3836df66be6ec40393740c7 100644
+--- a/lib/useScrollLocker.js
++++ b/lib/useScrollLocker.js
+@@ -24,9 +24,11 @@ function useScrollLocker(lock) {
+     id = _React$useState2[0];
+   (0, _useLayoutEffect.default)(function () {
+     if (mergedLock) {
++      var nonceScript = document.querySelector("script[nonce]");
++      var csp = nonceScript && nonceScript.nonce ? { nonce: nonceScript.nonce } : undefined;
+       var scrollbarSize = (0, _getScrollBarSize.getTargetScrollBarSize)(document.body).width;
+       var isOverflow = (0, _util.isBodyOverflowing)();
+-      (0, _dynamicCSS.updateCSS)("\nhtml body {\n  overflow-y: hidden;\n  ".concat(isOverflow ? "width: calc(100% - ".concat(scrollbarSize, "px);") : '', "\n}"), id);
++      (0, _dynamicCSS.updateCSS)("\nhtml body {\n  overflow-y: hidden;\n  ".concat(isOverflow ? "width: calc(100% - ".concat(scrollbarSize, "px);") : '', "\n}"), id, { csp: csp });
+     } else {
+       (0, _dynamicCSS.removeCSS)(id);
+     }

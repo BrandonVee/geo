@@ -1668,6 +1668,8 @@ paths:
           $ref: "#/components/responses/UnsupportedMediaType"
         "200":
           description: 文档已更新并递增版本号
+        "409":
+          description: CONTENT_DOCUMENT_VERSION_CONFLICT；文档已有新版本，本次修改未写入
     delete:
       summary: 归档文档
       tags:
@@ -1684,9 +1686,19 @@ paths:
         - $ref: "#/components/parameters/OrganizationId"
         - $ref: "#/components/parameters/TeamBindingId"
         - $ref: "#/components/parameters/BrandId"
+        - in: query
+          name: expectedVersion
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 2147483647
+          description: 用户看到的当前文档版本；不一致则拒绝归档
       responses:
         "204":
           description: 文档已归档
+        "409":
+          description: CONTENT_DOCUMENT_VERSION_CONFLICT；当前文档已变化，未归档
   /v1/content-documents/{documentId}/versions/{version}/restorations:
     post:
       summary: 将历史内容恢复为新的最新版本
@@ -1720,6 +1732,8 @@ paths:
           $ref: "#/components/responses/UnsupportedMediaType"
         "200":
           description: 历史内容已另存为新版本
+        "409":
+          description: CONTENT_DOCUMENT_VERSION_CONFLICT；当前文档已变化，未恢复历史内容
   /v1/content-folders:
     get:
       summary: 查询内容文件夹及文档数量
@@ -4782,11 +4796,12 @@ components:
     UpdateContentDocument:
       type: object
       additionalProperties: false
-      description: 除企业、团队和品牌范围外，其余字段均可选；每次修改创建一个不可变历史版本。
+      description: 必须携带 expectedVersion 并至少提供一个修改字段；服务端在事务锁内比对当前版本，冲突不写入内容或历史快照。每次成功修改创建一个不可变历史版本。
       required:
         - organizationId
         - teamBindingId
         - brandId
+        - expectedVersion
       properties:
         organizationId:
           type: string
@@ -4797,6 +4812,11 @@ components:
         brandId:
           type: string
           maxLength: 128
+        expectedVersion:
+          type: integer
+          minimum: 1
+          maximum: 2147483647
+          description: 打开编辑或恢复操作时看到的当前版本
         title:
           type: string
           minLength: 1
@@ -4836,6 +4856,7 @@ components:
         - organizationId
         - teamBindingId
         - brandId
+        - expectedVersion
       properties:
         organizationId:
           type: string
@@ -4846,6 +4867,11 @@ components:
         brandId:
           type: string
           maxLength: 128
+        expectedVersion:
+          type: integer
+          minimum: 1
+          maximum: 2147483647
+          description: 操作前看到的当前文档版本
         changeSummary:
           type: string
           maxLength: 500

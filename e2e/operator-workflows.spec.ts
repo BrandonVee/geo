@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { expect, test, type Page, type Route } from "@playwright/test";
+import axe from "axe-core";
 
 const webRequire = createRequire(
   resolve(process.cwd(), "apps/web/package.json"),
@@ -649,9 +650,7 @@ test.describe("真实运营操作闭环", () => {
     await expect(
       page.getByText("文件已过期，请重新导出", { exact: true }),
     ).toBeVisible();
-    await expect(
-      page.getByRole("button", { name: /下\s*载/ }),
-    ).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /下\s*载/ })).toHaveCount(0);
     await expect(
       page.getByRole("button", { name: "重新导出", exact: true }),
     ).toBeVisible();
@@ -660,5 +659,255 @@ test.describe("真实运营操作闭环", () => {
     const downloaded = page.waitForEvent("download");
     await page.getByRole("button", { name: /下\s*载/ }).click();
     expect((await downloaded).suggestedFilename()).toBe("answers.csv");
+  });
+
+  test("未保存文档跨企业和刷新可恢复，保存失败仍保留正文", async ({ page }) => {
+    await mockBusinessApis(page);
+    await page.route("**/api/v1/content-documents**", (route) =>
+      route.continue(),
+    );
+    await page.route("**/api/v1/content-folders**", (route) =>
+      route.continue(),
+    );
+    await page.goto(`${scopedPath("/dashboard/content")}&stage=library`);
+    await page.getByRole("button", { name: /新建文档/ }).click();
+    let editor = page.getByRole("dialog", { name: "保存到文档库" });
+    await editor.getByLabel("标题", { exact: true }).fill("暂存文章 A");
+    await editor.getByLabel("正文", { exact: true }).fill("尚未保存的正文");
+    await editor.getByRole("button", { name: "暂存并关闭" }).click();
+    await expect(editor).toHaveCount(0);
+    await expect(
+      page.getByText("有尚未保存的编辑", { exact: true }),
+    ).toBeVisible();
+    await page.locator("#answerbit-scope-organization").focus();
+    await page.locator("#answerbit-scope-organization").press("ArrowDown");
+    await page.getByTitle("流程测试企业 B", { exact: true }).click();
+    await expect(
+      page.getByText("有尚未保存的编辑", { exact: true }),
+    ).toHaveCount(0);
+    await page.locator("#answerbit-scope-organization").focus();
+    await page.locator("#answerbit-scope-organization").press("ArrowDown");
+    await page.getByTitle("流程测试企业 A", { exact: true }).click();
+    await page.reload();
+    await page.getByRole("button", { name: "继续编辑", exact: true }).click();
+    editor = page.getByRole("dialog", { name: "保存到文档库" });
+    await expect(editor.getByLabel("正文", { exact: true })).toHaveValue(
+      "尚未保存的正文",
+    );
+    let failed = false;
+    await page.route("**/api/v1/content-documents", (route) => {
+      if (route.request().method() === "POST" && !failed) {
+        failed = true;
+        return route.abort("failed");
+      }
+      return route.continue();
+    });
+    await editor.getByRole("button", { name: /保存文档/ }).click();
+    await expect(
+      page.getByText("连接中断，编辑内容已保留，请重试", { exact: true }),
+    ).toBeVisible();
+    await expect(editor.getByLabel("正文", { exact: true })).toHaveValue(
+      "尚未保存的正文",
+    );
+    await editor.getByRole("button", { name: /保存文档/ }).click();
+    await expect(editor).toHaveCount(0);
+    await expect(
+      page.getByText("有尚未保存的编辑", { exact: true }),
+    ).toHaveCount(0);
+    const rows = await database.db
+      .select()
+      .from(database.contentDocuments)
+      .where(
+        operators.eq(
+          database.contentDocuments.organizationId,
+          fixture.scopes[0].organizationId,
+        ),
+      );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      title: "暂存文章 A",
+      body: "尚未保存的正文",
+    });
+  });
+
+  test("多人编辑冲突保留表单，合并保存后仍保留两人的历史内容", async ({
+    page,
+  }) => {
+    await page.addInitScript({ content: axe.source });
+    const runtimeErrors: string[] = [];
+    page.on("pageerror", (error) => runtimeErrors.push(error.message));
+    page.on("console", (entry) => {
+      if (
+        entry.type() === "error" &&
+        /content security policy|hydration|validateDOMNesting/i.test(
+          entry.text(),
+        )
+      )
+        runtimeErrors.push(entry.text());
+    });
+    page.on("requestfailed", (request) => {
+      if (new URL(request.url()).pathname.startsWith("/_next/static/"))
+        runtimeErrors.push("静态资源加载失败");
+    });
+    await mockBusinessApis(page);
+    await page.route("**/api/v1/content-documents**", (route) =>
+      route.continue(),
+    );
+    await page.route("**/api/v1/content-folders**", (route) =>
+      route.continue(),
+    );
+    await page.goto(`${scopedPath("/dashboard/content")}&stage=library`);
+    const { organizationId, teamBindingId, brandId } = fixture.scopes[0];
+    const scope = { organizationId, teamBindingId, brandId };
+    const headers = { Origin: new URL(page.url()).origin };
+    const created = await page.request.post("/api/v1/content-documents", {
+      headers,
+      data: { ...scope, title: "协作文章", body: "初稿" },
+    });
+    expect(created.status()).toBe(201);
+    const doc = (await created.json()).data;
+    await page.getByRole("button", { name: /刷新$/ }).first().click();
+    await page.getByText("协作文章", { exact: true }).first().click();
+    await page.getByRole("button", { name: /编\s*辑/ }).click();
+    let editor = page.getByRole("dialog", { name: /编辑文档/ });
+    await editor.getByLabel("正文", { exact: true }).fill("我的补充");
+    const concurrent = await page.request.patch(
+      `/api/v1/content-documents/${doc.id}`,
+      { headers, data: { ...scope, expectedVersion: 1, body: "同事的补充" } },
+    );
+    expect(concurrent.status()).toBe(200);
+    await editor
+      .getByRole("button", { name: "保存新版本", exact: true })
+      .click();
+    await expect(
+      editor.getByText("文档已有新版本，你的编辑内容仍在这里", { exact: true }),
+    ).toBeVisible();
+    await expect(editor.getByLabel("正文", { exact: true })).toHaveValue(
+      "我的补充",
+    );
+    await editor.getByRole("button", { name: "暂存并关闭" }).click();
+    await expect(editor).toHaveCount(0);
+    await page.reload();
+    await page.getByRole("button", { name: "继续编辑", exact: true }).click();
+    editor = page.getByRole("dialog", { name: /编辑文档/ });
+    await expect(editor.getByLabel("正文", { exact: true })).toHaveValue(
+      "我的补充",
+    );
+    await expect(
+      editor.getByText("文档已有新版本，你的编辑内容仍在这里", { exact: true }),
+    ).toBeVisible();
+    await editor.locator("summary").click();
+    await expect(editor.getByText("同事的补充", { exact: true })).toBeVisible();
+    const violations = await page.evaluate(async () => {
+      const result = await (
+        window as typeof window & { axe: typeof axe }
+      ).axe.run(document, {
+        runOnly: {
+          type: "tag",
+          values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"],
+        },
+      });
+      return result.violations.map(({ id, nodes }) => ({
+        id,
+        targets: nodes.map(({ target }) => target.join(" ")),
+      }));
+    });
+    expect(violations).toEqual([]);
+    await editor
+      .getByLabel("正文", { exact: true })
+      .fill("同事的补充\n我的补充");
+    await editor
+      .getByRole("button", { name: "合并后保存新版本", exact: true })
+      .click();
+    await page.getByRole("button", { name: "确认保存", exact: true }).click();
+    await expect(editor).toHaveCount(0);
+    const detail = await page.request.get(
+      `/api/v1/content-documents/${doc.id}?${new URLSearchParams(scope)}`,
+    );
+    expect((await detail.json()).data).toMatchObject({
+      currentVersion: 3,
+      body: "同事的补充\n我的补充",
+      versions: [{ version: 3 }, { version: 2 }, { version: 1 }],
+    });
+    const versions = await database.db
+      .select()
+      .from(database.contentDocumentVersions)
+      .where(operators.eq(database.contentDocumentVersions.documentId, doc.id));
+    expect(versions.map((version) => version.body)).toEqual(
+      expect.arrayContaining(["初稿", "同事的补充", "同事的补充\n我的补充"]),
+    );
+    await page.getByRole("button", { name: /编\s*辑/ }).click();
+    await editor.getByLabel("正文", { exact: true }).fill("需要独立保留的编辑");
+    const otherUpdate = await page.request.patch(
+      `/api/v1/content-documents/${doc.id}`,
+      { headers, data: { ...scope, expectedVersion: 3, body: "新的共同版本" } },
+    );
+    expect(otherUpdate.status()).toBe(200);
+    await editor
+      .getByRole("button", { name: "保存新版本", exact: true })
+      .click();
+    await editor
+      .getByRole("button", { name: "另存为新文档", exact: true })
+      .click();
+    await expect(editor).toHaveCount(0);
+    const copied = await database.db
+      .select()
+      .from(database.contentDocuments)
+      .where(
+        operators.eq(database.contentDocuments.organizationId, organizationId),
+      );
+    expect(copied).toHaveLength(2);
+    expect(copied.find((item) => item.id === doc.id)?.body).toBe(
+      "新的共同版本",
+    );
+    expect(copied.find((item) => item.id !== doc.id)).toMatchObject({
+      body: "需要独立保留的编辑",
+      currentVersion: 1,
+    });
+    await page
+      .getByRole("dialog", { name: "协作文章", exact: true })
+      .getByRole("button", { name: /close|关闭/i })
+      .click();
+    await expect(
+      page.getByRole("dialog", { name: "协作文章", exact: true }),
+    ).toHaveCount(0);
+    await page
+      .getByRole("button", { name: "切换亮暗色模式", exact: true })
+      .click();
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+    await expect
+      .poll(() =>
+        page
+          .locator(".ant-menu-item-group-title")
+          .first()
+          .evaluate((element) => getComputedStyle(element).color),
+      )
+      .toBe("rgb(165, 175, 191)");
+    const darkViolations = await page.evaluate(async () => {
+      const result = await (
+        window as typeof window & { axe: typeof axe }
+      ).axe.run(document, {
+        runOnly: {
+          type: "tag",
+          values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"],
+        },
+      });
+      return result.violations.map(({ id, nodes }) => ({
+        id,
+        targets: nodes.map(({ target }) => target.join(" ")),
+      }));
+    });
+    expect(darkViolations).toEqual([]);
+    for (const width of [390, 768, 1440]) {
+      await page.setViewportSize({ width, height: 1000 });
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () => document.documentElement.scrollWidth <= window.innerWidth,
+          ),
+        )
+        .toBeTruthy();
+    }
+    expect(runtimeErrors).toEqual([]);
   });
 });

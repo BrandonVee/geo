@@ -1,0 +1,34 @@
+diff --git a/es/getScrollBarSize.js b/es/getScrollBarSize.js
+index 89bc2c30a3f70707acaa1ef070910c677688562c..cffc48d0b5a87655a165ad1b0bf3183f2b6d9ace 100644
+--- a/es/getScrollBarSize.js
++++ b/es/getScrollBarSize.js
+@@ -30,9 +30,11 @@ function measureScrollbarSize(ele) {
+ 
+     // Try wrap to handle CSP case
+     try {
++      var nonceScript = document.querySelector("script[nonce]");
++      var csp = nonceScript && nonceScript.nonce ? { nonce: nonceScript.nonce } : undefined;
+       var widthStyle = width ? "width: ".concat(webkitScrollbarStyle.width, ";") : '';
+       var heightStyle = height ? "height: ".concat(webkitScrollbarStyle.height, ";") : '';
+-      updateCSS("\n#".concat(randomId, "::-webkit-scrollbar {\n").concat(widthStyle, "\n").concat(heightStyle, "\n}"), randomId);
++      updateCSS("\n#".concat(randomId, "::-webkit-scrollbar {\n").concat(widthStyle, "\n").concat(heightStyle, "\n}"), randomId, { csp: csp });
+     } catch (e) {
+       // Can't wrap, just log error
+       console.error(e);
+diff --git a/lib/getScrollBarSize.js b/lib/getScrollBarSize.js
+index f1d6d218728779fef79243d10f7119e0314e1700..054e9299c8e5b3798ff5303e717238a4ae2b19c6 100644
+--- a/lib/getScrollBarSize.js
++++ b/lib/getScrollBarSize.js
+@@ -38,9 +38,11 @@ function measureScrollbarSize(ele) {
+ 
+     // Try wrap to handle CSP case
+     try {
++      var nonceScript = document.querySelector("script[nonce]");
++      var csp = nonceScript && nonceScript.nonce ? { nonce: nonceScript.nonce } : undefined;
+       var widthStyle = width ? "width: ".concat(webkitScrollbarStyle.width, ";") : '';
+       var heightStyle = height ? "height: ".concat(webkitScrollbarStyle.height, ";") : '';
+-      (0, _dynamicCSS.updateCSS)("\n#".concat(randomId, "::-webkit-scrollbar {\n").concat(widthStyle, "\n").concat(heightStyle, "\n}"), randomId);
++      (0, _dynamicCSS.updateCSS)("\n#".concat(randomId, "::-webkit-scrollbar {\n").concat(widthStyle, "\n").concat(heightStyle, "\n}"), randomId, { csp: csp });
+     } catch (e) {
+       // Can't wrap, just log error
+       console.error(e);

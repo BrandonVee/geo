@@ -207,6 +207,7 @@ export const contentDocumentRepository = {
     });
   },
 
+  // @project-doc docs/domains/geo_operations.md#article_jobs
   async update(
     scope: Scope,
     documentId: string,
@@ -225,6 +226,12 @@ export const contentDocumentRepository = {
         )
         .limit(1);
       if (!current) return { ok: false as const, code: "NOT_FOUND" as const };
+      if (current.currentVersion !== input.expectedVersion)
+        return {
+          ok: false as const,
+          code: "VERSION_CONFLICT" as const,
+          currentVersion: current.currentVersion,
+        };
       if (
         input.folderId &&
         !(await folderExists(tx as unknown as typeof db, scope, input.folderId))
@@ -280,6 +287,7 @@ export const contentDocumentRepository = {
     restoreVersion: number,
     changeSummary: string,
     userId: string,
+    expectedVersion: number,
   ) {
     const [version] = await db
       .select()
@@ -299,6 +307,7 @@ export const contentDocumentRepository = {
       documentId,
       {
         ...scope,
+        expectedVersion,
         title: version.title,
         body: version.body,
         status: version.status,

@@ -12,6 +12,7 @@ WORKDIR /app
 
 FROM base AS dependencies
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY patches ./patches
 COPY apps/web/package.json apps/web/package.json
 COPY apps/worker/package.json apps/worker/package.json
 COPY packages/publication/package.json packages/publication/package.json
@@ -24,6 +25,7 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
 
 FROM base AS release-dependencies
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY patches ./patches
 COPY packages/config/package.json packages/config/package.json
 COPY packages/core/package.json packages/core/package.json
 COPY packages/db/package.json packages/db/package.json

@@ -32,6 +32,10 @@
     "overrides": {
       "@esbuild-kit/core-utils>esbuild": "0.25.12",
       "tslib": "2.8.1"
+    },
+    "patchedDependencies": {
+      "@rc-component/portal@1.1.2": "patches/@rc-component__portal@1.1.2.patch",
+      "rc-util@5.44.4": "patches/rc-util@5.44.4.patch"
     }
   },
   "devDependencies": {

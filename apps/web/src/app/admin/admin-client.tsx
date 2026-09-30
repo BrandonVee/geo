@@ -660,9 +660,11 @@ async function api<T>(url: string, init?: RequestInit) {
   return body.data as T;
 }
 export function AdminClient({
+  userId,
   meteringOrganizations,
   userName,
 }: {
+  userId: string;
   meteringOrganizations: (ScopeOrganization & { brandId: string })[];
   userName: string;
 }) {
@@ -3134,6 +3136,7 @@ export function AdminClient({
 
               {tab === "library" ? (
                 <AdminDocumentLibrary
+                  userId={userId}
                   organizations={meteringOrganizations}
                   onMessage={setMessage}
                 />

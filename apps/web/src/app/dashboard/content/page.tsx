@@ -30,6 +30,7 @@ export default async function ContentPage({
     >
       <DashboardPageHeader eyebrow="内容 / AI 创作" title="AI 内容生成" />
       <ContentClient
+        userId={session.user.id}
         featurePointCosts={{
           articleGeneration: articleGenerationQuote.points,
           effectTracking: effectTrackingQuote.points,

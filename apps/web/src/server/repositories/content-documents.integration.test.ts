@@ -109,7 +109,7 @@ describe.skipIf(process.env.CONTENT_DOCUMENT_DB_TESTS !== "1")(
       ).toBeUndefined();
     });
 
-    it("并发修改递增版本，恢复历史时追加新版本而不覆盖旧快照", async () => {
+    it("同一旧版并发保存只接受一次，历史恢复也校验当前版本", async () => {
       const updates = await Promise.all(
         ["第二版", "第三版"].map((body) =>
           contentDocumentRepository.update(
@@ -117,6 +117,7 @@ describe.skipIf(process.env.CONTENT_DOCUMENT_DB_TESTS !== "1")(
             documentId,
             updateContentDocumentSchema.parse({
               ...scope,
+              expectedVersion: 1,
               body,
               changeSummary: body,
             }),
@@ -124,15 +125,50 @@ describe.skipIf(process.env.CONTENT_DOCUMENT_DB_TESTS !== "1")(
           ),
         ),
       );
-      expect(updates.every((result) => result.ok)).toBe(true);
+      expect(updates.filter((result) => result.ok)).toHaveLength(1);
+      expect(updates.find((result) => !result.ok)).toMatchObject({
+        ok: false,
+        code: "VERSION_CONFLICT",
+        currentVersion: 2,
+      });
       const beforeRestore = await contentDocumentRepository.find(
         scope,
         documentId,
       );
-      expect(beforeRestore?.currentVersion).toBe(3);
+      expect(beforeRestore?.currentVersion).toBe(2);
       expect(beforeRestore?.versions.map((version) => version.version)).toEqual(
-        [3, 2, 1],
+        [2, 1],
       );
+
+      expect(
+        await contentDocumentRepository.restore(
+          scope,
+          documentId,
+          1,
+          "过期恢复",
+          userId,
+          1,
+        ),
+      ).toMatchObject({
+        ok: false,
+        code: "VERSION_CONFLICT",
+        currentVersion: 2,
+      });
+      expect(
+        await contentDocumentRepository.update(
+          scope,
+          documentId,
+          updateContentDocumentSchema.parse({
+            ...scope,
+            expectedVersion: 1,
+            status: "archived",
+          }),
+          userId,
+        ),
+      ).toMatchObject({ ok: false, code: "VERSION_CONFLICT" });
+      expect(
+        await contentDocumentRepository.find(scope, documentId),
+      ).toMatchObject({ currentVersion: 2, status: "draft" });
 
       const restored = await contentDocumentRepository.restore(
         scope,
@@ -140,17 +176,18 @@ describe.skipIf(process.env.CONTENT_DOCUMENT_DB_TESTS !== "1")(
         1,
         "恢复初稿",
         userId,
+        2,
       );
       expect(restored).toMatchObject({
         ok: true,
-        document: { currentVersion: 4, body: "第一版正文" },
+        document: { currentVersion: 3, body: "第一版正文" },
       });
       const afterRestore = await contentDocumentRepository.find(
         scope,
         documentId,
       );
       expect(afterRestore?.versions.map((version) => version.version)).toEqual([
-        4, 3, 2, 1,
+        3, 2, 1,
       ]);
       expect(afterRestore?.versions[0]?.changeSummary).toBe("恢复初稿");
       const snapshots = await db
@@ -163,7 +200,7 @@ describe.skipIf(process.env.CONTENT_DOCUMENT_DB_TESTS !== "1")(
       expect(snapshots.find((item) => item.version === 1)?.body).toBe(
         "第一版正文",
       );
-      expect(snapshots.find((item) => item.version === 4)?.body).toBe(
+      expect(snapshots.find((item) => item.version === 3)?.body).toBe(
         "第一版正文",
       );
     });
@@ -180,7 +217,11 @@ describe.skipIf(process.env.CONTENT_DOCUMENT_DB_TESTS !== "1")(
         await contentDocumentRepository.update(
           scope,
           documentId,
-          updateContentDocumentSchema.parse({ ...scope, folderId }),
+          updateContentDocumentSchema.parse({
+            ...scope,
+            expectedVersion: 3,
+            folderId,
+          }),
           userId,
         ),
       ).toMatchObject({ ok: true });

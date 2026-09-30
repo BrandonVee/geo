@@ -67,6 +67,42 @@ beforeEach(() => {
 });
 
 describe("内容文档服务", () => {
+  it("保存、恢复和归档的版本冲突统一返回 409，且不记录成功审计", async () => {
+    const conflict = { ok: false, code: "VERSION_CONFLICT", currentVersion: 2 };
+    mocks.update.mockResolvedValue(conflict);
+    mocks.restore.mockResolvedValue(conflict);
+    const input = updateContentDocumentSchema.parse({
+      ...scope,
+      expectedVersion: 1,
+      title: "我的编辑",
+    });
+    for (const action of [
+      () =>
+        contentDocumentService.update(scope, documentId, input, userId, audit),
+      () =>
+        contentDocumentService.archive(
+          { ...scope, expectedVersion: 1 },
+          documentId,
+          userId,
+          audit,
+        ),
+      () =>
+        contentDocumentService.restoreVersion(
+          scope,
+          documentId,
+          1,
+          { ...scope, expectedVersion: 1, changeSummary: "恢复" },
+          userId,
+          audit,
+        ),
+    ])
+      await expect(action()).rejects.toMatchObject({
+        status: 409,
+        code: "CONTENT_DOCUMENT_VERSION_CONFLICT",
+        details: { currentVersion: 2 },
+      });
+    expect(mocks.writeAudit).not.toHaveBeenCalled();
+  });
   it("先验证品牌权限，再读取文档", async () => {
     mocks.authorizeBrand.mockRejectedValueOnce(new Error("权限不足"));
     await expect(
@@ -135,6 +171,7 @@ describe("内容文档服务", () => {
   ])("更新失败 %s 映射为 %s", async (repositoryCode, code, status) => {
     const input = updateContentDocumentSchema.parse({
       ...scope,
+      expectedVersion: 1,
       title: "新标题",
     });
     mocks.update.mockResolvedValueOnce({ ok: false, code: repositoryCode });
@@ -145,7 +182,10 @@ describe("内容文档服务", () => {
   });
 
   it("恢复历史版本时保留版本号与修改说明，并只在成功后审计", async () => {
-    const input = restoreContentDocumentVersionSchema.parse({ ...scope });
+    const input = restoreContentDocumentVersionSchema.parse({
+      ...scope,
+      expectedVersion: 1,
+    });
     const restored = { ...document, currentVersion: 3 };
     mocks.restore.mockResolvedValueOnce({ ok: true, document: restored });
     await expect(
@@ -164,6 +204,7 @@ describe("内容文档服务", () => {
       1,
       "恢复历史版本",
       userId,
+      1,
     );
     expect(mocks.writeAudit).toHaveBeenCalledWith(
       audit,
@@ -198,7 +239,12 @@ describe("内容文档服务", () => {
       ok: true,
       document: { ...document, status: "archived" },
     });
-    await contentDocumentService.archive(scope, documentId, userId, audit);
+    await contentDocumentService.archive(
+      { ...scope, expectedVersion: 1 },
+      documentId,
+      userId,
+      audit,
+    );
     expect(mocks.authorizeBrand).toHaveBeenCalledWith(
       scope.organizationId,
       scope.teamBindingId,
@@ -207,9 +253,14 @@ describe("内容文档服务", () => {
       "resource.delete",
     );
     expect(mocks.update).toHaveBeenCalledWith(
-      scope,
+      { ...scope, expectedVersion: 1 },
       documentId,
-      { ...scope, status: "archived", changeSummary: "归档文档" },
+      {
+        ...scope,
+        expectedVersion: 1,
+        status: "archived",
+        changeSummary: "归档文档",
+      },
       userId,
     );
 
@@ -247,7 +298,12 @@ describe("文章库平台与企业权限边界", () => {
     );
     mocks.requirePlatformPermission.mockRejectedValue(new Error("无写权限"));
     await expect(
-      contentDocumentService.archive(scope, documentId, userId, audit),
+      contentDocumentService.archive(
+        { ...scope, expectedVersion: 1 },
+        documentId,
+        userId,
+        audit,
+      ),
     ).rejects.toThrow("无写权限");
     expect(mocks.update).not.toHaveBeenCalled();
   });

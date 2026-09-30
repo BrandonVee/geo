@@ -134,10 +134,12 @@ const apiScope = (scope: ReturnType<typeof useAnswerBitScope>) => ({
   brandId: scope.brandId,
 });
 export function ContentClient({
+  userId,
   organizations,
   featurePointCosts,
   initialTab = "generate",
 }: {
+  userId: string;
   organizations: ScopeOrganization[];
   featurePointCosts: {
     articleGeneration: number;
@@ -1004,6 +1006,8 @@ export function ContentClient({
       {tab === "library" ? (
         <Space direction="vertical" size="large" style={{ width: "100%" }}>
           <DocumentLibrary
+            userId={userId}
+            canPublish={scope.can("publication.create")}
             key={`${organizationId}:${teamBindingId}:${brandId}`}
             canDelete={scope.canDelete}
             canWrite={scope.canWrite}

@@ -6,9 +6,11 @@ import { DocumentLibrary } from "../dashboard/content/document-library";
 import type { ScopeOrganization } from "../dashboard/use-answerbit-scope";
 
 export function AdminDocumentLibrary({
+  userId,
   organizations,
   onMessage,
 }: {
+  userId: string;
   organizations: (ScopeOrganization & { brandId: string })[];
   onMessage: (message: string) => void;
 }) {
@@ -33,6 +35,7 @@ export function AdminDocumentLibrary({
       </Flex>
       {organization ? (
         <DocumentLibrary
+          userId={userId}
           key={organization.id}
           scope={{
             organizationId: organization.id,

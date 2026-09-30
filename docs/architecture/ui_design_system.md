@@ -1,6 +1,6 @@
 # 企业级 UI 设计系统
 
-本文定义 AnswerBit GEO Web 的统一视觉语言与交互基线，适用于登录、租户工作台和平台管理端。组件实现以 Ant Design 5 为唯一权威：Next.js App Router 入口在 `layout.tsx` 使用 `@ant-design/nextjs-registry` 的 `AntdRegistry` 注入首屏样式，`providers.tsx` 只负责中文 `ConfigProvider` 与 `App` 上下文。业务页面不得复制控件样式、覆盖 `.ant-*` 内部选择器或重新建立页面级组件皮肤。
+本文定义 AnswerBit GEO Web 的统一视觉语言与交互基线，适用于登录、租户工作台和平台管理端。组件实现以 Ant Design 5 为唯一权威：Next.js App Router 入口在 `layout.tsx` 使用共享 Ant Design 5 样式缓存的 `StyleRegistry` 注入携带 CSP nonce 的首屏样式，`providers.tsx` 负责中文 `ConfigProvider`、明暗主题与 `App` 上下文；nonce 规则见[数据与安全架构](./data_and_security.md#credential_encryption)。业务页面不得复制控件样式、覆盖 `.ant-*` 内部选择器或重新建立页面级组件皮肤。
 
 ## 设计方向
 
