@@ -386,52 +386,174 @@ test.describe("真实运营操作闭环", () => {
     );
   });
 
-  test("文章生成不依赖效果追踪接口，网络失败重试复用同一任务键", async ({
+  test("文章生成响应丢失后刷新复用原提交，后续修改保留供明确再次生成", async ({
     page,
   }) => {
-    const keys: string[] = [];
-    const queuedJob = {
-      id: randomUUID(),
-      status: "queued",
-      articleTitle: "网络重试后的生成任务",
-      templateType: 1,
-      generationMode: "standard",
-      createdAt: new Date().toISOString(),
-    };
+    const submitted: { key: string; input: Record<string, unknown> }[] = [];
+    const jobs = new Map<
+      string,
+      {
+        id: string;
+        status: string;
+        articleTitle: string;
+        templateType: number;
+        generationMode: string;
+        createdAt: string;
+      }
+    >();
     await mockBusinessApis(page, async (route) => {
-      keys.push(route.request().headers()["idempotency-key"]);
-      if (keys.length === 1) return route.abort("failed");
-      return fulfill(route, {
-        ...queuedJob,
-        replayed: true,
-      });
+      const key = route.request().headers()["idempotency-key"];
+      const input = route.request().postDataJSON();
+      submitted.push({ key, input });
+      const existing = jobs.get(key);
+      const job = existing ?? {
+        id: randomUUID(),
+        status: "queued",
+        articleTitle: `生成任务 ${jobs.size + 1}`,
+        templateType: 1,
+        generationMode: "standard",
+        createdAt: new Date().toISOString(),
+      };
+      jobs.set(key, job);
+      if (submitted.length === 1) return route.abort("failed");
+      return fulfill(route, { ...job, replayed: Boolean(existing) });
     });
     await page.route("**/api/v1/answerbit/article-jobs?**", (route) =>
-      fulfill(route, keys.length >= 2 ? [queuedJob] : []),
+      fulfill(route, [...jobs.values()]),
     );
     await page.goto(
       `${scopedPath("/dashboard/content")}&stage=generate&promptId=prompt-1&promptText=${encodeURIComponent("如何选择品牌？")}`,
     );
+    const knowledge = page.getByLabel("补充资料", { exact: true });
     await expect(
       page.getByText("如何选择品牌？ · 产品", { exact: true }),
     ).toBeVisible();
-    const generate = page.getByRole("button", { name: /提交.*文章生成/ });
-    await expect(generate).toBeEnabled();
-    await generate.click();
+    await knowledge.fill("首次提交的素材");
+    await page.getByRole("button", { name: /提交普通文章生成/ }).click();
     await expect(
       page.getByText("Failed to fetch", { exact: true }),
     ).toBeVisible();
-    await expect(generate).toBeEnabled();
-    await generate.click();
+    await knowledge.fill("提交之后补充的新素材");
+    await page.reload();
+    await expect(knowledge).toHaveValue("提交之后补充的新素材");
+    await page.getByRole("button", { name: /确认上次提交/ }).click();
     await expect(
-      page.getByText("已返回相同幂等任务", { exact: true }),
+      page.getByText("上次提交已确认，后续输入已保留，可继续编辑后再次生成。", {
+        exact: true,
+      }),
     ).toBeVisible();
+    expect(submitted).toHaveLength(2);
+    expect(submitted[1]).toEqual(submitted[0]);
+    expect(jobs.size).toBe(1);
+    await expect(knowledge).toHaveValue("提交之后补充的新素材");
+    await page.getByRole("button", { name: /提交普通文章生成/ }).click();
     await expect(
-      page.getByText(queuedJob.articleTitle, { exact: true }),
+      page.getByText("生成任务已进入队列", { exact: true }),
     ).toBeVisible();
-    await expect(page.getByText("等待生成", { exact: true })).toBeVisible();
-    expect(keys).toHaveLength(2);
-    expect(keys[0]).toBe(keys[1]);
+    await expect(page.getByText("生成任务 2", { exact: true })).toBeVisible();
+    expect(submitted).toHaveLength(3);
+    expect(submitted[2].key).not.toBe(submitted[0].key);
+    expect(submitted[2].input.supplementalKnowledge).toBe(
+      "提交之后补充的新素材",
+    );
+    expect(jobs.size).toBe(2);
+  });
+
+  test("普通与参考生成草稿跨企业、页面及刷新恢复，主题与多尺寸可用", async ({
+    page,
+  }) => {
+    await mockBusinessApis(page);
+    await page.addInitScript({ content: axe.source });
+    await page.route("**/api/v1/answerbit/article-templates?**", (route) =>
+      fulfill(route, [
+        {
+          template_id: 1,
+          template_name: "普通文章模板",
+          description: "普通",
+          is_high_ref: 0,
+        },
+        {
+          template_id: 2,
+          template_name: "参考文章模板",
+          description: "参考",
+          is_high_ref: 1,
+        },
+      ]),
+    );
+    await page.goto(
+      `${scopedPath("/dashboard/content")}&stage=generate&promptId=prompt-1`,
+    );
+    const knowledge = page.getByLabel("补充资料", { exact: true });
+    await expect(
+      page.getByText("如何选择品牌？ · 产品", { exact: true }),
+    ).toBeVisible();
+    await knowledge.fill("企业 A 的普通素材");
+    await page.getByLabel("文章标签（可选）", { exact: true }).fill("草稿标签");
+    await page.getByLabel("文章标签（可选）", { exact: true }).press("Enter");
+    await page.getByRole("tab", { name: "参考文章生成", exact: true }).click();
+    await knowledge.fill("企业 A 的参考素材");
+    const reference = page.getByLabel("参考文章链接", { exact: true });
+    await reference.fill("https://example.com/reference-a");
+    await page.getByRole("tab", { name: "普通文章生成", exact: true }).click();
+    await expect(knowledge).toHaveValue("企业 A 的普通素材");
+    await page.getByRole("tab", { name: "参考文章生成", exact: true }).click();
+    await expect(knowledge).toHaveValue("企业 A 的参考素材");
+    await expect(reference).toHaveValue("https://example.com/reference-a");
+    await page.goto(scopedPath("/dashboard/content", 1));
+    await expect(knowledge).toHaveValue("");
+    await knowledge.fill("企业 B 的独立素材");
+    await page.goto(scopedPath("/dashboard/content"));
+    await expect(knowledge).toHaveValue("企业 A 的参考素材");
+    await expect(reference).toHaveValue("https://example.com/reference-a");
+    await page.getByRole("tab", { name: "文档库", exact: true }).click();
+    await page.getByRole("tab", { name: "AI 生成", exact: true }).click();
+    await expect(reference).toHaveValue("https://example.com/reference-a");
+    await page.reload();
+    await expect(knowledge).toHaveValue("企业 A 的参考素材");
+    await expect(reference).toHaveValue("https://example.com/reference-a");
+    for (const theme of ["light", "dark"]) {
+      if (theme === "dark")
+        await page.getByRole("button", { name: "切换亮暗色模式" }).click();
+      await expect
+        .poll(() => page.locator("html").getAttribute("data-theme"))
+        .toBe(theme);
+      for (const width of [390, 768, 1440]) {
+        await page.setViewportSize({ width, height: 1000 });
+        expect(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth,
+          ),
+        ).toBe(true);
+      }
+      await page.evaluate(async () => {
+        await Promise.all(
+          document
+            .getAnimations()
+            .filter(
+              (animation) =>
+                animation.effect?.getComputedTiming().iterations !== Infinity,
+            )
+            .map((animation) => animation.finished.catch(() => {})),
+        );
+      });
+      const violations = await page.evaluate(async () =>
+        (
+          await (window as typeof window & { axe: typeof axe }).axe.run(
+            document,
+            {
+              runOnly: {
+                type: "tag",
+                values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"],
+              },
+            },
+          )
+        ).violations.map(({ id, nodes }) => ({
+          id,
+          targets: nodes.map(({ target }) => target.join(" ")),
+        })),
+      );
+      expect(violations).toEqual([]);
+    }
   });
 
   test("企业管理员查看整体消耗并切换品牌，品牌角色无法越权，明暗主题与多尺寸可用", async ({
