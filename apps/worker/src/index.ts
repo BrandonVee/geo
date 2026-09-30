@@ -5,6 +5,7 @@ import {
   redeliverReportExport,
   redeliverArticleJob,
   scheduleArticleResultPoll,
+  recoverStaleTrackingSubmissions,
 } from "@geo/db";
 import {
   FrogPublicationClient,
@@ -14,6 +15,7 @@ import {
 import { createHash, randomUUID } from "node:crypto";
 import { workerEnvSchema } from "@geo/config";
 import {
+  traceArticleSchema,
   answerBitArticleContentSchema,
   answerBitArticleProgressSchema,
   answerBitArticleRankSchema,
@@ -1994,7 +1996,30 @@ async function processPublicationReconciliation() {
 }
 
 async function runMaintenance() {
-  return runBillingMaintenance();
+  const recoveredTracking = await recoverStaleTrackingSubmissions(
+    new Date(),
+    (record) => {
+      const input = traceArticleSchema.parse(
+        JSON.parse(
+          cipher.decrypt(
+            record.requestPayload.ciphertext,
+            record.organizationId,
+          ),
+        ),
+      );
+      if (
+        input.organizationId !== record.organizationId ||
+        input.teamBindingId !== record.teamBindingId ||
+        input.brandId !== record.brandId
+      )
+        throw new Error("INVALID_TRACKING_PAYLOAD");
+      return input;
+    },
+  );
+  const result = { ...(await runBillingMaintenance()), recoveredTracking };
+  if (recoveredTracking.errors)
+    throw new Error("ARTICLE_TRACKING_RECOVERY_PARTIAL_FAILURE");
+  return result;
 }
 
 await boss.start();

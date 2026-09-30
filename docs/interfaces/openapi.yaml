@@ -1379,6 +1379,15 @@ paths:
         - Articles
       security:
         - cookieSession: []
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema:
+            type: string
+            minLength: 8
+            maxLength: 128
+            pattern: "^[A-Za-z0-9._:-]+$"
       requestBody:
         required: true
         content:
@@ -1391,9 +1400,49 @@ paths:
         "415":
           $ref: "#/components/responses/UnsupportedMediaType"
         "201":
-          description: 文章已加入追踪
+          description: 腾讯确认文章已加入追踪
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/ArticleTrackingSubmission"
+        "200":
+          description: 已确认原追踪提交；不重复调用腾讯或扣积分
+        "202":
+          description: 提交状态为 submitting、failed 或 uncertain；failed/uncertain 已返还积分，不表示腾讯创建成功
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "402":
+          description: 品牌积分不足，不创建提交或调用腾讯
         "409":
-          description: FEATURE_PRICE_CHANGED，用户看到的积分报价已变化，未扣费也未调用上游
+          description: FEATURE_PRICE_CHANGED 报价变化或 ARTICLE_TRACKING_IDEMPOTENCY_CONFLICT 原操作者、范围或内容不一致
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /v1/answerbit/article-tracking-submissions:
+    get:
+      summary: 查看当前用户在当前品牌最近 20 次追踪提交并恢复中断状态
+      tags:
+        - Articles
+      security:
+        - cookieSession: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - $ref: "#/components/parameters/TeamBindingId"
+        - $ref: "#/components/parameters/BrandId"
+      responses:
+        "200":
+          description: 仅当前操作者的追踪提交；包含原始输入用于核对，不包含密文
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ArticleTrackingSubmission"
         "403":
           $ref: "#/components/responses/Forbidden"
   /v1/answerbit/articles/{articleId}:
@@ -1426,6 +1475,8 @@ paths:
       responses:
         "200":
           description: 文章追踪详情
+        "404":
+          description: ARTICLE_NOT_FOUND，文章不属于当前企业和品牌目录；先刷新文章目录
   /v1/answerbit/articles/{articleId}/content:
     get:
       summary: 获取文章标题和正文
@@ -3109,7 +3160,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/BillingOrganizationAction"
+              $ref: "#/components/schemas/OrganizationAction"
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
@@ -3278,7 +3329,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/BillingOrganizationAction"
+              $ref: "#/components/schemas/OrganizationAction"
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
@@ -4694,6 +4745,50 @@ components:
           enum:
             - billing_period
             - none
+    ArticleTrackingSubmission:
+      type: object
+      required:
+        [
+          id,
+          status,
+          articleId,
+          points,
+          refunded,
+          errorCode,
+          createdAt,
+          replayed,
+          idempotencyKey,
+          input,
+        ]
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [submitting, succeeded, failed, uncertain]
+        articleId:
+          type: [string, "null"]
+        points:
+          type: integer
+          minimum: 0
+        refunded:
+          type: boolean
+          description: 原预扣已返还；迟到成功不会再次扣费
+        errorCode:
+          type: [string, "null"]
+        createdAt:
+          type: string
+          format: date-time
+        replayed:
+          type: boolean
+        errorMessage:
+          type: [string, "null"]
+          description: 可直接显示的追踪失败或待核对说明
+        idempotencyKey:
+          type: string
+        input:
+          $ref: "#/components/schemas/TraceArticle"
     TraceArticle:
       type: object
       additionalProperties: false
@@ -4730,6 +4825,8 @@ components:
           items:
             type: string
             format: uri
+            maxLength: 2000
+            pattern: "^https?://"
         tagIds:
           type: array
           items:
@@ -5435,6 +5532,15 @@ components:
           maxLength: 2000
           default: ""
         idempotencyKey: *id006
+    OrganizationAction:
+      type: object
+      additionalProperties: false
+      required:
+        - organizationId
+      properties:
+        organizationId:
+          type: string
+          format: uuid
     PublicationOrderAction:
       type: object
       additionalProperties: false

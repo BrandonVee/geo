@@ -59,7 +59,9 @@ describe("database release readiness", () => {
         "utf8",
       ),
     ) as { entries: Array<{ idx: number; tag: string }> };
-    expect(journal.entries).toHaveLength(9);
+    expect(journal.entries).toHaveLength(
+      Number(CURRENT_SCHEMA_VERSION.slice(1)),
+    );
     expect(journal.entries[0]?.idx).toBe(0);
     expect(journal.entries[0]?.tag).toBe("v1");
     expect(journal.entries.at(-1)?.tag).toBe(CURRENT_SCHEMA_VERSION);
@@ -69,9 +71,18 @@ describe("database release readiness", () => {
       "utf8",
     );
     expect(migration).toContain(`('schema', '${CURRENT_SCHEMA_VERSION}')`);
-    expect(migration).toContain("creation_key");
-    expect(migration).toContain("creation_fingerprint");
-    expect(migration).toContain("content_documents_org_creation_key_ux");
+    expect(migration).toContain("article_tracking_submissions");
+    expect(migration).toContain("article_tracking_submissions_org_key_ux");
+    expect(migration).toContain("ENABLE ROW LEVEL SECURITY");
+    const documentCreationMigration = await readFile(
+      new URL("../drizzle/v9.sql", import.meta.url),
+      "utf8",
+    );
+    expect(documentCreationMigration).toContain("creation_key");
+    expect(documentCreationMigration).toContain("creation_fingerprint");
+    expect(documentCreationMigration).toContain(
+      "content_documents_org_creation_key_ux",
+    );
     const validityMigration = await readFile(
       new URL("../drizzle/v8.sql", import.meta.url),
       "utf8",

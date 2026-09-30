@@ -20,7 +20,7 @@
 | AnswerBit 配置与映射 | `platform_answerbit_credentials`、`platform_answerbit_brands`、`answerbit_connections`、`answerbit_team_bindings`、各类业务 mapping          |
 | 双余额与发布         | `balance_accounts`、`balance_transactions`、`feature_point_costs`、`platform_frog_credentials`、`publication_channels`、`publication_orders` |
 | 平台资源额度         | `billing_plans`、`billing_plan_versions`、`platform_subscriptions`、`subscription_entitlements`、`quota_ledgers`                             |
-| 工作流与用户数据     | `article_generation_jobs`、`content_folders`、`content_documents`、`content_document_versions`、`saved_views`、`report_exports`、通知相关表  |
+| 工作流与用户数据     | `article_generation_jobs`、`article_tracking_submissions`、`content_folders`、`content_documents`、`content_document_versions`、`saved_views`、`report_exports`、通知相关表  |
 | 可观测与审计         | `answerbit_api_calls`、`operation_logs`、`runtime_heartbeats`、`runtime_task_statuses`                                                       |
 | 数据库发布状态       | `system_release_state`                                                                                                                       |
 
@@ -72,7 +72,7 @@ Web Gateway 与 Worker 在验证企业绑定和 BrandID 归属后，使用平台
 
 `system_release_state` 是平台只读的数据库发布门禁，分别记录 schema 与幂等种子的当前修订；schema 修订由迁移和紧随其后的版本记录步骤推进，seed 修订只在完整种子执行成功后推进。两类修订统一使用 `vN` 格式并按数字比较。Web readiness 通过 `geo_platform_app` 读取并确认修订不低于应用内要求的最低版本，更高修订保持旧应用 readiness 可用。迁移身份使用独立 `MIGRATION_DATABASE_URL`，运行实例不得持有发布权限。
 
-数据库初始化历史以 `v1.sql` 表达清理后的基线，该脚本直接创建当时有效的表、枚举、约束、索引、触发器、RLS 和授权，不包含已删除表或中间 `ALTER/DROP` 过程；其 Drizzle 时间戳保留原 `0044_lively_shard` 的最终时间戳。基线末尾只恢复当前迁移会话的 `search_path`，确保 Drizzle 在同一连接中继续执行增量 SQL，不改变持久对象。`v2.sql` 追加平台媒体发布加密凭证表，`v3.sql` 追加客户价格等级、渠道采购成本、上游状态与固定售价表，`v4.sql` 追加品牌文档库、不可变文档版本、文件夹和发布来源关联，并回填已有成功生成内容。v5—v7 追加读取缓存、积分加价率和任务价格快照，v8 追加企业服务与积分到期日，v9 追加文档创建幂等键及原请求指纹。全新数据库依次执行 v1—v9，并把 schema 修订推进为 `v9`；已经完整执行旧 0000—0044 迁移链或上一版 `0044_baseline` 的数据库按时间戳跳过基线建表，再执行后续版本。`record-schema-version` 校验对应结构；未完成旧 0044 迁移的历史数据库必须先用旧版本升级完整。
+数据库初始化历史以 `v1.sql` 表达清理后的基线，该脚本直接创建当时有效的表、枚举、约束、索引、触发器、RLS 和授权，不包含已删除表或中间 `ALTER/DROP` 过程；其 Drizzle 时间戳保留原 `0044_lively_shard` 的最终时间戳。基线末尾只恢复当前迁移会话的 `search_path`，确保 Drizzle 在同一连接中继续执行增量 SQL，不改变持久对象。`v2.sql` 追加平台媒体发布加密凭证表，`v3.sql` 追加客户价格等级、渠道采购成本、上游状态与固定售价表，`v4.sql` 追加品牌文档库、不可变文档版本、文件夹和发布来源关联，并回填已有成功生成内容。v5—v7 追加读取缓存、积分加价率和任务价格快照，v8 追加企业服务与积分到期日，v9 追加文档创建幂等键及原请求指纹，v10 追加效果追踪提交、加密请求及结果状态。全新数据库依次执行 v1—v10，并把 schema 修订推进为 `v10`；已经完整执行旧 0000—0044 迁移链或上一版 `0044_baseline` 的数据库按时间戳跳过基线建表，再执行后续版本。`record-schema-version` 校验对应结构；未完成旧 0044 迁移的历史数据库必须先用旧版本升级完整。
 
 ## 完整性与幂等
 
@@ -82,6 +82,7 @@ Web Gateway 与 Worker 在验证企业绑定和 BrandID 归属后，使用平台
 - 首次管理员创建使用 advisory transaction lock，保证整个部署只成功一次。
 - 异步任务执行前重新读取主体、租户和品牌权限，不信任陈旧任务载荷。报告和文章的业务记录、pg-boss 任务及创建审计共享同一 PostgreSQL 连接与事务，中途失败一起回滚，报告同时预留资源额度。资源额度预留校验稳定键对应的权益、数量、引用及已记录的操作人；确认和释放使用相同预留锁且互斥，不能重复结算或占用另一任务的预留。
 - `article_generation_jobs` 与 `report_exports` 使用每次领取时生成的 `execution_id` 作为执行租约；中间态、成功和失败更新都必须匹配当前租约，恢复任务清空旧租约后，迟到 Worker 不再有写权限。
+- `article_tracking_submissions` 保存企业、品牌、内部绑定、原操作者和加密请求，并启用企业 RLS；Service 只返回当前操作者在授权品牌的提交。提交与积分预扣原子写入，企业与键的事务锁避免并发重发；上游成功 ArticleID 单独持久化后可恢复映射和成功审计。失败/结果不确定状态与返还同一事务提交，后台维护不自动调用外部创建。迟到成功保留已返还事实，不额外收费。
 - 内容文档、版本和文件夹均保存 `organization_id` 并启用租户 RLS；文档同时保存内部团队绑定与品牌范围。手工创建和导入使用 `(organization_id, creation_key)` 唯一约束及事务级 advisory lock 保证并发重放只创建一份文档与首版，创建审计与内容同一事务写入，原请求指纹用于拒绝不同内容或操作者重用同一键。AI 生成任务通过唯一 `source_job_id` 最多自动入库一次，文档版本使用 `(document_id, version)` 唯一约束并在事务锁内单调递增。
 - 异步恢复由 PostgreSQL advisory lock 保证同一时刻只有一个扫描器。文章功能扣减与返还使用同一 reference 的稳定幂等键；计费维护还会扫描已失败或取消但缺失返还的文章任务，按原扣款金额补齐一次返还。
 

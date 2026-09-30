@@ -77,6 +77,8 @@ JSON 请求使用 `Content-Type: application/json`；允许标准的 `applicatio
 
 文章生成在企业范围内保存幂等键，并校验原操作者、品牌、内部绑定和请求内容；不一致返回 `409 ARTICLE_JOB_IDEMPOTENCY_CONFLICT`。任务、入队及提交审计原子完成，首次成功返回 `202`，重放或恢复旧的未入队任务返回 `200`；队列不可用返回 `503 ARTICLE_QUEUE_UNAVAILABLE`，不保留新建失败任务。旧任务恢复保留原请求和价格快照，执行中与已结束任务不会重新入队。网络失败重试必须继续使用同一个键，明确失败或取消的任务重新生成使用新键。
 
+效果追踪 `POST /v1/answerbit/articles` 必须提供 `Idempotency-Key`。同一企业、原操作者、品牌、内部绑定和追踪内容重放返回原状态；内容不一致返回 `409 ARTICLE_TRACKING_IDEMPOTENCY_CONFLICT`。已创建的提交重放不重新报价、扣费或调用腾讯；新提交报价变化返回 `FEATURE_PRICE_CHANGED`，余额不足返回 402，均不保留半成品。首次腾讯成功返回 201，成功重放返回 200，正在处理、明确失败与结果不确定的提交状态返回 202，客户端必须检查 `data.status`，不能把 202 视为腾讯成功。failed/uncertain 已返还原积分；未确认状态不会自动重新创建。`GET /v1/answerbit/article-tracking-submissions` 只返回当前用户在当前品牌最近 20 次提交及原输入，支持恢复已获得 ArticleID 的本地收尾；文章追踪详情要求 ArticleID 属于当前范围的目录，否则返回 `404 ARTICLE_NOT_FOUND`。
+
 文档新建和导入支持可选的 `Idempotency-Key` 请求头；工作台和平台文档库必须提供稳定键。首次创建返回 `201` 和 `data.replayed=false`，相同键、操作者、范围及创建内容重放返回当前文档、`200` 和 `data.replayed=true`，不新建版本；参数或操作者不一致返回 `409 CONTENT_DOCUMENT_IDEMPOTENCY_CONFLICT`。原始创建指纹不随后续编辑改变。兼容不带键的调用，但此类调用每次都是独立创建，不能安全重试。
 
 文档编辑与历史恢复请求体、归档查询参数必须包含正整数 `expectedVersion`。版本不一致返回 `409 CONTENT_DOCUMENT_VERSION_CONFLICT` 和 `details.currentVersion`，不写入内容或版本；客户端保留未保存编辑，核对最新版后重新提交。

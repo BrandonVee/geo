@@ -13,6 +13,7 @@ import {
   sql,
 } from "drizzle-orm";
 import { db } from "./client";
+import type { DatabaseTransaction } from "./context";
 import {
   answerbitBrandMappings,
   featurePointCosts,
@@ -258,18 +259,21 @@ export async function allocateBalance(input: {
   });
 }
 
-export async function consumeBalance(input: {
-  organizationId: string;
-  brandId?: string;
-  asset: BalanceAsset;
-  amount: number;
-  referenceType: string;
-  referenceId: string;
-  idempotencyKey: string;
-  reason: string;
-  actorUserId?: string;
-}) {
-  return db.transaction(async (tx) => {
+export async function consumeBalance(
+  input: {
+    organizationId: string;
+    brandId?: string;
+    asset: BalanceAsset;
+    amount: number;
+    referenceType: string;
+    referenceId: string;
+    idempotencyKey: string;
+    reason: string;
+    actorUserId?: string;
+  },
+  executor?: DatabaseTransaction,
+) {
+  const execute = async (tx: DatabaseTransaction) => {
     await lockIdempotencyKey(tx, input.organizationId, input.idempotencyKey);
     const [replay] = await tx
       .select()
@@ -336,21 +340,25 @@ export async function consumeBalance(input: {
       transaction: transaction!,
       replayed: false as const,
     };
-  });
+  };
+  return executor ? execute(executor) : db.transaction(execute);
 }
 
-export async function restoreBalance(input: {
-  organizationId: string;
-  brandId?: string;
-  asset: BalanceAsset;
-  amount: number;
-  referenceType: string;
-  referenceId: string;
-  idempotencyKey: string;
-  reason: string;
-  actorUserId?: string;
-}) {
-  return db.transaction(async (tx) => {
+export async function restoreBalance(
+  input: {
+    organizationId: string;
+    brandId?: string;
+    asset: BalanceAsset;
+    amount: number;
+    referenceType: string;
+    referenceId: string;
+    idempotencyKey: string;
+    reason: string;
+    actorUserId?: string;
+  },
+  executor?: DatabaseTransaction,
+) {
+  const execute = async (tx: DatabaseTransaction) => {
     await lockIdempotencyKey(tx, input.organizationId, input.idempotencyKey);
     const [replay] = await tx
       .select()
@@ -394,7 +402,8 @@ export async function restoreBalance(input: {
       })
       .returning();
     return transaction!;
-  });
+  };
+  return executor ? execute(executor) : db.transaction(execute);
 }
 
 export function listBalances(organizationId: string) {

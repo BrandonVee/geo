@@ -13,6 +13,21 @@ import {
 } from "@/server/audit/write-audit";
 type Scope = { organizationId: string; teamBindingId: string; brandId: string };
 export const articleRepository = {
+  async findMapping(scope: Scope, articleId: string) {
+    const [record] = await db
+      .select()
+      .from(answerbitArticleMappings)
+      .where(
+        and(
+          eq(answerbitArticleMappings.organizationId, scope.organizationId),
+          eq(answerbitArticleMappings.teamBindingId, scope.teamBindingId),
+          eq(answerbitArticleMappings.brandId, scope.brandId),
+          eq(answerbitArticleMappings.articleId, articleId),
+        ),
+      )
+      .limit(1);
+    return record;
+  },
   async sync(
     scope: Scope,
     articles: {

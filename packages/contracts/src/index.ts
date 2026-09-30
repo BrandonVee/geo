@@ -477,7 +477,17 @@ export const traceArticleSchema = z
     ...brandScopeShape,
     expectedPoints: z.number().int().nonnegative().max(11_000_000),
     title: z.string().trim().min(1).max(500),
-    urls: z.array(z.string().url().max(2000)).min(1).max(20),
+    urls: z
+      .array(
+        z
+          .string()
+          .trim()
+          .url()
+          .max(2000)
+          .regex(/^https?:\/\//i, "请输入 http:// 或 https:// 公开文章链接"),
+      )
+      .min(1)
+      .max(20),
     tagIds: z
       .array(z.string().trim().min(1).max(128))
       .max(50)
@@ -486,6 +496,7 @@ export const traceArticleSchema = z
     language: articleLanguageSchema.optional().default("zh-CN"),
   })
   .strict();
+export const articleTrackingQuerySchema = z.object(brandScopeShape).strict();
 export const articleListQuerySchema = z
   .object({
     ...brandScopeShape,

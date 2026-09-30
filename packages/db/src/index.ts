@@ -14,3 +14,4 @@ export * from "./enterprise-access";
 
 export * from "./report-exports";
 export * from "./article-jobs";
+export * from "./article-tracking";

@@ -1113,6 +1113,57 @@ export const answerbitArticleMappings = pgTable(
     ),
   ],
 );
+// @project-doc docs/domains/geo_operations.md#article_tracking
+export const articleTrackingSubmissions = pgTable(
+  "article_tracking_submissions",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id),
+    teamBindingId: uuid("team_binding_id")
+      .notNull()
+      .references(() => answerbitTeamBindings.id),
+    brandId: varchar("brand_id", { length: 128 }).notNull(),
+    requestedBy: uuid("requested_by")
+      .notNull()
+      .references(() => users.id),
+    idempotencyKey: varchar("idempotency_key", { length: 160 }).notNull(),
+    requestFingerprint: varchar("request_fingerprint", {
+      length: 64,
+    }).notNull(),
+    requestPayload: jsonb("request_payload")
+      .$type<{ ciphertext: string }>()
+      .notNull(),
+    status: varchar("status", { length: 16 })
+      .$type<"submitting" | "succeeded" | "failed" | "uncertain">()
+      .default("submitting")
+      .notNull(),
+    points: integer("points").notNull(),
+    refunded: boolean("refunded").default(false).notNull(),
+    articleId: varchar("article_id", { length: 128 }),
+    errorCode: varchar("error_code", { length: 64 }),
+    ...timestamps,
+  },
+  (t) => [
+    uniqueIndex("article_tracking_submissions_org_key_ux").on(
+      t.organizationId,
+      t.idempotencyKey,
+    ),
+    index("article_tracking_submissions_scope_idx").on(
+      t.organizationId,
+      t.teamBindingId,
+      t.brandId,
+      t.requestedBy,
+      t.createdAt,
+    ),
+    check(
+      "article_tracking_submissions_status_ck",
+      sql`${t.status} in ('submitting', 'succeeded', 'failed', 'uncertain')`,
+    ),
+    check("article_tracking_submissions_points_ck", sql`${t.points} >= 0`),
+  ],
+);
 export const brandAccess = pgTable(
   "brand_access",
   {

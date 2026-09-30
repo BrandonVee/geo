@@ -60,7 +60,7 @@ pnpm db:release
 pnpm dev
 ```
 
-全新数据库先由 `packages/db/drizzle/v1.sql` 建立基线，再依次执行 `v2.sql` 媒体发布平台凭证、`v3.sql` 分级定价结构、`v4.sql` 本地文档库结构及历史生成内容回填、`v5.sql` AnswerBit 读取缓存、`v6.sql` 积分加价规则与 `v7.sql` 异步文章价格快照，随后执行 `v8.sql` 企业服务与积分到期日及 `v9.sql` 文档创建幂等键和原请求指纹，记录 schema `v9`、执行 seed `v2` 的幂等种子并完成 RLS 检查。升级到 v6 时，未修改的旧等级规则转为当前发布加价率；已由管理员修改的规则保留原实际扣费，旧折扣显示为负加价率。v7 为新文章任务保存提交时的价格快照，旧任务仍按执行时规则计价。后续 schema 变化继续通过 `pnpm db:generate` 生成增量迁移并递增 `vN`，不直接修改已发布迁移。Drizzle 快照使用四位序号文件名（如 `0008_snapshot.json`）并以 `prevId` 串联，避免混用版本名导致生成器误读旧快照或产生分叉。
+全新数据库先由 `packages/db/drizzle/v1.sql` 建立基线，再依次执行 `v2.sql` 媒体发布平台凭证、`v3.sql` 分级定价结构、`v4.sql` 本地文档库结构及历史生成内容回填、`v5.sql` AnswerBit 读取缓存、`v6.sql` 积分加价规则与 `v7.sql` 异步文章价格快照，随后执行 `v8.sql` 企业服务与积分到期日及 `v9.sql` 文档创建幂等键和原请求指纹，再执行 `v10.sql` 效果追踪幂等提交与结果状态，记录 schema `v10`、执行 seed `v2` 的幂等种子并完成 RLS 检查。升级到 v6 时，未修改的旧等级规则转为当前发布加价率；已由管理员修改的规则保留原实际扣费，旧折扣显示为负加价率。v7 为新文章任务保存提交时的价格快照，旧任务仍按执行时规则计价。后续 schema 变化继续通过 `pnpm db:generate` 生成增量迁移并递增 `vN`，不直接修改已发布迁移。Drizzle 快照使用四位序号文件名（如 `0008_snapshot.json`）并以 `prevId` 串联，避免混用版本名导致生成器误读旧快照或产生分叉。
 
 访问：
 
@@ -133,10 +133,12 @@ CI 还会在全新 PostgreSQL 18 中连续执行两次 `pnpm db:release`，并�
 
 企业有效期与手动扣减的真实 PostgreSQL 回归：先执行 `pnpm db:release`，再运行 `ENTERPRISE_BALANCE_DB_TESTS=1 node scripts/run-with-env.mjs pnpm --filter @geo/db exec vitest run src/enterprise-balances.integration.test.ts`。用例仅创建独立 UUID 数据并清理，覆盖重复扣减、余额不足、到期阻止消费、续期恢复和冻结后退款。
 
-运营页面回归在 Redis 可用且 `MIGRATION_DATABASE_URL` 账号可创建、删除数据库时，安装 Playwright Chromium 后运行 `node scripts/test-operator-workflows.mjs`。脚本创建独立 `geo_workflow_qa_*` 数据库并完成两次迁移、种子和 RLS 检查及文档、积分统计、报告与文章提交 PostgreSQL / pg-boss 回归，写入测试接入配置，再构建与启动生产 Web，以临时端口运行浏览器回归，结束后关闭服务并删除测试库。腾讯和发布地址指向测试服务，业务调用在浏览器中模拟；无需真实上游 Key 或已运行的开发服务。用例覆盖草稿恢复、企业切换、文章生成响应丢失后刷新确认及后续输入保留、普通与参考生成分别恢复、企业/品牌积分查看、角色隔离、明暗主题及多尺寸无障碍检查、个人视图管理、报告重试、文档暂存恢复、成功响应丢失后的创建重放与多人编辑冲突合并；审计记录保持不可变，由测试库整体删除完成清理。测试文件要求一次性数据库标识，禁止直接对日常开发数据库执行。脚本支持透传 `--grep` 等 Playwright 参数。多用例登录共享同一客户端 IP，达到真实登录限流时按服务端 `Retry-After` 等待后重试，不关闭限流。
+运营页面回归在 Redis 可用且 `MIGRATION_DATABASE_URL` 账号可创建、删除数据库时，安装 Playwright Chromium 后运行 `node scripts/test-operator-workflows.mjs`。脚本创建独立 `geo_workflow_qa_*` 数据库并完成两次迁移、种子和 RLS 检查及文档、积分统计、报告、文章提交 PostgreSQL / pg-boss 及效果追踪事务回归，写入测试接入配置，再构建与启动生产 Web，以临时端口运行浏览器回归，结束后关闭服务并删除测试库。腾讯和发布地址指向测试服务，业务调用在浏览器中模拟；无需真实上游 Key 或已运行的开发服务。用例覆盖草稿恢复、企业切换、文章生成响应丢失后刷新确认及后续输入保留、普通与参考生成分别恢复、追踪语言独立和待核对提交恢复、迟到追踪详情隔离、企业/品牌积分查看、角色隔离、明暗主题及多尺寸无障碍检查、个人视图管理、报告重试、文档暂存恢复、成功响应丢失后的创建重放与多人编辑冲突合并；审计记录保持不可变，由测试库整体删除完成清理。测试文件要求一次性数据库标识，禁止直接对日常开发数据库执行。脚本支持透传 `--grep` 等 Playwright 参数。多用例登录共享同一客户端 IP，达到真实登录限流时按服务端 `Retry-After` 等待后重试，不关闭限流。
 
 报告原子提交回归由上述一次性数据库脚本运行 `src/server/services/report-exports.integration.test.ts`，保留真实 Repository、额度事务、审计和 pg-boss，只替换业务授权边界。覆盖提交前不可见、同键并发、最后名额竞争、入队后异常、审计失败全回滚、额度补配重试、旧半成品恢复、自动补投失败回滚与并发去重、Worker 预占修复及确认/释放互斥；不调用上游、不允许对日常开发库直接执行，审计和额度历史由删除整个测试库清理。
 
 文章生成提交回归由同一脚本以 `ARTICLE_SUBMISSION_DB_TESTS=1` 运行 `src/server/services/articles.integration.test.ts`。保留真实价格读取、加密、Repository、审计和 pg-boss，仅替换授权、腾讯范围加载和模板查询；覆盖提交前不可见、并发同键、入队或审计失败回滚、旧任务原价恢复、自动补投去重、结果查询与执行租约的原子调度、终态不重新执行及报价/模板校验。测试不启动生成 Worker，不调用腾讯，不实际扣积分，历史随一次性数据库清理。
+
+效果追踪提交回归由同一一次性数据库脚本以 `ARTICLE_TRACKING_DB_TESTS=1` 运行 `src/server/services/article-tracking.integration.test.ts`。保留真实预扣/返还、加密请求、Repository、审计与 RLS，替换业务授权和腾讯接口；覆盖并发提交、成功重放、报价/余额拒绝、审计回滚、已保存 ArticleID 的收尾恢复、上游明确失败/超时、后台中断返还与迟到成功、文章归属校验。只允许一次性数据库，不连接真实腾讯，不在日常库执行。
 
 Worker 等待任务的权限复核回归在已迁移数据库执行 `WORKER_ACCESS_DB_TESTS=1 node scripts/run-with-env.mjs pnpm --filter @geo/worker exec vitest run src/job-access.integration.test.ts`。只创建独立 UUID 数据并清理，不创建任务或调用上游，覆盖成员／账号停用、角色降级、功能模块关闭、代理商到期和品牌归属。

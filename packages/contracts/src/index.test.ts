@@ -476,6 +476,7 @@ describe("文章追踪与生成契约", () => {
         ...scope,
         title: "文章",
         urls: ["not-url"],
+        expectedPoints: 3,
       }).success,
     ).toBe(false);
     expect(
@@ -487,6 +488,20 @@ describe("文章追踪与生成契约", () => {
         language: "zh-CN",
       }).success,
     ).toBe(true);
+    for (const url of [
+      "ftp://example.com/article",
+      "javascript:alert(1)",
+      "mailto:a@example.com",
+    ]) {
+      expect(
+        traceArticleSchema.safeParse({
+          ...scope,
+          title: "文章",
+          expectedPoints: 3,
+          urls: [url],
+        }).success,
+      ).toBe(false);
+    }
   });
   it("文章列表统计时间必须成对出现", async () => {
     const { articleListQuerySchema } = await import("./index");

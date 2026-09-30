@@ -4,7 +4,6 @@ import {
   type ArticleDetailQuery,
   type ArticleListQuery,
   type CreateArticleJobInput,
-  type TraceArticleInput,
 } from "@geo/contracts";
 import type { Permission } from "@geo/core";
 import type { AuditContext } from "@/server/audit/write-audit";
@@ -16,7 +15,6 @@ import {
   queryArticlesLogged,
   queryArticleTemplatesLogged,
   queryArticleTraceDetailLogged,
-  traceArticleLogged,
 } from "@/server/integrations/answerbit/gateway";
 import {
   cancelArticleGeneration,
@@ -26,10 +24,7 @@ import { authorizeBrand } from "@/server/permissions/brand-scope";
 import { articleRepository } from "@/server/repositories/articles";
 import { getSecretCipher } from "@/server/security/secret-cipher";
 import { mapUpstreamError } from "./answerbit-connections";
-import {
-  assertPointBilledFeatureQuote,
-  runPointBilledFeature,
-} from "./feature-billing";
+import { assertPointBilledFeatureQuote } from "./feature-billing";
 type Scope = { organizationId: string; teamBindingId: string; brandId: string };
 const logContext = (
   scope: Scope,
@@ -215,61 +210,6 @@ export const articleService = {
       return mapUpstreamError(error);
     }
   },
-  async trace(
-    input: TraceArticleInput,
-    userId: string,
-    requestId: string,
-    audit: AuditContext,
-  ) {
-    const { connection, apiKey } = await prepare(
-      input,
-      userId,
-      "resource.create",
-    );
-    try {
-      return await runPointBilledFeature(
-        {
-          featureCode: "effect_tracking",
-          featureName: "效果追踪链接",
-          organizationId: input.organizationId,
-          brandId: input.brandId,
-          actorUserId: userId,
-          referenceId: requestId,
-          expectedPoints: input.expectedPoints,
-        },
-        async () => {
-          const articleId = await traceArticleLogged(
-            apiKey,
-            {
-              brand_id: input.brandId,
-              title: input.title,
-              urls: input.urls,
-              tag_ids: input.tagIds,
-              language: input.language,
-            },
-            logContext(input, connection.id, requestId, userId),
-          );
-          const mapping = await articleRepository.save(input, {
-            articleId,
-            title: input.title,
-            status: 3,
-            source: 2,
-            templateType: 0,
-            language: input.language,
-          });
-          await writeAudit(audit, {
-            operation: "answerbit.article.trace",
-            resourceType: "answerbit_article",
-            resourceId: articleId,
-            summary: `创建效果追踪 ${input.title}`,
-          });
-          return mapping;
-        },
-      );
-    } catch (error) {
-      return mapUpstreamError(error);
-    }
-  },
   async traceDetail(
     articleId: string,
     input: ArticleDetailQuery,
@@ -281,6 +221,12 @@ export const articleService = {
       userId,
       "resource.read",
     );
+    if (!(await articleRepository.findMapping(input, articleId)))
+      throw new ApiError(
+        404,
+        "ARTICLE_NOT_FOUND",
+        "该文章不在当前企业与品牌的追踪目录中，请刷新目录后重试",
+      );
     try {
       return await queryArticleTraceDetailLogged(
         apiKey,

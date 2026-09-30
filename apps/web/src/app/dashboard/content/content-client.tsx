@@ -38,7 +38,11 @@ import {
   useAnswerBitScope,
 } from "../use-answerbit-scope";
 import { DocumentLibrary } from "./document-library";
-import { createArticleJobSchema } from "@geo/contracts";
+import {
+  createArticleJobSchema,
+  traceArticleSchema,
+  type TraceArticleInput,
+} from "@geo/contracts";
 import {
   editableGenerationErrors,
   hasGenerationInput,
@@ -46,6 +50,7 @@ import {
   type GenerationSubmission,
 } from "./generation-draft";
 import { useGenerationDraft } from "./use-generation-draft";
+import { useTrackingDraft } from "./use-tracking-draft";
 type Article = {
   id: string;
   title: string;
@@ -88,6 +93,19 @@ type Job = {
   createdAt: string;
   completedAt: string | null;
   replayed?: boolean;
+};
+type TrackingSubmission = {
+  id: string;
+  status: "submitting" | "succeeded" | "failed" | "uncertain";
+  articleId: string | null;
+  points: number;
+  refunded: boolean;
+  errorCode: string | null;
+  errorMessage?: string | null;
+  createdAt: string;
+  idempotencyKey: string;
+  input: TraceArticleInput;
+  replayed: boolean;
 };
 type TraceDetail = {
   trace_info: {
@@ -230,7 +248,34 @@ export function ContentClient({
     return () => clearTimeout(timer);
   }, [promptSearch]);
   const [tags, setTags] = useState<Tag[]>([]);
-  const [selectedTraceTags, setSelectedTraceTags] = useState<string[]>([]);
+  const tracking = useTrackingDraft(
+    { userId, organizationId, teamBindingId, brandId },
+    scope.canWrite,
+  );
+  const trackingReady = tracking.ready;
+  const {
+    title: traceTitle,
+    urls: traceUrls,
+    language: traceLanguage,
+    tags: selectedTraceTags,
+  } = tracking.form;
+  const setTraceTitle = (title: string) => tracking.patch({ title });
+  const setTraceUrls = (urls: string) => tracking.patch({ urls });
+  const setSelectedTraceTags = (tags: string[]) => tracking.patch({ tags });
+  const [trackingSubmissions, setTrackingSubmissions] = useState<
+    TrackingSubmission[]
+  >([]);
+  const [traceOutcome, setTraceOutcome] = useState<
+    TrackingSubmission | undefined
+  >();
+  const pendingTrackingResult =
+    traceOutcome?.idempotencyKey === tracking.pending?.key
+      ? traceOutcome
+      : trackingSubmissions.find(
+          (item) => item.idempotencyKey === tracking.pending?.key,
+        );
+  const trackingController = useRef<AbortController | undefined>(undefined);
+  const detailController = useRef<AbortController | undefined>(undefined);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [libraryTags, setLibraryTags] = useState<string[]>([]);
   const [scrollId, setScrollId] = useState("");
@@ -239,8 +284,6 @@ export function ContentClient({
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState<"" | "trace" | "generate">("");
   const [tab, setTab] = useState<"library" | "trace" | "generate">(initialTab);
-  const [traceTitle, setTraceTitle] = useState("");
-  const [traceUrls, setTraceUrls] = useState("");
   const [traceCreateOpen, setTraceCreateOpen] = useState(false);
   const availableTemplates = templates.filter((item) =>
     generationMode === "reference"
@@ -260,6 +303,7 @@ export function ContentClient({
     selectedPromptsRef.current = selectedPrompts;
   }, [selectedPrompts]);
   const [detail, setDetail] = useState<TraceDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState("");
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   useEffect(() => {
     scopeVersion.current += 1;
@@ -267,6 +311,13 @@ export function ContentClient({
     jobReadVersion.current += 1;
     generationController.current?.abort();
     generationController.current = undefined;
+    trackingController.current?.abort();
+    trackingController.current = undefined;
+    detailController.current?.abort();
+    detailController.current = undefined;
+    setTrackingSubmissions([]);
+    setTraceOutcome(undefined);
+    setCancellingJob("");
     generationSubmitting.current = false;
     setSubmitting("");
     setArticles([]);
@@ -274,7 +325,6 @@ export function ContentClient({
     setPrompts([]);
     setPromptSearch("");
     setTags([]);
-    setSelectedTraceTags([]);
     setScrollId("");
     setTotal(0);
     setTraceCreateOpen(false);
@@ -282,6 +332,7 @@ export function ContentClient({
     setSelectedJob(null);
     setLibraryTags([]);
     setDetail(null);
+    setDetailLoading("");
     setMessage("");
   }, [organizationId, teamBindingId, brandId]);
   useEffect(() => {
@@ -292,6 +343,10 @@ export function ContentClient({
     () => () => {
       generationController.current?.abort();
       generationController.current = undefined;
+      trackingController.current?.abort();
+      trackingController.current = undefined;
+      detailController.current?.abort();
+      detailController.current = undefined;
     },
     [],
   );
@@ -365,6 +420,11 @@ export function ContentClient({
               `/api/v1/content-documents?${scopeQuery({ ...base, limit: "100", offset: "0" })}`,
             )
           : Promise.resolve(undefined),
+        tab === "trace"
+          ? read(
+              `/api/v1/answerbit/article-tracking-submissions?${scopeQuery(base)}`,
+            )
+          : Promise.resolve(undefined),
       ]);
       if (version !== readVersion.current) return;
       const value = (index: number) =>
@@ -421,6 +481,7 @@ export function ContentClient({
             (document: { tags?: string[] }) => document.tags ?? [],
           ),
         );
+      if (value(7)) setTrackingSubmissions(value(7));
       const failures = result.flatMap((item) =>
         item.status === "rejected"
           ? [
@@ -498,38 +559,126 @@ export function ContentClient({
     return body;
   }
   async function trace() {
-    if (submitting || !scope.canWrite || !scope.brandId || scope.pointsExpired)
+    if (
+      submitting ||
+      trackingController.current ||
+      !scope.canWrite ||
+      !scope.brandId ||
+      !tracking.ready
+    )
       return;
-    setSubmitting("trace");
+    const confirming = tracking.pending && !tracking.pending.editable;
+    if (scope.pointsExpired && !confirming) return;
+    const version = scopeVersion.current;
+    const controller = new AbortController();
+    let attempt = tracking.pending;
     try {
-      const urls = traceUrls
-        .split("\n")
-        .map((item) => item.trim())
-        .filter(Boolean);
-      await request("/api/v1/answerbit/articles", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
+      if (!confirming) {
+        const input = traceArticleSchema.parse({
           ...apiScope(scope),
           expectedPoints: featurePointCosts.effectTracking,
           title: traceTitle,
-          urls,
+          urls: [
+            ...new Set(
+              traceUrls
+                .split("\n")
+                .map((item) => item.trim())
+                .filter(Boolean),
+            ),
+          ],
           tagIds: selectedTraceTags,
-          language,
-        }),
-      });
-      setTraceTitle("");
-      setTraceUrls("");
-      setSelectedTraceTags([]);
-      setTraceCreateOpen(false);
-      setMessage("文章已加入追踪");
+          language: traceLanguage,
+        });
+        attempt = tracking.begin(input);
+      }
+      if (!attempt) return;
+      trackingController.current = controller;
+      setSubmitting("trace");
+      const key = attempt.key;
+      const send = (input: TraceArticleInput) =>
+        request("/api/v1/answerbit/articles", {
+          method: "POST",
+          signal: controller.signal,
+          headers: {
+            "content-type": "application/json",
+            "Idempotency-Key": key,
+          },
+          body: JSON.stringify(input),
+        });
+      let body;
+      try {
+        body = await send(attempt.input);
+      } catch (error) {
+        if (
+          (error as Error & { code?: string }).code !==
+            "ARTICLE_TRACKING_IDEMPOTENCY_CONFLICT" ||
+          !attempt.previous.length
+        )
+          throw error;
+        let found = false;
+        for (const previous of [...attempt.previous].reverse()) {
+          try {
+            body = await send(previous.input);
+            attempt = { ...attempt, ...previous };
+            found = true;
+            break;
+          } catch (originalError) {
+            if (
+              (originalError as Error & { code?: string }).code !==
+              "ARTICLE_TRACKING_IDEMPOTENCY_CONFLICT"
+            )
+              throw originalError;
+          }
+        }
+        if (!found) throw error;
+      }
+      if (version !== scopeVersion.current || controller.signal.aborted) return;
+      const result = body.data as TrackingSubmission;
+      setTraceOutcome(result);
+      if (result.status === "succeeded") {
+        const changed = tracking.finish(attempt);
+        setMessage(
+          changed
+            ? "追踪已确认，后续输入已保留。"
+            : result.replayed
+              ? "已找回原追踪记录，未重复扣积分。"
+              : "文章已加入追踪",
+        );
+        if (!changed) setTraceCreateOpen(false);
+      } else if (result.status === "failed") {
+        tracking.release();
+        setMessage(
+          `${result.errorMessage ?? "腾讯未接受本次追踪"}。积分已返还，输入已保留，可再次提交。`,
+        );
+      } else
+        setMessage(
+          result.status === "uncertain"
+            ? "追踪结果待核对，积分已返还。请先查看追踪目录。"
+            : "追踪提交正在处理，请稍后确认原提交。",
+        );
       await load();
     } catch (error) {
-      setMessage((error as Error).message);
-      if ((error as Error & { code?: string }).code === "FEATURE_PRICE_CHANGED")
-        router.refresh();
+      if (version !== scopeVersion.current || controller.signal.aborted) return;
+      const code = (error as Error & { code?: string }).code;
+      if (
+        attempt &&
+        [
+          "VALIDATION_ERROR",
+          "FEATURE_PRICE_CHANGED",
+          "ANSWERBIT_POINTS_INSUFFICIENT",
+        ].includes(code ?? "")
+      )
+        tracking.allowCorrection(attempt.key);
+      setMessage(
+        (error as { issues?: { message: string }[] }).issues?.[0]?.message ??
+          (error as Error).message,
+      );
+      if (code === "FEATURE_PRICE_CHANGED") router.refresh();
     } finally {
-      setSubmitting("");
+      if (trackingController.current === controller) {
+        trackingController.current = undefined;
+        setSubmitting("");
+      }
     }
   }
   async function generate() {
@@ -693,17 +842,35 @@ export function ContentClient({
             : "取消失败，请刷新任务状态后重试",
         );
     } finally {
-      setCancellingJob("");
+      if (version === scopeVersion.current) setCancellingJob("");
     }
   }
   async function openArticle(id: string) {
+    detailController.current?.abort();
+    const controller = new AbortController();
+    detailController.current = controller;
+    const version = scopeVersion.current;
+    setDetail(null);
+    setDetailLoading(id);
     try {
       const body = await request(
-        `/api/v1/answerbit/articles/${id}?${scopeQuery(apiScope(scope))}`,
+        `/api/v1/answerbit/articles/${encodeURIComponent(id)}?${scopeQuery(apiScope(scope))}`,
+        { signal: controller.signal },
       );
-      setDetail(body.data);
+      if (
+        version === scopeVersion.current &&
+        detailController.current === controller &&
+        !controller.signal.aborted
+      )
+        setDetail(body.data);
     } catch (error) {
-      setMessage((error as Error).message);
+      if (version === scopeVersion.current && !controller.signal.aborted)
+        setMessage((error as Error).message);
+    } finally {
+      if (detailController.current === controller) {
+        detailController.current = undefined;
+        setDetailLoading("");
+      }
     }
   }
   const groupedTagOptions = [
@@ -802,8 +969,9 @@ export function ContentClient({
       width: 90,
       render: (_, item) => (
         <Button
-          icon={<EyeOutlined />}
+          icon={<EyeOutlined aria-hidden="true" />}
           onClick={() => void openArticle(item.id)}
+          loading={detailLoading === item.id}
           size="small"
         >
           详情
@@ -822,7 +990,7 @@ export function ContentClient({
             <List.Item
               actions={[
                 <Button
-                  icon={<EyeOutlined />}
+                  icon={<EyeOutlined aria-hidden="true" />}
                   key="view"
                   onClick={() => setSelectedJob(job)}
                   size="small"
@@ -1209,7 +1377,7 @@ export function ContentClient({
                         !selectedPrompts.length))
                   }
                   htmlType="submit"
-                  icon={<SendOutlined />}
+                  icon={<SendOutlined aria-hidden="true" />}
                   loading={submitting === "generate"}
                   type="primary"
                 >
@@ -1272,7 +1440,7 @@ export function ContentClient({
             extra={
               <Space wrap>
                 <Button
-                  icon={<ReloadOutlined />}
+                  icon={<ReloadOutlined aria-hidden="true" />}
                   loading={loading}
                   onClick={() => void load()}
                 >
@@ -1280,7 +1448,7 @@ export function ContentClient({
                 </Button>
                 <Button
                   disabled={!scope.canWrite}
-                  icon={<PlusOutlined />}
+                  icon={<PlusOutlined aria-hidden="true" />}
                   onClick={() => changeTab("generate")}
                   type="primary"
                 >
@@ -1297,6 +1465,61 @@ export function ContentClient({
 
       {tab === "trace" ? (
         <Space direction="vertical" size="large" style={{ width: "100%" }}>
+          {tracking.pending ? (
+            <Alert
+              type="info"
+              showIcon
+              message="有一份追踪提交等待确认"
+              action={
+                <Button onClick={() => setTraceCreateOpen(true)}>
+                  继续确认
+                </Button>
+              }
+            />
+          ) : null}
+          {trackingSubmissions.some((item) => item.status !== "succeeded") ? (
+            <Card title="最近的追踪提交">
+              <List
+                dataSource={trackingSubmissions
+                  .filter((item) => item.status !== "succeeded")
+                  .slice(0, 5)}
+                renderItem={(item) => (
+                  <List.Item
+                    actions={[
+                      <Button
+                        key="confirm"
+                        disabled={
+                          Boolean(tracking.pending) ||
+                          Boolean(submitting) ||
+                          !scope.canWrite ||
+                          !tracking.ready
+                        }
+                        onClick={() => {
+                          tracking.resume(item.idempotencyKey, item.input);
+                          setTraceOutcome(item);
+                          setTraceCreateOpen(true);
+                          if (item.status === "failed") tracking.release();
+                        }}
+                      >
+                        {item.status === "failed" ? "重新编辑" : "核对提交"}
+                      </Button>,
+                    ]}
+                  >
+                    <List.Item.Meta
+                      title={item.input.title}
+                      description={
+                        item.status === "submitting"
+                          ? "正在确认腾讯结果"
+                          : item.status === "failed"
+                            ? "腾讯未接受，积分已返还"
+                            : "结果待核对，积分已返还；请先查询下方追踪目录"
+                      }
+                    />
+                  </List.Item>
+                )}
+              />
+            </Card>
+          ) : null}
           <Row gutter={[16, 16]}>
             <Col lg={8} sm={12} xs={24}>
               <Card>
@@ -1330,15 +1553,17 @@ export function ContentClient({
             extra={
               <Space wrap>
                 <Button
-                  icon={<ReloadOutlined />}
+                  icon={<ReloadOutlined aria-hidden="true" />}
                   loading={loading}
                   onClick={() => void load()}
                 >
                   查询追踪数据
                 </Button>
                 <Button
-                  disabled={!scope.canWrite || !scope.brandId}
-                  icon={<PlusOutlined />}
+                  disabled={
+                    !scope.canWrite || !scope.brandId || !tracking.ready
+                  }
+                  icon={<PlusOutlined aria-hidden="true" />}
                   onClick={() => setTraceCreateOpen(true)}
                   type="primary"
                 >
@@ -1377,44 +1602,107 @@ export function ContentClient({
         confirmLoading={submitting === "trace"}
         okButtonProps={{
           disabled:
-            !traceTitle.trim() ||
-            !traceUrls.trim() ||
+            ((!tracking.pending || tracking.pending.editable) &&
+              (!traceTitle.trim() ||
+                !traceUrls.trim() ||
+                scope.pointsExpired)) ||
+            !tracking.ready ||
             !scope.canWrite ||
             !scope.brandId,
         }}
-        okText={`加入追踪 · 消耗 ${featurePointCosts.effectTracking.toLocaleString()} 积分`}
+        okText={`${tracking.pending && !tracking.pending.editable ? "确认上次追踪" : "加入追踪"} · 消耗 ${(tracking.pending && !tracking.pending.editable ? tracking.pending.input.expectedPoints : featurePointCosts.effectTracking).toLocaleString()} 积分`}
         onCancel={() => setTraceCreateOpen(false)}
         onOk={() => void trace()}
         open={traceCreateOpen}
         title="新增文章追踪"
         width={720}
       >
-        <Form layout="vertical">
-          <Form.Item label="文章标题" required>
+        {tracking.storageFailed ? (
+          <Alert
+            type="warning"
+            showIcon
+            message="浏览器无法暂存追踪内容，请保持页面打开。"
+            style={{ marginBottom: 16 }}
+          />
+        ) : null}
+        {tracking.pending ? (
+          <Alert
+            type="info"
+            showIcon
+            message={
+              tracking.pending.editable
+                ? "修正输入后重试原提交。"
+                : "上次追踪结果尚未确认，重试使用原内容。"
+            }
+            style={{ marginBottom: 16 }}
+          />
+        ) : null}
+        {pendingTrackingResult?.status === "uncertain" ? (
+          <Alert
+            type="warning"
+            showIcon
+            message="追踪结果需要核对，积分已返还"
+            description={
+              <Space direction="vertical">
+                <Typography.Text>
+                  请关闭弹窗，查询追踪目录并核对原链接。本次确认不会重新创建追踪。
+                </Typography.Text>
+                <Popconfirm
+                  title="已核对追踪目录？"
+                  description="结束确认后保留输入，再次加入追踪将创建新的提交。"
+                  onConfirm={() => {
+                    tracking.release();
+                    setTraceOutcome(undefined);
+                    setMessage(
+                      "原提交确认已结束，输入已保留。再次加入追踪将创建新的提交。",
+                    );
+                  }}
+                >
+                  <Button disabled={Boolean(submitting)}>
+                    已核对，结束本次确认
+                  </Button>
+                </Popconfirm>
+              </Space>
+            }
+            style={{ marginBottom: 16 }}
+          />
+        ) : null}
+        <Form disabled={!trackingReady} layout="vertical">
+          <Form.Item label="文章标题" htmlFor="tracking-title" required>
             <Input
+              id="tracking-title"
+              maxLength={500}
               autoFocus
               onChange={(event) => setTraceTitle(event.target.value)}
               value={traceTitle}
             />
           </Form.Item>
-          <Form.Item extra="每行一个公开发布链接。" label="发布链接" required>
+          <Form.Item
+            extra="每行一个 http:// 或 https:// 公开发布链接，最多 20 个。"
+            label="发布链接"
+            htmlFor="tracking-urls"
+            required
+          >
             <Input.TextArea
               onChange={(event) => setTraceUrls(event.target.value)}
+              id="tracking-urls"
+              maxLength={50000}
               placeholder="https://example.com/article"
               rows={5}
               value={traceUrls}
             />
           </Form.Item>
-          <Form.Item label="语言">
+          <Form.Item label="语言" htmlFor="tracking-language">
             <Select
-              onChange={setLanguage}
+              id="tracking-language"
+              onChange={(language) => tracking.patch({ language })}
               options={[
                 { label: "简体中文", value: "zh-CN" },
                 { label: "繁体中文", value: "zh-TW" },
                 { label: "English (US)", value: "en-US" },
                 { label: "日本語", value: "ja-JP" },
               ]}
-              value={language}
+              value={traceLanguage}
             />
           </Form.Item>
           <Form.Item
@@ -1424,8 +1712,10 @@ export function ContentClient({
                 : "当前腾讯团队未返回文章标签，此项可跳过，不影响追踪。"
             }
             label="文章标签（可选）"
+            htmlFor="tracking-tags"
           >
             <Select
+              id="tracking-tags"
               disabled={!tags.length}
               mode="multiple"
               onChange={setSelectedTraceTags}
@@ -1442,7 +1732,11 @@ export function ContentClient({
       </Modal>
 
       <Drawer
-        onClose={() => setDetail(null)}
+        onClose={() => {
+          detailController.current?.abort();
+          detailController.current = undefined;
+          setDetail(null);
+        }}
         open={Boolean(detail)}
         title="文章引用表现"
         width={720}

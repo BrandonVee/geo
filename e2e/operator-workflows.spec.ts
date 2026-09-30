@@ -85,7 +85,11 @@ async function mockBusinessApis(
           },
         ],
       });
-    if (path === "/api/v1/answerbit/article-jobs") return fulfill(route, []);
+    if (
+      path === "/api/v1/answerbit/article-jobs" ||
+      path === "/api/v1/answerbit/article-tracking-submissions"
+    )
+      return fulfill(route, []);
     if (path === "/api/v1/content-documents")
       return fulfill(route, { list: [], total: 0 });
     if (path === "/api/v1/content-folders" || path === "/api/v1/answerbit/tags")
@@ -554,6 +558,327 @@ test.describe("真实运营操作闭环", () => {
       );
       expect(violations).toEqual([]);
     }
+  });
+
+  test("追踪语言与生成独立，响应丢失后刷新确认原请求，跨企业保留各自输入", async ({
+    page,
+  }) => {
+    const submitted: { key: string; input: Record<string, unknown> }[] = [];
+    const saved = new Map<string, Record<string, unknown>>();
+    await mockBusinessApis(page, async (route) => {
+      const key = route.request().headers()["idempotency-key"],
+        input = route.request().postDataJSON();
+      submitted.push({ key, input });
+      const existing = saved.get(key);
+      const record = existing ?? {
+        id: randomUUID(),
+        idempotencyKey: key,
+        input,
+        status: "succeeded",
+        articleId: "tracked-article",
+        points: input.expectedPoints,
+        refunded: false,
+        errorCode: null,
+        createdAt: new Date().toISOString(),
+      };
+      saved.set(key, record);
+      if (submitted.length === 1) return route.abort("failed");
+      return fulfill(route, { ...record, replayed: Boolean(existing) });
+    });
+    await page.route(
+      "**/api/v1/answerbit/article-tracking-submissions?**",
+      (route) =>
+        fulfill(
+          route,
+          [...saved.values()].filter(
+            (record) =>
+              (record.input as Record<string, unknown>).brandId ===
+              new URL(route.request().url()).searchParams.get("brandId"),
+          ),
+        ),
+    );
+    await page.route("**/api/v1/answerbit/articles?**", (route) =>
+      fulfill(route, { list: [], total: 0, scroll_id: "" }),
+    );
+    await page.goto(`${scopedPath("/dashboard/content")}&stage=generate`);
+    await expect(page.getByLabel("语言", { exact: true })).toBeEnabled();
+    await page.getByLabel("语言", { exact: true }).focus();
+    await page.getByLabel("语言", { exact: true }).press("ArrowDown");
+    await page.getByTitle("English (US)", { exact: true }).click();
+    await page.getByRole("tab", { name: /效果追踪/ }).click();
+    await page
+      .getByRole("button", { name: "新增文章追踪", exact: true })
+      .click();
+    const dialog = page.getByRole("dialog", { name: "新增文章追踪" });
+    await expect(dialog.getByText("简体中文", { exact: true })).toBeVisible();
+    await dialog
+      .getByLabel("文章标题", { exact: true })
+      .fill("企业 A 的原追踪");
+    await dialog
+      .getByLabel("发布链接", { exact: true })
+      .fill("https://example.com/a\nhttps://example.com/a");
+    await dialog.getByLabel("语言", { exact: true }).focus();
+    await dialog.getByLabel("语言", { exact: true }).press("ArrowDown");
+    await page.getByTitle("日本語", { exact: true }).click();
+    await dialog.getByRole("button", { name: /加入追踪/ }).click();
+    await expect(
+      page.getByText("Failed to fetch", { exact: true }),
+    ).toBeVisible();
+    await dialog
+      .getByLabel("文章标题", { exact: true })
+      .fill("企业 A 的后续输入");
+    await page.reload();
+    await page.getByRole("button", { name: "继续确认", exact: true }).click();
+    await expect(dialog.getByLabel("文章标题", { exact: true })).toHaveValue(
+      "企业 A 的后续输入",
+    );
+    await dialog.getByRole("button", { name: /确认上次追踪/ }).click();
+    await expect(
+      page.getByText("追踪已确认，后续输入已保留。", { exact: true }),
+    ).toBeVisible();
+    expect(submitted).toHaveLength(2);
+    expect(submitted[1]).toEqual(submitted[0]);
+    expect(saved.size).toBe(1);
+    expect(submitted[0].input).toMatchObject({
+      language: "ja-JP",
+      urls: ["https://example.com/a"],
+    });
+    await dialog.getByRole("button", { name: /取\s*消/ }).click();
+    await expect(dialog).toBeHidden();
+    await page.locator("#answerbit-scope-organization").focus();
+    await page.locator("#answerbit-scope-organization").press("ArrowDown");
+    await page.getByTitle("流程测试企业 B", { exact: true }).click();
+    await page
+      .getByRole("button", { name: "新增文章追踪", exact: true })
+      .click();
+    await expect(dialog.getByLabel("文章标题", { exact: true })).toHaveValue(
+      "",
+    );
+    await expect(dialog.getByText("简体中文", { exact: true })).toBeVisible();
+    await dialog.getByLabel("文章标题", { exact: true }).fill("企业 B 的输入");
+    await dialog.getByRole("button", { name: /取\s*消/ }).click();
+    await expect(dialog).toBeHidden();
+    await page.locator("#answerbit-scope-organization").focus();
+    await page.locator("#answerbit-scope-organization").press("ArrowDown");
+    await page.getByTitle("流程测试企业 A", { exact: true }).click();
+    await page
+      .getByRole("button", { name: "新增文章追踪", exact: true })
+      .click();
+    await expect(dialog.getByLabel("文章标题", { exact: true })).toHaveValue(
+      "企业 A 的后续输入",
+    );
+    await expect(dialog.getByText("日本語", { exact: true })).toBeVisible();
+    await dialog.getByRole("button", { name: /取\s*消/ }).click();
+    await expect(dialog).toBeHidden();
+    await page.getByRole("tab", { name: "AI 生成", exact: true }).click();
+    await expect(page.getByText("English (US)", { exact: true })).toBeVisible();
+  });
+
+  test("追踪结果不确定保留原提交，核对后才能明确发起新提交，明暗主题可访问", async ({
+    page,
+  }) => {
+    const attempts: { key: string; input: unknown }[] = [];
+    let original: Record<string, unknown>;
+    await mockBusinessApis(page, async (route) => {
+      const key = route.request().headers()["idempotency-key"],
+        input = route.request().postDataJSON();
+      attempts.push({ key, input });
+      if (!original)
+        original = {
+          id: randomUUID(),
+          idempotencyKey: key,
+          input,
+          status: "uncertain",
+          articleId: null,
+          points: input.expectedPoints,
+          refunded: true,
+          errorCode: "ARTICLE_TRACKING_UNCERTAIN",
+          createdAt: new Date().toISOString(),
+        };
+      return fulfill(
+        route,
+        key === original.idempotencyKey
+          ? { ...original, replayed: attempts.length > 1 }
+          : {
+              ...original,
+              id: randomUUID(),
+              idempotencyKey: key,
+              input,
+              status: "succeeded",
+              articleId: "new-article",
+              refunded: false,
+              replayed: false,
+            },
+      );
+    });
+    await page.addInitScript({ content: axe.source });
+    await page.route("**/api/v1/answerbit/articles?**", (route) =>
+      fulfill(route, { list: [], total: 0, scroll_id: "" }),
+    );
+    await page.route(
+      "**/api/v1/answerbit/article-tracking-submissions?**",
+      (route) => fulfill(route, original ? [original] : []),
+    );
+    await page.goto(`${scopedPath("/dashboard/content")}&stage=tracking`);
+    await page
+      .getByRole("button", { name: "新增文章追踪", exact: true })
+      .click();
+    const dialog = page.getByRole("dialog", { name: "新增文章追踪" });
+    await dialog.getByLabel("文章标题", { exact: true }).fill("待核对追踪");
+    await dialog
+      .getByLabel("发布链接", { exact: true })
+      .fill("https://example.com/uncertain");
+    await dialog.getByRole("button", { name: /加入追踪/ }).click();
+    await expect(
+      dialog.getByText("追踪结果需要核对，积分已返还", { exact: true }),
+    ).toBeVisible();
+    await dialog.getByLabel("文章标题", { exact: true }).fill("之后修改的追踪");
+    await page.reload();
+    await page.getByRole("button", { name: "继续确认", exact: true }).click();
+    await dialog.getByRole("button", { name: /确认上次追踪/ }).click();
+    await expect(
+      dialog.getByText("追踪结果需要核对，积分已返还", { exact: true }),
+    ).toBeVisible();
+    expect(attempts).toHaveLength(2);
+    expect(attempts[1]).toEqual(attempts[0]);
+    for (const theme of ["light", "dark"]) {
+      if (theme === "dark")
+        await page.evaluate(() =>
+          document
+            .querySelector<HTMLButtonElement>('[aria-label="切换亮暗色模式"]')!
+            .click(),
+        );
+      await expect
+        .poll(() => page.locator("html").getAttribute("data-theme"))
+        .toBe(theme);
+      for (const width of [390, 768, 1440]) {
+        await page.setViewportSize({ width, height: 1000 });
+        expect(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth,
+          ),
+        ).toBe(true);
+      }
+      await page.evaluate(async () => {
+        await Promise.all(
+          document
+            .getAnimations()
+            .filter(
+              (animation) =>
+                animation.effect?.getComputedTiming().iterations !== Infinity,
+            )
+            .map((animation) => animation.finished.catch(() => {})),
+        );
+      });
+      const violations = await page.evaluate(async () =>
+        (
+          await (window as unknown as { axe: typeof axe }).axe.run(document, {
+            runOnly: {
+              type: "tag",
+              values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"],
+            },
+          })
+        ).violations.map(({ id, nodes }) => ({
+          id,
+          nodes: nodes.map((node) => node.html),
+        })),
+      );
+      expect(violations).toEqual([]);
+    }
+    await dialog
+      .getByRole("button", { name: "已核对，结束本次确认", exact: true })
+      .click();
+    await page.getByRole("button", { name: /确\s*定/ }).click();
+    await expect(dialog.getByLabel("文章标题", { exact: true })).toHaveValue(
+      "之后修改的追踪",
+    );
+    await dialog.getByRole("button", { name: /加入追踪/ }).click();
+    await expect(
+      page.getByText("文章已加入追踪", { exact: true }),
+    ).toBeVisible();
+    expect(attempts).toHaveLength(3);
+    expect(attempts[2].key).not.toBe(attempts[0].key);
+  });
+
+  test("追踪详情切换企业及重新选择文章时忽略迟到内容", async ({ page }) => {
+    await mockBusinessApis(page);
+    let releaseOld!: () => void, releaseSlow!: () => void;
+    const old = new Promise<void>((resolve) => (releaseOld = resolve)),
+      slow = new Promise<void>((resolve) => (releaseSlow = resolve));
+    const requested = new Set<string>();
+    await page.route("**/api/v1/answerbit/articles?**", (route) => {
+      const scope = fixture.scopes.find(
+        (item) =>
+          item.brandId ===
+          new URL(route.request().url()).searchParams.get("brandId"),
+      )!;
+      return fulfill(route, {
+        list: ["慢文章", "快文章"].map((title, index) => ({
+          id: `${scope.brandId}-${index}`,
+          title: `${scope.name} ${title}`,
+          status: 3,
+          source: 2,
+          template_type: 0,
+          ref_count: 0,
+          fluctuation: 0,
+          ref_trends: [],
+          published_platforms: [],
+        })),
+        total: 2,
+        scroll_id: "",
+      });
+    });
+    await page.route("**/api/v1/answerbit/articles/*?**", async (route) => {
+      const id = new URL(route.request().url()).pathname.split("/").at(-1)!;
+      requested.add(id);
+      if (id.startsWith(fixture.scopes[0].brandId)) await old;
+      else if (id.endsWith("-0")) await slow;
+      await fulfill(route, {
+        trace_info: [],
+        stats: {
+          total_count: id.endsWith("-0") ? 99 : 7,
+          ref_count_increase: 0,
+          ref_count: {},
+          ref_trends: [],
+        },
+      }).catch(() => {});
+    });
+    await page.goto(`${scopedPath("/dashboard/content")}&stage=tracking`);
+    await page
+      .getByRole("row")
+      .filter({ hasText: "流程测试企业 A 慢文章" })
+      .getByRole("button", { name: "详情" })
+      .click();
+    await expect.poll(() => requested.size).toBe(1);
+    await page.locator("#answerbit-scope-organization").focus();
+    await page.locator("#answerbit-scope-organization").press("ArrowDown");
+    await page.getByTitle("流程测试企业 B", { exact: true }).click();
+    releaseOld();
+    await expect(
+      page.getByText("流程测试企业 B 慢文章", { exact: true }),
+    ).toBeVisible();
+    await expect(page.getByText("文章引用表现", { exact: true })).toHaveCount(
+      0,
+    );
+    await page
+      .getByRole("row")
+      .filter({ hasText: "流程测试企业 B 慢文章" })
+      .getByRole("button", { name: "详情" })
+      .click();
+    await expect.poll(() => requested.size).toBe(2);
+    await page
+      .getByRole("row")
+      .filter({ hasText: "流程测试企业 B 快文章" })
+      .getByRole("button", { name: "详情" })
+      .click();
+    await expect(page.getByText("文章引用表现", { exact: true })).toBeVisible();
+    releaseSlow();
+    await expect(
+      page.getByRole("dialog").getByText("7", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("dialog").getByText("99", { exact: true }),
+    ).toHaveCount(0);
   });
 
   test("企业管理员查看整体消耗并切换品牌，品牌角色无法越权，明暗主题与多尺寸可用", async ({
