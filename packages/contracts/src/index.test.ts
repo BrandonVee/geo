@@ -95,6 +95,24 @@ describe("平台资源管理契约", () => {
     ).toBe(false);
   });
 
+  it("企业积分汇总不要求品牌；品牌与团队必须成对提交", () => {
+    const input = {
+      organizationId,
+      beginDate: "2026-09-01",
+      endDate: "2026-09-30",
+    };
+    expect(pointUsageQuerySchema.parse(input)).toMatchObject({
+      page: 1,
+      pageSize: 20,
+    });
+    expect(
+      pointUsageQuerySchema.safeParse({ ...input, brandId: "brand-1" }).success,
+    ).toBe(false);
+    expect(
+      pointUsageQuerySchema.safeParse({ ...input, teamBindingId }).success,
+    ).toBe(false);
+  });
+
   it("平台品牌角色由企业自动确定品牌范围", () => {
     expect(
       adminAddOrganizationMemberSchema.safeParse({

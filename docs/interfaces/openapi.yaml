@@ -3425,8 +3425,8 @@ paths:
           $ref: "#/components/responses/Forbidden"
   /v1/point-usage:
     get:
-      summary: 查询当前品牌的本地积分余额与消耗
-      description: 按已授权企业和品牌返回本系统 answerbit_points 账户、所选周期消耗/返还汇总以及分页明细；只有企业管理员可同时看到企业可分配积分。
+      summary: 查询企业或品牌的本地积分余额与消耗
+      description: 企业管理员不传品牌范围时读取企业资金池、全部品牌余额合计与消耗/返还统计。查询品牌时必须同时传 teamBindingId 和 brandId；品牌角色仅能读取已授权品牌，不返回企业资金池。类型筛选只影响明细，不影响周期汇总。日期按北京时间计算。
       tags:
         - Balances
       security: *id001
@@ -3434,13 +3434,13 @@ paths:
         - *id002
         - in: query
           name: teamBindingId
-          required: true
+          required: false
           schema:
             type: string
             format: uuid
         - in: query
           name: brandId
-          required: true
+          required: false
           schema:
             type: string
             minLength: 1
@@ -3482,7 +3482,7 @@ paths:
             default: 20
       responses:
         "200":
-          description: 品牌当前积分、企业可分配积分（如有权限）、周期汇总和分页明细
+          description: 品牌当前积分或企业全部品牌积分合计、企业可分配积分（如有权限）、周期消耗/返还汇总和带品牌信息的分页明细
         "403":
           $ref: "#/components/responses/Forbidden"
   /v1/balance-allocations:

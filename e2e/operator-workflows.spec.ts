@@ -300,6 +300,9 @@ test.describe("真实运营操作闭环", () => {
     // Audits are immutable. The runner drops this disposable database after QA.
     if (audited.length) return;
     await db
+      .delete(database.balanceTransactions)
+      .where(inArray(database.balanceTransactions.organizationId, ids));
+    await db
       .delete(balanceAccounts)
       .where(inArray(balanceAccounts.organizationId, ids));
     await db.delete(brandAccess).where(eq(brandAccess.userId, fixture.userId));
@@ -412,6 +415,237 @@ test.describe("真实运营操作闭环", () => {
     ).toBeVisible();
     expect(keys).toHaveLength(2);
     expect(keys[0]).toBe(keys[1]);
+  });
+
+  test("企业管理员查看整体消耗并切换品牌，品牌角色无法越权，明暗主题与多尺寸可用", async ({
+    page,
+  }) => {
+    const {
+      db,
+      users,
+      roles,
+      organizationMembers,
+      memberRoles,
+      grantBalance,
+      allocateBalance,
+      consumeBalance,
+      restoreBalance,
+    } = database;
+    const { eq, and } = operators;
+    const target = fixture.scopes[0];
+    await db
+      .update(users)
+      .set({ accountType: "agent", pricingTier: "bronze" })
+      .where(eq(users.id, fixture.userId));
+    const [member] = await db
+      .select()
+      .from(organizationMembers)
+      .where(
+        and(
+          eq(organizationMembers.organizationId, target.organizationId),
+          eq(organizationMembers.userId, fixture.userId),
+        ),
+      );
+    const [role] = await db
+      .select()
+      .from(roles)
+      .where(eq(roles.code, "tenant_admin"));
+    await db
+      .insert(memberRoles)
+      .values({ memberId: member.id, roleId: role.id });
+    await grantBalance({
+      organizationId: target.organizationId,
+      asset: "answerbit_points",
+      amount: 500,
+      reason: "QA 企业积分入账",
+      actorUserId: fixture.userId,
+      idempotencyKey: randomUUID(),
+    });
+    await allocateBalance({
+      organizationId: target.organizationId,
+      brandId: target.brandId,
+      asset: "answerbit_points",
+      amount: 200,
+      reason: "QA 企业品牌划拨",
+      actorUserId: fixture.userId,
+      idempotencyKey: randomUUID(),
+    });
+    const usage = {
+      organizationId: target.organizationId,
+      brandId: target.brandId,
+      asset: "answerbit_points" as const,
+      amount: 40,
+      referenceType: "feature_usage",
+      referenceId: "qa-point-usage",
+      reason: "QA 功能消耗",
+      actorUserId: fixture.userId,
+      idempotencyKey: randomUUID(),
+    };
+    await consumeBalance(usage);
+    await restoreBalance({
+      ...usage,
+      amount: 10,
+      referenceType: "feature_usage_failed",
+      reason: "QA 失败返还",
+      idempotencyKey: randomUUID(),
+    });
+    await mockBusinessApis(page);
+    await page.addInitScript({ content: axe.source });
+    await page.goto(
+      `/dashboard/metering?organizationId=${target.organizationId}`,
+    );
+    await expect(
+      page.getByText("企业品牌可用积分合计", { exact: true }),
+    ).toBeVisible();
+    await expect(page.locator(".ant-statistic-content").first()).toContainText(
+      "1,170",
+    );
+    await expect(
+      page.getByText("企业可分配积分", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("周期净消耗 30 积分", { exact: true }),
+    ).toBeVisible();
+    await expect(page.getByText("QA 功能消耗", { exact: true })).toBeVisible();
+    await expect(page.getByText("QA 失败返还", { exact: true })).toBeVisible();
+    const params = new URLSearchParams({
+      organizationId: target.organizationId,
+      beginDate: "2020-01-01",
+      endDate: "2100-01-01",
+      operation: "consume",
+    });
+    const result = await page.request.get(`/api/v1/point-usage?${params}`);
+    expect(result.ok()).toBeTruthy();
+    expect((await result.json()).data).toMatchObject({
+      balance: 1170,
+      organizationBalance: 300,
+      summary: { consumed: 40, restored: 10 },
+      pagination: { total: 1 },
+    });
+    for (const theme of ["light", "dark"]) {
+      if (theme === "dark")
+        await page.getByRole("button", { name: "切换亮暗色模式" }).click();
+      await expect
+        .poll(() => page.locator("html").getAttribute("data-theme"))
+        .toBe(theme);
+      for (const width of [390, 768, 1440]) {
+        await page.setViewportSize({ width, height: 1000 });
+        expect(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth,
+          ),
+        ).toBe(true);
+      }
+      await expect
+        .poll(() =>
+          page
+            .getByRole("columnheader", { name: "发生时间（北京时间）" })
+            .evaluate((element) => getComputedStyle(element).color),
+        )
+        .toBe(theme === "dark" ? "rgb(244, 245, 247)" : "rgb(55, 59, 69)");
+      await page.evaluate(async () => {
+        await Promise.all(
+          document
+            .getAnimations()
+            .filter(
+              (animation) =>
+                animation.effect?.getComputedTiming().iterations !== Infinity,
+            )
+            .map((animation) => animation.finished.catch(() => {})),
+        );
+      });
+      const violations = await page.evaluate(async () =>
+        (
+          await (window as typeof window & { axe: typeof axe }).axe.run(
+            document,
+            {
+              runOnly: {
+                type: "tag",
+                values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"],
+              },
+            },
+          )
+        ).violations.map(({ id, nodes }) => ({
+          id,
+          targets: nodes.map(({ target, failureSummary }) => ({
+            target: target.join(" "),
+            failureSummary,
+          })),
+        })),
+      );
+      expect(violations).toEqual([]);
+    }
+    await page.getByText("当前品牌", { exact: true }).click();
+    await expect(
+      page.getByText("当前品牌可用积分", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("企业品牌可用积分合计", { exact: true }),
+    ).toHaveCount(0);
+    // The same account is a brand administrator in enterprise B.
+    const denied = await page.request.get(
+      `/api/v1/point-usage?${new URLSearchParams({ organizationId: fixture.scopes[1].organizationId, beginDate: "2020-01-01", endDate: "2100-01-01" })}`,
+    );
+    expect(denied.status()).toBe(403);
+    await db.delete(memberRoles).where(eq(memberRoles.memberId, member.id));
+    // Also cover legacy data that stored a brand role at the enterprise level.
+    const [legacyRole] = await db
+      .select()
+      .from(roles)
+      .where(eq(roles.code, "brand_admin"));
+    await db
+      .insert(memberRoles)
+      .values({ memberId: member.id, roleId: legacyRole.id });
+
+    await page.reload();
+    await expect(
+      page.getByText("当前品牌可用积分", { exact: true }),
+    ).toBeVisible();
+    await expect(page.getByText("企业整体", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("企业可分配积分", { exact: true })).toHaveCount(
+      0,
+    );
+    const revoked = await page.request.get(`/api/v1/point-usage?${params}`);
+    expect(revoked.status()).toBe(403);
+    let releaseLateResponse: () => void = () => {};
+    let markDone: () => void = () => {};
+    let requested = false;
+    const held = new Promise<void>((resolve) => {
+      releaseLateResponse = resolve;
+    });
+    const done = new Promise<void>((resolve) => {
+      markDone = resolve;
+    });
+    await page.route("**/api/v1/point-usage?**", async (route) => {
+      if (
+        new URL(route.request().url()).searchParams.get("organizationId") !==
+        target.organizationId
+      )
+        return route.continue();
+      const response = await route.fetch();
+      requested = true;
+      await held;
+      await route.fulfill({ response }).catch(() => {});
+      markDone();
+    });
+    await page.getByRole("button", { name: "刷新数据" }).click();
+    await expect.poll(() => requested).toBe(true);
+    await page
+      .getByRole("combobox", { name: "企业", exact: true })
+      .press("ArrowDown");
+    await page
+      .getByText(fixture.scopes[1].name, { exact: true })
+      .last()
+      .click();
+    await expect(page.locator(".ant-statistic-content").first()).toContainText(
+      "1,000",
+    );
+    await expect(page.getByText("QA 功能消耗", { exact: true })).toHaveCount(0);
+    releaseLateResponse();
+    await done;
+    await expect(page.locator(".ant-statistic-content").first()).toContainText(
+      "1,000",
+    );
   });
 
   test("品牌查看者能看积分统计，未授权模块与写入口不出现", async ({ page }) => {

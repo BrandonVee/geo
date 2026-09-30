@@ -1101,8 +1101,8 @@ export const balanceTransactionQuerySchema = z
 export const pointUsageQuerySchema = z
   .object({
     organizationId: z.string().uuid(),
-    teamBindingId: z.string().uuid(),
-    brandId: z.string().trim().min(1).max(128),
+    teamBindingId: z.string().uuid().optional(),
+    brandId: z.string().trim().min(1).max(128).optional(),
     beginDate: dateSchema,
     endDate: dateSchema,
     operation: z.enum(["consume", "restore"]).optional(),
@@ -1110,6 +1110,10 @@ export const pointUsageQuerySchema = z
     pageSize: queryInteger(20, 1, 100),
   })
   .strict()
+  .refine(
+    (value) => Boolean(value.brandId) === Boolean(value.teamBindingId),
+    "品牌积分查询范围不完整",
+  )
   .refine((value) => value.beginDate <= value.endDate, {
     message: "开始日期不能晚于结束日期",
     path: ["beginDate"],

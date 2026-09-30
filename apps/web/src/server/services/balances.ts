@@ -55,17 +55,31 @@ export const balanceService = {
     return balanceRepository.transactions(input);
   },
   async pointUsage(input: PointUsageQuery, userId: string) {
-    await authorizeBrand(
-      input.organizationId,
-      input.teamBindingId,
-      input.brandId,
-      userId,
-      "balance.read",
-    );
+    if (input.brandId) {
+      await authorizeBrand(
+        input.organizationId,
+        input.teamBindingId!,
+        input.brandId,
+        userId,
+        "balance.read",
+      );
+    } else {
+      await organizationService.authorize(
+        input.organizationId,
+        userId,
+        "balance.read",
+      );
+    }
     const membership = await organizationRepository.findMembershipRole(
       input.organizationId,
       userId,
     );
+    if (!input.brandId && membership?.role !== "tenant_admin")
+      throw new ApiError(
+        403,
+        "PERMISSION_DENIED",
+        "只有企业管理员可以查看企业整体积分统计",
+      );
     const beginAt = new Date(`${input.beginDate}T00:00:00+08:00`);
     const endAtExclusive = new Date(
       new Date(`${input.endDate}T00:00:00+08:00`).getTime() + 86_400_000,

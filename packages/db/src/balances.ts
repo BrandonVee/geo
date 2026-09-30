@@ -7,12 +7,14 @@ import {
   gte,
   inArray,
   isNull,
+  isNotNull,
   lt,
   or,
   sql,
 } from "drizzle-orm";
 import { db } from "./client";
 import {
+  answerbitBrandMappings,
   featurePointCosts,
   balanceAccounts,
   balanceTransactions,
@@ -34,9 +36,9 @@ export type BalanceTransactionFilters = {
   operation?: BalanceOperation;
 };
 
-export type BrandPointUsageFilters = {
+export type PointUsageFilters = {
   organizationId: string;
-  brandId: string;
+  brandId?: string;
   beginAt: Date;
   endAtExclusive: Date;
   operation?: "consume" | "restore";
@@ -483,99 +485,107 @@ export async function listAllBalanceTransactions(
   };
 }
 
-export async function getBrandPointUsage(input: BrandPointUsageFilters) {
-  const [brandAccount] = await db
-    .select()
-    .from(balanceAccounts)
-    .where(
-      and(
-        eq(balanceAccounts.organizationId, input.organizationId),
-        eq(balanceAccounts.brandId, input.brandId),
-        eq(balanceAccounts.asset, "answerbit_points"),
-      ),
-    )
-    .limit(1);
-  const [organizationAccount] = await db
-    .select()
-    .from(balanceAccounts)
-    .where(
-      and(
-        eq(balanceAccounts.organizationId, input.organizationId),
-        isNull(balanceAccounts.brandId),
-        eq(balanceAccounts.asset, "answerbit_points"),
-      ),
-    )
-    .limit(1);
-  if (!brandAccount)
-    return {
-      balance: 0,
-      organizationBalance: organizationAccount?.balance ?? 0,
-      summary: { consumed: 0, restored: 0, transactionCount: 0 },
-      list: [],
-      pagination: {
-        page: input.page,
-        pageSize: input.pageSize,
-        total: 0,
-        pages: 0,
-      },
-    };
+// @project-doc docs/domains/balance_and_publication.md#point_usage
+export async function getPointUsage(input: PointUsageFilters) {
+  // Read balances, totals and the page from one snapshot during concurrent billing.
+  return db.transaction(
+    async (tx) => {
+      const [balances] = await tx
+        .select({
+          balance: sql<number>`coalesce(sum(case when ${balanceAccounts.brandId} is not null then ${balanceAccounts.balance} else 0 end), 0)::float8`,
+          organizationBalance: sql<number>`coalesce(sum(case when ${balanceAccounts.brandId} is null then ${balanceAccounts.balance} else 0 end), 0)::float8`,
+        })
+        .from(balanceAccounts)
+        .where(
+          and(
+            eq(balanceAccounts.organizationId, input.organizationId),
+            eq(balanceAccounts.asset, "answerbit_points"),
+            input.brandId
+              ? or(
+                  eq(balanceAccounts.brandId, input.brandId),
+                  isNull(balanceAccounts.brandId),
+                )
+              : undefined,
+          ),
+        );
 
-  const periodWhere = and(
-    eq(balanceTransactions.organizationId, input.organizationId),
-    eq(balanceTransactions.asset, "answerbit_points"),
-    or(
-      eq(balanceTransactions.sourceAccountId, brandAccount.id),
-      eq(balanceTransactions.targetAccountId, brandAccount.id),
-    ),
-    inArray(balanceTransactions.operation, ["consume", "restore"]),
-    gte(balanceTransactions.createdAt, input.beginAt),
-    lt(balanceTransactions.createdAt, input.endAtExclusive),
-  );
-  const listWhere = and(
-    periodWhere,
-    input.operation
-      ? eq(balanceTransactions.operation, input.operation)
-      : undefined,
-  );
-  const [[summary], list, [count]] = await Promise.all([
-    db
-      .select({
-        consumed: sql<number>`coalesce(sum(case when ${balanceTransactions.operation} = 'consume' then ${balanceTransactions.amount} else 0 end), 0)::int`,
-        restored: sql<number>`coalesce(sum(case when ${balanceTransactions.operation} = 'restore' then ${balanceTransactions.amount} else 0 end), 0)::int`,
-        transactionCount: sql<number>`count(*)::int`,
-      })
-      .from(balanceTransactions)
-      .where(periodWhere),
-    db
-      .select(balanceTransactionSelection)
-      .from(balanceTransactions)
-      .innerJoin(
-        organizations,
-        eq(organizations.id, balanceTransactions.organizationId),
-      )
-      .leftJoin(users, eq(users.id, balanceTransactions.actorUserId))
-      .where(listWhere)
-      .orderBy(desc(balanceTransactions.createdAt))
-      .limit(input.pageSize)
-      .offset((input.page - 1) * input.pageSize),
-    db
-      .select({ value: sql<number>`count(*)::int` })
-      .from(balanceTransactions)
-      .where(listWhere),
-  ]);
-  const total = count?.value ?? 0;
-  return {
-    balance: brandAccount.balance,
-    organizationBalance: organizationAccount?.balance ?? 0,
-    summary: summary ?? { consumed: 0, restored: 0, transactionCount: 0 },
-    list,
-    pagination: {
-      page: input.page,
-      pageSize: input.pageSize,
-      total,
-      pages: Math.ceil(total / input.pageSize),
+      // A consumption belongs to its source, and a refund to its original target.
+      const usageAccount = sql`case when ${balanceTransactions.operation} = 'consume' then ${balanceTransactions.sourceAccountId} else ${balanceTransactions.targetAccountId} end`;
+      const periodWhere = and(
+        eq(balanceTransactions.organizationId, input.organizationId),
+        eq(balanceTransactions.asset, "answerbit_points"),
+        eq(balanceAccounts.organizationId, input.organizationId),
+        eq(balanceAccounts.asset, "answerbit_points"),
+        input.brandId
+          ? eq(balanceAccounts.brandId, input.brandId)
+          : isNotNull(balanceAccounts.brandId),
+        inArray(balanceTransactions.operation, ["consume", "restore"]),
+        gte(balanceTransactions.createdAt, input.beginAt),
+        lt(balanceTransactions.createdAt, input.endAtExclusive),
+      );
+      const listWhere = and(
+        periodWhere,
+        input.operation
+          ? eq(balanceTransactions.operation, input.operation)
+          : undefined,
+      );
+      const [summary] = await tx
+        .select({
+          consumed: sql<number>`coalesce(sum(case when ${balanceTransactions.operation} = 'consume' then ${balanceTransactions.amount} else 0 end), 0)::float8`,
+          restored: sql<number>`coalesce(sum(case when ${balanceTransactions.operation} = 'restore' then ${balanceTransactions.amount} else 0 end), 0)::float8`,
+          transactionCount: sql<number>`count(*)::int`,
+        })
+        .from(balanceTransactions)
+        .innerJoin(balanceAccounts, eq(balanceAccounts.id, usageAccount))
+        .where(periodWhere);
+      const list = await tx
+        .select({
+          ...balanceTransactionSelection,
+          brandId: balanceAccounts.brandId,
+          brandName: answerbitBrandMappings.brandName,
+        })
+        .from(balanceTransactions)
+        .innerJoin(balanceAccounts, eq(balanceAccounts.id, usageAccount))
+        .innerJoin(
+          organizations,
+          eq(organizations.id, balanceTransactions.organizationId),
+        )
+        .leftJoin(users, eq(users.id, balanceTransactions.actorUserId))
+        .leftJoin(
+          answerbitBrandMappings,
+          and(
+            eq(answerbitBrandMappings.organizationId, input.organizationId),
+            eq(answerbitBrandMappings.brandId, balanceAccounts.brandId),
+          ),
+        )
+        .where(listWhere)
+        .orderBy(
+          desc(balanceTransactions.createdAt),
+          desc(balanceTransactions.id),
+        )
+        .limit(input.pageSize)
+        .offset((input.page - 1) * input.pageSize);
+      const [count] = await tx
+        .select({ value: sql<number>`count(*)::int` })
+        .from(balanceTransactions)
+        .innerJoin(balanceAccounts, eq(balanceAccounts.id, usageAccount))
+        .where(listWhere);
+      const total = count?.value ?? 0;
+      return {
+        balance: balances?.balance ?? 0,
+        organizationBalance: balances?.organizationBalance ?? 0,
+        summary: summary ?? { consumed: 0, restored: 0, transactionCount: 0 },
+        list,
+        pagination: {
+          page: input.page,
+          pageSize: input.pageSize,
+          total,
+          pages: Math.ceil(total / input.pageSize),
+        },
+      };
     },
-  };
+    { isolationLevel: "repeatable read", accessMode: "read only" },
+  );
 }
 export async function getFeaturePointCost(featureCode: string) {
   const [row] = await db

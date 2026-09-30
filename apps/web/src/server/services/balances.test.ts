@@ -165,6 +165,67 @@ describe("租户品牌积分用量", () => {
     expect(result.organizationBalance).toBe(320);
   });
 
+  it("企业整体统计先校验企业权限，再读取全部品牌", async () => {
+    const enterprise = {
+      organizationId: input.organizationId,
+      beginDate: input.beginDate,
+      endDate: input.endDate,
+      page: input.page,
+      pageSize: input.pageSize,
+    };
+    await expect(
+      balanceService.pointUsage(enterprise, userId),
+    ).resolves.toMatchObject({ organizationBalance: 320 });
+    expect(mocks.authorizeOrganization).toHaveBeenCalledWith(
+      input.organizationId,
+      userId,
+      "balance.read",
+    );
+    expect(mocks.authorizeBrand).not.toHaveBeenCalled();
+    expect(mocks.pointUsage).toHaveBeenCalledWith(
+      expect.objectContaining({ brandId: undefined }),
+    );
+  });
+
+  it("品牌角色不能省略范围读取整个企业", async () => {
+    mocks.authorizeOrganization.mockRejectedValue(new Error("forbidden"));
+    const enterprise = {
+      organizationId: input.organizationId,
+      beginDate: input.beginDate,
+      endDate: input.endDate,
+      page: input.page,
+      pageSize: input.pageSize,
+    };
+    await expect(balanceService.pointUsage(enterprise, userId)).rejects.toThrow(
+      "forbidden",
+    );
+    expect(mocks.pointUsage).not.toHaveBeenCalled();
+  });
+
+  it("历史企业级品牌角色也不能读取企业整体", async () => {
+    mocks.authorizeOrganization.mockResolvedValue(undefined);
+    mocks.membershipRole.mockResolvedValue({ role: "brand_admin" });
+    const enterprise = {
+      organizationId: input.organizationId,
+      beginDate: input.beginDate,
+      endDate: input.endDate,
+      page: input.page,
+      pageSize: input.pageSize,
+    };
+    await expect(
+      balanceService.pointUsage(enterprise, userId),
+    ).rejects.toMatchObject({ status: 403, code: "PERMISSION_DENIED" });
+    expect(mocks.pointUsage).not.toHaveBeenCalled();
+  });
+
+  it("跨品牌请求被拒绝时不读取任何账本", async () => {
+    mocks.authorizeBrand.mockRejectedValueOnce(new Error("forbidden"));
+    await expect(balanceService.pointUsage(input, userId)).rejects.toThrow(
+      "forbidden",
+    );
+    expect(mocks.pointUsage).not.toHaveBeenCalled();
+  });
+
   it("品牌角色不返回企业可分配积分", async () => {
     mocks.membershipRole.mockResolvedValue({ role: null });
     mocks.authorizeOrganization.mockRejectedValue(

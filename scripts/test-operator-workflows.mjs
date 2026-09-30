@@ -79,6 +79,18 @@ try {
     ],
     { CONTENT_DOCUMENT_DB_TESTS: "1" },
   );
+  await run(
+    pnpm,
+    [
+      "--filter",
+      "@geo/db",
+      "exec",
+      "vitest",
+      "run",
+      "src/point-usage.integration.test.ts",
+    ],
+    { POINT_USAGE_DB_TESTS: "1" },
+  );
   const seed = new Client({ connectionString: databaseUrl.href });
   await seed.connect();
   try {

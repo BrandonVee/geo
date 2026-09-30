@@ -170,9 +170,11 @@ export function useAnswerBitScope(organizations: ScopeOrganization[]) {
 export function ScopeFields({
   organizations,
   scope,
+  showBrand = true,
 }: {
   organizations: ScopeOrganization[];
   scope: ReturnType<typeof useAnswerBitScope>;
+  showBrand?: boolean;
 }) {
   return (
     <Flex gap={12} style={{ width: "100%" }} wrap>
@@ -232,22 +234,24 @@ export function ScopeFields({
           value={scope.organizationId || undefined}
         />
       </Flex>
-      <Flex style={{ flex: "1 1 200px", minWidth: 180 }} vertical>
-        <label htmlFor="answerbit-scope-brand">
-          <Typography.Text type="secondary">品牌</Typography.Text>
-        </label>
-        <Select
-          disabled={!scope.teamBindingId || !scope.brands.length}
-          id="answerbit-scope-brand"
-          onChange={scope.setBrandId}
-          options={scope.brands.map((item) => ({
-            label: item.name,
-            value: item.id,
-          }))}
-          placeholder="选择品牌"
-          value={scope.brandId || undefined}
-        />
-      </Flex>
+      {showBrand ? (
+        <Flex style={{ flex: "1 1 200px", minWidth: 180 }} vertical>
+          <label htmlFor="answerbit-scope-brand">
+            <Typography.Text type="secondary">品牌</Typography.Text>
+          </label>
+          <Select
+            disabled={!scope.teamBindingId || !scope.brands.length}
+            id="answerbit-scope-brand"
+            onChange={scope.setBrandId}
+            options={scope.brands.map((item) => ({
+              label: item.name,
+              value: item.id,
+            }))}
+            placeholder="选择品牌"
+            value={scope.brandId || undefined}
+          />
+        </Flex>
+      ) : null}
     </Flex>
   );
 }

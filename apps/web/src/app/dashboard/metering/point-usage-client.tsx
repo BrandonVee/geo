@@ -19,18 +19,20 @@ import {
   Flex,
   Row,
   Select,
+  Segmented,
   Space,
   Statistic,
   Tag,
+  theme,
   Typography,
   type TableColumnsType,
 } from "antd";
+import { useSearchParams } from "next/navigation";
 import dayjs, { type Dayjs } from "dayjs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AccessibleTable } from "../../accessible-table";
 import {
   ScopeFields,
-  scopeQuery,
   type ScopeOrganization,
   useAnswerBitScope,
 } from "../use-answerbit-scope";
@@ -38,6 +40,8 @@ import {
 type UsageOperation = "consume" | "restore";
 type UsageTransaction = {
   id: string;
+  brandId: string;
+  brandName: string | null;
   operation: UsageOperation;
   amount: number;
   sourceBalanceAfter: number | null;
@@ -96,31 +100,58 @@ export function PointUsageClient({
   organizations: ScopeOrganization[];
 }) {
   const scope = useAnswerBitScope(organizations);
+  const { token } = theme.useToken();
+  const searchParams = useSearchParams();
+  const [view, setView] = useState<"organization" | "brand">(() =>
+    searchParams.get("brandId") ? "brand" : "organization",
+  );
+  const canViewOrganization =
+    organizations.find((item) => item.id === scope.organizationId)?.role ===
+    "tenant_admin";
+  const enterpriseView = canViewOrganization && view === "organization";
+
   const [range, setRange] = useState<[Dayjs, Dayjs]>(defaultRange);
   const [operation, setOperation] = useState<"all" | UsageOperation>("all");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
-  const [data, setData] = useState<PointUsage | null>(null);
+  const [result, setResult] = useState<{
+    key: string;
+    data: PointUsage;
+  } | null>(null);
+  const dataKey = JSON.stringify([
+    scope.organizationId,
+    enterpriseView ? null : scope.brandId,
+    range.map((value) => value.format("YYYY-MM-DD")),
+    operation,
+    page,
+    pageSize,
+  ]);
+  const data = result?.key === dataKey ? result.data : null;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const requestVersion = useRef(0);
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
-      if (!scope.organizationId || !scope.teamBindingId || !scope.brandId) {
-        setData(null);
+      const version = ++requestVersion.current;
+      if (
+        !scope.organizationId ||
+        (!enterpriseView && (!scope.teamBindingId || !scope.brandId))
+      ) {
+        setResult(null);
+        setLoading(false);
+        setError("");
         return;
       }
-      const version = ++requestVersion.current;
       setLoading(true);
       setError("");
-      const params = new URLSearchParams(
-        scopeQuery({
-          organizationId: scope.organizationId,
-          teamBindingId: scope.teamBindingId,
-          brandId: scope.brandId,
-        }),
-      );
+      const params = new URLSearchParams({
+        organizationId: scope.organizationId,
+      });
+      if (!enterpriseView) {
+        params.set("teamBindingId", scope.teamBindingId);
+        params.set("brandId", scope.brandId);
+      }
       params.set("beginDate", range[0].format("YYYY-MM-DD"));
       params.set("endDate", range[1].format("YYYY-MM-DD"));
       params.set("page", String(page));
@@ -132,7 +163,7 @@ export function PointUsageClient({
           signal,
         );
         if (!signal?.aborted && version === requestVersion.current)
-          setData(next);
+          setResult({ key: dataKey, data: next });
       } catch (reason) {
         if (!signal?.aborted && version === requestVersion.current)
           setError(
@@ -144,6 +175,8 @@ export function PointUsageClient({
       }
     },
     [
+      dataKey,
+      enterpriseView,
       operation,
       page,
       pageSize,
@@ -157,21 +190,38 @@ export function PointUsageClient({
   useEffect(() => {
     const controller = new AbortController();
     void load(controller.signal);
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+      requestVersion.current += 1;
+    };
   }, [load]);
 
   useEffect(() => {
     setPage(1);
-  }, [operation, range, scope.brandId, scope.organizationId]);
+  }, [operation, range, scope.brandId, scope.organizationId, enterpriseView]);
 
   const columns = useMemo<TableColumnsType<UsageTransaction>>(
     () => [
       {
-        title: "发生时间",
+        title: "发生时间（北京时间）",
         dataIndex: "createdAt",
         width: 180,
-        render: (value: string) => new Date(value).toLocaleString("zh-CN"),
+        render: (value: string) =>
+          new Date(value).toLocaleString("zh-CN", {
+            timeZone: "Asia/Shanghai",
+          }),
       },
+      ...(enterpriseView
+        ? [
+            {
+              title: "品牌",
+              key: "brand",
+              width: 160,
+              render: (_: unknown, item: UsageTransaction) =>
+                item.brandName ?? item.brandId,
+            },
+          ]
+        : []),
       {
         title: "积分变动",
         key: "amount",
@@ -191,7 +241,20 @@ export function PointUsageClient({
         dataIndex: "operation",
         width: 110,
         render: (value: UsageOperation) => (
-          <Tag color={value === "consume" ? "volcano" : "green"}>
+          <Tag
+            style={{
+              color:
+                value === "consume"
+                  ? token.colorErrorText
+                  : token.colorSuccessText,
+              backgroundColor:
+                value === "consume" ? token.colorErrorBg : token.colorSuccessBg,
+              borderColor:
+                value === "consume"
+                  ? token.colorErrorBorder
+                  : token.colorSuccessBorder,
+            }}
+          >
             {value === "consume" ? "功能消耗" : "失败返还"}
           </Tag>
         ),
@@ -243,7 +306,7 @@ export function PointUsageClient({
           ),
       },
     ],
-    [],
+    [enterpriseView, token],
   );
 
   const summary = data?.summary ?? {
@@ -252,7 +315,7 @@ export function PointUsageClient({
     transactionCount: 0,
   };
   const periodLabel = `${range[0].format("YYYY-MM-DD")} 至 ${range[1].format("YYYY-MM-DD")}`;
-  const showOrganizationBalance = data?.organizationBalance != null;
+  const showOrganizationBalance = canViewOrganization;
   const cardSpan = showOrganizationBalance ? 6 : 8;
 
   return (
@@ -266,12 +329,14 @@ export function PointUsageClient({
           <Card loading={loading && !data}>
             <Statistic
               prefix={<WalletOutlined />}
-              title="当前品牌可用积分"
-              value={data?.balance ?? 0}
-              formatter={(value) => number.format(Number(value))}
+              title={
+                enterpriseView ? "企业品牌可用积分合计" : "当前品牌可用积分"
+              }
+              value={data?.balance}
+              formatter={(value) => (data ? number.format(Number(value)) : "—")}
             />
             <Typography.Text type="secondary">
-              本系统品牌积分账户
+              {enterpriseView ? "企业内全部品牌账户" : "本系统品牌积分账户"}
             </Typography.Text>
           </Card>
         </Col>
@@ -282,7 +347,9 @@ export function PointUsageClient({
                 prefix={<SafetyCertificateOutlined />}
                 title="企业可分配积分"
                 value={data?.organizationBalance ?? 0}
-                formatter={(value) => number.format(Number(value))}
+                formatter={(value) =>
+                  data ? number.format(Number(value)) : "—"
+                }
               />
               <Typography.Text type="secondary">
                 可划分到企业品牌
@@ -296,7 +363,7 @@ export function PointUsageClient({
               prefix={<RiseOutlined />}
               title="周期积分消耗"
               value={summary.consumed}
-              formatter={(value) => number.format(Number(value))}
+              formatter={(value) => (data ? number.format(Number(value)) : "—")}
             />
             <Typography.Text type="secondary">{periodLabel}</Typography.Text>
           </Card>
@@ -307,10 +374,12 @@ export function PointUsageClient({
               prefix={<UndoOutlined />}
               title="周期失败返还"
               value={summary.restored}
-              formatter={(value) => number.format(Number(value))}
+              formatter={(value) => (data ? number.format(Number(value)) : "—")}
             />
             <Typography.Text type="secondary">
-              共 {number.format(summary.transactionCount)} 笔积分变动
+              {data
+                ? `周期净消耗 ${number.format(summary.consumed - summary.restored)} 积分`
+                : "等待统计数据"}
             </Typography.Text>
           </Card>
         </Col>
@@ -328,9 +397,25 @@ export function PointUsageClient({
           </Button>
         }
       >
+        {canViewOrganization ? (
+          <Segmented
+            aria-label="积分统计范围"
+            value={view}
+            onChange={(value) => setView(value as "organization" | "brand")}
+            options={[
+              { label: "企业整体", value: "organization" },
+              { label: "当前品牌", value: "brand" },
+            ]}
+            style={{ marginBottom: 16 }}
+          />
+        ) : null}
         <Flex gap={12} wrap align="end">
           <div style={{ flex: "1 1 420px", minWidth: 260 }}>
-            <ScopeFields organizations={organizations} scope={scope} />
+            <ScopeFields
+              organizations={organizations}
+              scope={scope}
+              showBrand={!enterpriseView}
+            />
           </div>
           <Flex style={{ flex: "1 1 280px", minWidth: 260 }} vertical>
             <label htmlFor="point-usage-date-range">
