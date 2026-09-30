@@ -9,7 +9,7 @@ import {
 import type { Permission } from "@geo/core";
 import type { AuditContext } from "@/server/audit/write-audit";
 import { writeAudit } from "@/server/audit/write-audit";
-import { ApiError, databaseErrorCode } from "@/server/http/errors";
+import { ApiError } from "@/server/http/errors";
 import { loadAnswerBitTeamContext } from "@/server/integrations/answerbit/context";
 import {
   getArticleContentLogged,
@@ -20,7 +20,7 @@ import {
 } from "@/server/integrations/answerbit/gateway";
 import {
   cancelArticleGeneration,
-  enqueueArticleGeneration,
+  prepareArticleGenerationQueue,
 } from "@/server/jobs/boss";
 import { authorizeBrand } from "@/server/permissions/brand-scope";
 import { articleRepository } from "@/server/repositories/articles";
@@ -141,6 +141,45 @@ function assertJobReplay(
       "ARTICLE_JOB_IDEMPOTENCY_CONFLICT",
       "同一幂等键的生成内容或操作用户不一致，请重新提交",
     );
+}
+function articleQueueUnavailable() {
+  return new ApiError(
+    503,
+    "ARTICLE_QUEUE_UNAVAILABLE",
+    "文章生成队列暂时不可用，请稍后重试",
+  );
+}
+async function submitJob(
+  input: CreateArticleJobInput,
+  values: Parameters<typeof articleRepository.submitJob>[0],
+  userId: string,
+  audit: AuditContext,
+) {
+  let enqueue;
+  try {
+    enqueue = await prepareArticleGenerationQueue();
+  } catch {
+    throw articleQueueUnavailable();
+  }
+  const result = await articleRepository.submitJob(values, {
+    validateReplay: (job) => assertJobReplay(job, input, userId),
+    enqueue: async (data, executor) => {
+      try {
+        return await enqueue(data, executor);
+      } catch {
+        throw articleQueueUnavailable();
+      }
+    },
+    audit: {
+      context: audit,
+      input: {
+        operation: "answerbit.article.generate",
+        resourceType: "article_generation_job",
+        summary: "提交按功能积分计费的 AI 文章生成任务",
+      },
+    },
+  });
+  return { ...publicJob(result.job), replayed: result.replayed };
 }
 export const articleService = {
   async list(input: ArticleListQuery, userId: string, requestId: string) {
@@ -326,6 +365,13 @@ export const articleService = {
     );
     if (existing) {
       assertJobReplay(existing, input, userId);
+      if (
+        existing.status === "queued" &&
+        !existing.queueJobId &&
+        !existing.executionId &&
+        !existing.answerbitArticleId
+      )
+        return submitJob(input, existing, userId, audit);
       return { ...publicJob(existing), replayed: true };
     }
     await assertEnterpriseAccess(input.organizationId, true);
@@ -381,9 +427,9 @@ export const articleService = {
         input.organizationId,
       ),
     };
-    let job;
-    try {
-      job = await articleRepository.createJob({
+    return submitJob(
+      input,
+      {
         organizationId: input.organizationId,
         teamBindingId: input.teamBindingId,
         brandId: input.brandId,
@@ -397,45 +443,10 @@ export const articleService = {
           tagId: `local:${tagName.toLocaleLowerCase()}`,
           tagName,
         })),
-      });
-    } catch (error) {
-      if (databaseErrorCode(error) === "23505") {
-        const duplicate = await articleRepository.findJobByIdempotency(
-          input.organizationId,
-          idempotencyKey,
-        );
-        if (duplicate) {
-          assertJobReplay(duplicate, input, userId);
-          return { ...publicJob(duplicate), replayed: true };
-        }
-      }
-      throw error;
-    }
-    try {
-      const queueJobId = await enqueueArticleGeneration({
-        organizationId: input.organizationId,
-        jobId: job.id,
-      });
-      job = await articleRepository.updateJob(job.id, { queueJobId });
-    } catch {
-      job = await articleRepository.updateJob(job.id, {
-        status: "failed",
-        errorCode: "QUEUE_UNAVAILABLE",
-        completedAt: new Date(),
-      });
-      throw new ApiError(
-        503,
-        "ARTICLE_QUEUE_UNAVAILABLE",
-        "文章生成队列暂时不可用",
-      );
-    }
-    await writeAudit(audit, {
-      operation: "answerbit.article.generate",
-      resourceType: "article_generation_job",
-      resourceId: job.id,
-      summary: "提交按功能积分计费的 AI 文章生成任务",
-    });
-    return { ...publicJob(job), replayed: false };
+      },
+      userId,
+      audit,
+    );
   },
   async listJobs(scope: Scope, limit: number, userId: string) {
     await authorizeBrand(

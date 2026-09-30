@@ -7,8 +7,8 @@ const m = vi.hoisted(() => ({
   templates: vi.fn(),
   existing: vi.fn(),
   create: vi.fn(),
-  update: vi.fn(),
   enqueue: vi.fn(),
+  prepareQueue: vi.fn(),
   quote: vi.fn(),
   list: vi.fn(),
   decrypt: vi.fn(),
@@ -23,14 +23,13 @@ vi.mock("@/server/integrations/answerbit/gateway", () => ({
   queryArticleTemplatesLogged: m.templates,
 }));
 vi.mock("@/server/jobs/boss", () => ({
-  enqueueArticleGeneration: m.enqueue,
+  prepareArticleGenerationQueue: m.prepareQueue,
   cancelArticleGeneration: vi.fn(),
 }));
 vi.mock("@/server/repositories/articles", () => ({
   articleRepository: {
     findJobByIdempotency: m.existing,
-    createJob: m.create,
-    updateJob: m.update,
+    submitJob: m.create,
     listJobs: m.list,
   },
 }));
@@ -67,6 +66,21 @@ beforeEach(() => {
     connection: { id: "connection" },
     apiKey: "key",
   });
+  m.prepareQueue.mockResolvedValue(m.enqueue);
+  m.enqueue.mockResolvedValue("queue-job");
+  m.decrypt.mockImplementation((value: string) => value);
+  m.create.mockImplementation(async (value, options) => ({
+    job: {
+      ...value,
+      id: "job",
+      status: "queued",
+      queueJobId: await options.enqueue(
+        { organizationId: value.organizationId, jobId: "job" },
+        {},
+      ),
+    },
+    replayed: false,
+  }));
 });
 describe("文章生成方式校验", () => {
   it("网络失败重试同一任务直接返回原任务，不再投递", async () => {
@@ -134,12 +148,6 @@ describe("文章生成方式校验", () => {
     async (is_high_ref) => {
       m.templates.mockResolvedValue([{ template_id: 1, is_high_ref }]);
       m.decrypt.mockImplementation((value: string) => value);
-      m.create.mockImplementation(async (value) => ({
-        ...value,
-        id: "job",
-        status: "queued",
-      }));
-      m.update.mockImplementation(async () => m.create.mock.results[0].value);
       const result = await articleService.createJob(
         {
           ...input,
@@ -155,10 +163,10 @@ describe("文章生成方式校验", () => {
       expect(result.generationMode).toBe(
         is_high_ref ? "reference" : "standard",
       );
-      expect(m.enqueue).toHaveBeenCalledWith({
-        organizationId: scope.organizationId,
-        jobId: "job",
-      });
+      expect(m.enqueue).toHaveBeenCalledWith(
+        { organizationId: scope.organizationId, jobId: "job" },
+        expect.any(Object),
+      );
     },
   );
   it.each([
@@ -195,6 +203,70 @@ describe("文章生成方式校验", () => {
         requestId: "request",
       }),
     ).rejects.toMatchObject({ code: "ARTICLE_TEMPLATE_UNAVAILABLE" });
+  });
+  it("队列初始化失败不开始写任务；同键下一次提交可继续", async () => {
+    m.templates.mockResolvedValue([{ template_id: 1, is_high_ref: 0 }]);
+    m.prepareQueue.mockRejectedValueOnce(new Error("queue unavailable"));
+    const create = () =>
+      articleService.createJob(input, "same-key", "user", "request", {
+        actorUserId: "user",
+        requestId: "request",
+      });
+    await expect(create()).rejects.toMatchObject({
+      status: 503,
+      code: "ARTICLE_QUEUE_UNAVAILABLE",
+    });
+    expect(m.create).not.toHaveBeenCalled();
+    expect(await create()).toMatchObject({ id: "job", replayed: false });
+  });
+  it("事务内入队失败返回可重试的队列错误，不把任务改成失败", async () => {
+    m.templates.mockResolvedValue([{ template_id: 1, is_high_ref: 0 }]);
+    m.enqueue.mockRejectedValueOnce(new Error("queue insert failed"));
+    await expect(
+      articleService.createJob(input, "key", "user", "request", {
+        actorUserId: "user",
+        requestId: "request",
+      }),
+    ).rejects.toMatchObject({ status: 503, code: "ARTICLE_QUEUE_UNAVAILABLE" });
+  });
+  it("旧的未入队任务使用原内容和价格快照恢复，不重新计价", async () => {
+    const existing = {
+      ...scope,
+      id: "legacy-job",
+      requestedBy: "user",
+      status: "queued",
+      queueJobId: null,
+      pricingSnapshot: { points: 3 },
+      tags: [],
+      requestPayload: {
+        ciphertext: JSON.stringify({
+          brand_id: input.brandId,
+          template_type: input.templateType,
+          prompt_ids: input.promptIds,
+          knowledge_ids: [],
+          tag_ids: [],
+          language: input.language,
+        }),
+      },
+    };
+    m.existing.mockResolvedValue(existing);
+    m.create.mockResolvedValue({
+      job: { ...existing, queueJobId: "recovered" },
+      replayed: true,
+    });
+    expect(
+      await articleService.createJob(input, "key", "user", "request", {
+        actorUserId: "user",
+        requestId: "request",
+      }),
+    ).toMatchObject({ id: "legacy-job", replayed: true, status: "queued" });
+    expect(m.create).toHaveBeenCalledWith(existing, expect.any(Object));
+    expect(m.templates).not.toHaveBeenCalled();
+    expect(m.quote).not.toHaveBeenCalled();
+    const options = m.create.mock.calls[0][1];
+    expect(() =>
+      options.validateReplay({ ...existing, requestedBy: "other" }),
+    ).toThrowError("同一幂等键");
   });
   it("历史任务依据已保存的请求区分生成方式，不泄露参考正文", async () => {
     m.list.mockResolvedValue(

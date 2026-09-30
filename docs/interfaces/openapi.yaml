@@ -1488,7 +1488,7 @@ paths:
           description: 不含原始生成参数的任务列表
     post:
       summary: 创建异步文章生成任务
-      description: 请求立即返回任务；Worker 调用 AnswerBit。相同企业与 Idempotency-Key 返回原任务。
+      description: 任务、入队和审计原子提交后立即返回；Worker 才调用 AnswerBit 并按已保存价格计费。相同企业与 Idempotency-Key 校验原操作者、品牌和生成内容后返回原任务；旧的未入队等待任务可补全入队并保留原价格，执行中或已结束任务不重新投递。
       tags:
         - Articles
       security:
@@ -1517,9 +1517,9 @@ paths:
         "200":
           description: 幂等重放，返回已有任务
         "409":
-          description: FEATURE_PRICE_CHANGED，用户看到的积分报价已变化，未创建任务
+          description: FEATURE_PRICE_CHANGED，用户看到的积分报价已变化，未创建任务；或 ARTICLE_JOB_IDEMPOTENCY_CONFLICT，同键对应的操作人、范围或生成内容不同。
         "503":
-          description: 任务队列不可用
+          description: ARTICLE_QUEUE_UNAVAILABLE，任务队列不可用；提交回滚，不留下新建失败任务，可使用原键重试。
   /v1/answerbit/article-jobs/{jobId}:
     get:
       summary: 轮询文章生成任务状态和结果

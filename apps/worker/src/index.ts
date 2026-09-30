@@ -3,6 +3,8 @@ import {
   assertEnterpriseAccess,
   claimReportExport,
   redeliverReportExport,
+  redeliverArticleJob,
+  scheduleArticleResultPoll,
 } from "@geo/db";
 import {
   FrogPublicationClient,
@@ -575,25 +577,16 @@ async function scheduleArticleContentPoll(input: {
   executionId: string;
 }) {
   try {
-    const queueJobId = await boss.send(
-      "article-generation",
-      { organizationId: input.organizationId, jobId: input.jobId },
-      {
+    await scheduleArticleResultPoll(input, async (data, executor) => {
+      const queueJobId = await boss.send("article-generation", data, {
+        db: executor,
         startAfter: new Date(Date.now() + articlePollIntervalMs),
         retryLimit: 0,
         expireInSeconds: 240,
-      },
-    );
-    if (!queueJobId) throw new Error("QUEUE_SEND_EMPTY");
-    await db
-      .update(articleGenerationJobs)
-      .set({ queueJobId, executionId: null, updatedAt: new Date() })
-      .where(
-        and(
-          eq(articleGenerationJobs.id, input.jobId),
-          eq(articleGenerationJobs.executionId, input.executionId),
-        ),
-      );
+      });
+      if (!queueJobId) throw new Error("QUEUE_SEND_EMPTY");
+      return queueJobId;
+    });
   } catch {
     throw new Error("ARTICLE_POLL_SCHEDULE_FAILED");
   }
@@ -1173,23 +1166,25 @@ async function queueJobState(
 async function enqueueRecoveredArticle(input: {
   id: string;
   organizationId: string;
+  queueJobId: string | null;
 }) {
-  const queueJobId = await boss.send(
-    "article-generation",
-    { organizationId: input.organizationId, jobId: input.id },
-    { retryLimit: 0, expireInSeconds: 300 },
+  return redeliverArticleJob(
+    {
+      organizationId: input.organizationId,
+      jobId: input.id,
+      expectedQueueJobId: input.queueJobId,
+    },
+    async (data, executor) => {
+      const queueJobId = await boss.send("article-generation", data, {
+        db: executor,
+        singletonKey: data.jobId,
+        retryLimit: 0,
+        expireInSeconds: 300,
+      });
+      if (!queueJobId) throw new Error("ARTICLE_JOB_REDELIVERY_FAILED");
+      return queueJobId;
+    },
   );
-  if (!queueJobId) throw new Error("ARTICLE_JOB_REDELIVERY_FAILED");
-  await db
-    .update(articleGenerationJobs)
-    .set({ queueJobId, errorCode: null, updatedAt: new Date() })
-    .where(
-      and(
-        eq(articleGenerationJobs.id, input.id),
-        eq(articleGenerationJobs.status, "queued"),
-        isNull(articleGenerationJobs.executionId),
-      ),
-    );
 }
 
 async function enqueueRecoveredReport(input: {
@@ -1399,8 +1394,8 @@ async function processAsyncJobReconciliation() {
           result.races += 1;
           continue;
         }
-        await enqueueRecoveredArticle(candidate);
-        result.requeuedArticles += 1;
+        if (await enqueueRecoveredArticle(candidate))
+          result.requeuedArticles += 1;
       } catch (error) {
         result.errors += 1;
         console.error(

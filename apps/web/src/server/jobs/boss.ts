@@ -47,18 +47,21 @@ async function startBoss() {
     throw error;
   }
 }
-export async function enqueueArticleGeneration(data: {
-  organizationId: string;
-  jobId: string;
-}) {
+export async function prepareArticleGenerationQueue() {
   const boss = await startBoss();
-  const queueJobId = await boss.send("article-generation", data, {
-    singletonKey: data.jobId,
-    retryLimit: 0,
-    expireInSeconds: 300,
-  });
-  if (!queueJobId) throw new Error("ARTICLE_JOB_ENQUEUE_FAILED");
-  return queueJobId;
+  return async (
+    data: { organizationId: string; jobId: string },
+    db: SqlExecutor,
+  ) => {
+    const queueJobId = await boss.send("article-generation", data, {
+      db,
+      singletonKey: data.jobId,
+      retryLimit: 0,
+      expireInSeconds: 300,
+    });
+    if (!queueJobId) throw new Error("ARTICLE_JOB_ENQUEUE_FAILED");
+    return queueJobId;
+  };
 }
 export async function cancelArticleGeneration(queueJobId: string) {
   const boss = await startBoss();

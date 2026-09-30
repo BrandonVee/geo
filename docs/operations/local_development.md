@@ -137,4 +137,6 @@ CI 还会在全新 PostgreSQL 18 中连续执行两次 `pnpm db:release`，并�
 
 报告原子提交回归由上述一次性数据库脚本运行 `src/server/services/report-exports.integration.test.ts`，保留真实 Repository、额度事务、审计和 pg-boss，只替换业务授权边界。覆盖提交前不可见、同键并发、最后名额竞争、入队后异常、审计失败全回滚、额度补配重试、旧半成品恢复、自动补投失败回滚与并发去重、Worker 预占修复及确认/释放互斥；不调用上游、不允许对日常开发库直接执行，审计和额度历史由删除整个测试库清理。
 
+文章生成提交回归由同一脚本以 `ARTICLE_SUBMISSION_DB_TESTS=1` 运行 `src/server/services/articles.integration.test.ts`。保留真实价格读取、加密、Repository、审计和 pg-boss，仅替换授权、腾讯范围加载和模板查询；覆盖提交前不可见、并发同键、入队或审计失败回滚、旧任务原价恢复、自动补投去重、结果查询与执行租约的原子调度、终态不重新执行及报价/模板校验。测试不启动生成 Worker，不调用腾讯，不实际扣积分，历史随一次性数据库清理。
+
 Worker 等待任务的权限复核回归在已迁移数据库执行 `WORKER_ACCESS_DB_TESTS=1 node scripts/run-with-env.mjs pnpm --filter @geo/worker exec vitest run src/job-access.integration.test.ts`。只创建独立 UUID 数据并清理，不创建任务或调用上游，覆盖成员／账号停用、角色降级、功能模块关闭、代理商到期和品牌归属。

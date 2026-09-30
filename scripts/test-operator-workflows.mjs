@@ -105,6 +105,18 @@ try {
     ],
     { REPORT_EXPORT_DB_TESTS: "1" },
   );
+  await run(
+    pnpm,
+    [
+      "--filter",
+      "@geo/web",
+      "exec",
+      "vitest",
+      "run",
+      "src/server/services/articles.integration.test.ts",
+    ],
+    { ARTICLE_SUBMISSION_DB_TESTS: "1" },
+  );
   const seed = new Client({ connectionString: databaseUrl.href });
   await seed.connect();
   try {
