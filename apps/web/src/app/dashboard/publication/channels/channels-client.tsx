@@ -42,6 +42,8 @@ type PageData<T> = {
   pagination: { page: number; pageSize: number; total: number; pages: number };
 };
 type DraftContext = {
+  organizationId?: string;
+  brandId?: string;
   title?: string;
   sourceJobId?: string;
   sourceDocumentId?: string;
@@ -332,6 +334,9 @@ export function PublicationChannelsClient({ draft }: { draft: DraftContext }) {
 
   const publicationHref = (channelId: string) => {
     const params = new URLSearchParams({ channelId });
+    if (draft.organizationId)
+      params.set("organizationId", draft.organizationId);
+    if (draft.brandId) params.set("brandId", draft.brandId);
     if (draft.title) params.set("title", draft.title);
     if (draft.sourceJobId) params.set("sourceJobId", draft.sourceJobId);
     if (draft.sourceDocumentId)

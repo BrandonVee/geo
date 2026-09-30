@@ -14,6 +14,8 @@ export default async function PublicationChannelsPage({
     sourceJobId?: string;
     sourceDocumentId?: string;
     note?: string;
+    organizationId?: string;
+    brandId?: string;
   }>;
 }) {
   const session = await auth.api.getSession({ headers: await headers() });
@@ -35,6 +37,8 @@ export default async function PublicationChannelsPage({
       />
       <PublicationChannelsClient
         draft={{
+          organizationId: query.organizationId,
+          brandId: query.brandId,
           title: query.title?.slice(0, 255),
           sourceJobId: query.sourceJobId,
           sourceDocumentId: query.sourceDocumentId,

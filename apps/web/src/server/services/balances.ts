@@ -14,6 +14,7 @@ import { ApiError } from "@/server/http/errors";
 import { authorizeBrand } from "@/server/permissions/brand-scope";
 import { requirePlatformPermission } from "@/server/permissions/platform";
 import { balanceRepository } from "@/server/repositories/balances";
+import { organizationRepository } from "@/server/repositories/organizations";
 import { organizationService } from "./organizations";
 
 export const balanceService = {
@@ -61,10 +62,9 @@ export const balanceService = {
       userId,
       "balance.read",
     );
-    const membership = await organizationService.authorize(
+    const membership = await organizationRepository.findMembershipRole(
       input.organizationId,
       userId,
-      "balance.read",
     );
     const beginAt = new Date(`${input.beginDate}T00:00:00+08:00`);
     const endAtExclusive = new Date(
@@ -82,7 +82,7 @@ export const balanceService = {
     return {
       ...result,
       organizationBalance:
-        membership.role === "tenant_admin" ? result.organizationBalance : null,
+        membership?.role === "tenant_admin" ? result.organizationBalance : null,
     };
   },
   async grant(

@@ -15,6 +15,8 @@ export default async function NewPublicationPage({
     sourceJobId?: string;
     sourceDocumentId?: string;
     note?: string;
+    organizationId?: string;
+    brandId?: string;
   }>;
 }) {
   const session = await auth.api.getSession({ headers: await headers() });
@@ -35,7 +37,10 @@ export default async function NewPublicationPage({
         title="提交媒体发布"
       />
       <BillingClient
+        userId={session.user.id}
         initialPublication={{
+          organizationId: query.organizationId,
+          brandId: query.brandId,
           title: query.title?.slice(0, 255) ?? "",
           sourceJobId: query.sourceJobId,
           sourceDocumentId: query.sourceDocumentId,

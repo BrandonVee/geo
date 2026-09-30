@@ -13,11 +13,13 @@ import {
   Divider,
   Empty,
   Form,
+  Flex,
   Input,
   List,
   Modal,
   Popconfirm,
   Row,
+  Segmented,
   Select,
   Space,
   Statistic,
@@ -25,7 +27,8 @@ import {
   Typography,
   type TableColumnsType,
 } from "antd";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { AccessibleTable } from "../../accessible-table";
 import {
   ScopeFields,
@@ -35,6 +38,12 @@ import {
 } from "../use-answerbit-scope";
 
 import { PublicationAttempt } from "./publication-attempt";
+import {
+  clearPublicationDraft,
+  publicationBodyHtml,
+  readPublicationDraft,
+  writePublicationDraft,
+} from "./publication-draft";
 import { type PublicationChannel } from "./publication-channel";
 import styles from "./publication-form.module.css";
 
@@ -92,6 +101,7 @@ async function api<T>(url: string, init?: RequestInit) {
   return body.data as T;
 }
 type BillingProps = {
+  userId: string;
   organizations: ScopeOrganization[];
   view: "orders" | "new";
   selectedChannelId?: string;
@@ -100,30 +110,70 @@ type BillingProps = {
     sourceJobId?: string;
     sourceDocumentId?: string;
     note: string;
+    organizationId?: string;
+    brandId?: string;
   };
 };
 export function BillingClient(props: BillingProps) {
   const scope = useAnswerBitScope(props.organizations);
+  const incomingMatches =
+    (!props.initialPublication.organizationId ||
+      props.initialPublication.organizationId === scope.organizationId) &&
+    (!props.initialPublication.brandId ||
+      props.initialPublication.brandId === scope.brandId);
   return (
     <BillingWorkspace
       key={`${scope.organizationId}:${scope.teamBindingId}:${scope.brandId}`}
       {...props}
+      initialPublication={
+        incomingMatches ? props.initialPublication : { title: "", note: "" }
+      }
       scope={scope}
     />
   );
 }
 function BillingWorkspace({
+  userId,
   organizations,
   initialPublication,
   selectedChannelId,
   scope,
   view,
 }: BillingProps & { scope: ReturnType<typeof useAnswerBitScope> }) {
+  const router = useRouter();
+  const draftScope = useMemo(
+    () => ({
+      userId,
+      organizationId: scope.organizationId,
+      brandId: scope.brandId,
+    }),
+    [userId, scope.organizationId, scope.brandId],
+  );
+  const [restoredDraft] = useState(() => {
+    if (view !== "new" || !scope.brandId) return;
+    const stored = readPublicationDraft(draftScope);
+    const incomingSource =
+      initialPublication.sourceDocumentId || initialPublication.sourceJobId;
+    const storedSource = stored?.sourceDocumentId || stored?.sourceJobId;
+    return incomingSource && incomingSource !== storedSource
+      ? undefined
+      : stored;
+  });
+  const [bodyFormat, setBodyFormat] = useState<"text" | "html">(
+    restoredDraft?.bodyFormat ?? "text",
+  );
+  const [draftSaved, setDraftSaved] = useState(Boolean(restoredDraft));
+  const [submissionResult, setSubmissionResult] =
+    useState<PublicationOrder["order"]>();
+  const channelInitialized = useRef(false);
+  const draftCleared = useRef(false);
+  const restoredChannelId =
+    selectedChannelId ?? restoredDraft?.values.channelId;
   const [sourceJobId, setSourceJobId] = useState(
-    initialPublication.sourceJobId,
+    restoredDraft?.sourceJobId ?? initialPublication.sourceJobId,
   );
   const [sourceDocumentId, setSourceDocumentId] = useState(
-    initialPublication.sourceDocumentId,
+    restoredDraft?.sourceDocumentId ?? initialPublication.sourceDocumentId,
   );
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [libraryLoading, setLibraryLoading] = useState(false);
@@ -136,7 +186,7 @@ function BillingWorkspace({
     (LibraryDocument & { body: string }) | undefined
   >();
   const [libraryPreviewLoading, setLibraryPreviewLoading] = useState(false);
-  const attempt = useRef(new PublicationAttempt());
+  const attempt = useRef(new PublicationAttempt(restoredDraft?.attempt));
   const submitting = useRef(false);
   const readVersion = useRef(0);
   const channelSearchVersion = useRef(0);
@@ -156,6 +206,49 @@ function BillingWorkspace({
   const [publicationForm] = Form.useForm<PublicationForm>();
   const [appealForm] = Form.useForm<AppealForm>();
   const [appealOrderId, setAppealOrderId] = useState<string>();
+  function saveDraft() {
+    if (view !== "new" || !scope.brandId) return;
+    draftCleared.current = false;
+    setDraftSaved(
+      writePublicationDraft(draftScope, {
+        values: publicationForm.getFieldsValue(true),
+        bodyFormat,
+        sourceJobId,
+        sourceDocumentId,
+        attempt: attempt.current.snapshot(),
+        updatedAt: Date.now(),
+      }),
+    );
+  }
+  useEffect(() => {
+    if (view !== "new" || !scope.brandId) return;
+    // Form is mounted before restoring values or persisting source changes.
+    publicationForm.setFieldsValue({
+      ...restoredDraft?.values,
+      channelId: restoredChannelId,
+    });
+  }, [publicationForm, restoredChannelId, restoredDraft, scope.brandId, view]);
+  useEffect(() => {
+    if (view !== "new" || !scope.brandId || draftCleared.current) return;
+    setDraftSaved(
+      writePublicationDraft(draftScope, {
+        values: publicationForm.getFieldsValue(true),
+        bodyFormat,
+        sourceJobId,
+        sourceDocumentId,
+        attempt: attempt.current.snapshot(),
+        updatedAt: Date.now(),
+      }),
+    );
+  }, [
+    bodyFormat,
+    draftScope,
+    publicationForm,
+    sourceDocumentId,
+    sourceJobId,
+    view,
+    scope.brandId,
+  ]);
   async function loadLibrary(query = "") {
     if (!scope.brandId) return;
     setLibraryLoading(true);
@@ -230,9 +323,9 @@ function BillingWorkspace({
                 { signal },
               )
             : Promise.resolve([]),
-          view === "new" && selectedChannelId
+          view === "new" && restoredChannelId && !channelInitialized.current
             ? api<Channel>(
-                `/api/v1/publication-channels/${selectedChannelId}`,
+                `/api/v1/publication-channels/${restoredChannelId}`,
                 { signal },
               )
             : Promise.resolve(undefined),
@@ -247,13 +340,21 @@ function BillingWorkspace({
         setBrandAccounts(brand);
         setOrders(nextOrders);
         if (channelPage) {
-          setChannelOptions(
-            channel && !channelPage.list.some((item) => item.id === channel.id)
-              ? [channel, ...channelPage.list]
-              : channelPage.list,
-          );
+          setChannelOptions((current) => {
+            const active =
+              channel ??
+              current.find(
+                (item) =>
+                  item.id === publicationForm.getFieldValue("channelId"),
+              );
+            return active &&
+              !channelPage.list.some((item) => item.id === active.id)
+              ? [active, ...channelPage.list]
+              : channelPage.list;
+          });
         }
         if (channel) {
+          channelInitialized.current = true;
           setSelectedChannel(channel);
           setChannelEditing(false);
           publicationForm.setFieldValue("channelId", channel.id);
@@ -271,7 +372,7 @@ function BillingWorkspace({
       scope.organizationId,
       scope.teamBindingId,
       scope.brandId,
-      selectedChannelId,
+      restoredChannelId,
       view,
     ],
   );
@@ -363,11 +464,16 @@ function BillingWorkspace({
       channelId: values.channelId,
       title: values.title,
       contentUrl: values.contentUrl || undefined,
-      contentHtml: values.contentHtml || undefined,
+      contentHtml:
+        sourceJobId || sourceDocumentId
+          ? undefined
+          : publicationBodyHtml(values.contentHtml, bodyFormat),
       sourceJobId: sourceJobId || undefined,
       sourceDocumentId: sourceDocumentId || undefined,
       note: values.note,
     };
+    const idempotencyKey = attempt.current.key(payload);
+    saveDraft();
     try {
       const result = await api<{
         order: PublicationOrder["order"];
@@ -377,9 +483,10 @@ function BillingWorkspace({
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           ...payload,
-          idempotencyKey: attempt.current.key(payload),
+          idempotencyKey,
         }),
       });
+      setSubmissionResult(result.order);
       if (
         result.order.status === "submitted" &&
         selectedChannel?.provider === "frog_media"
@@ -389,10 +496,26 @@ function BillingWorkspace({
         return;
       }
       attempt.current.complete();
+      if (["failed", "cancelled"].includes(result.order.status)) {
+        saveDraft();
+        await load();
+        setMessage("发布未完成，余额已返还。稿件已保留，可修改后重新提交。");
+        return;
+      }
       publicationForm.resetFields();
+      draftCleared.current = true;
+      publicationForm.setFieldsValue({
+        title: "",
+        note: "",
+        contentHtml: "",
+        contentUrl: "",
+        channelId: undefined,
+      });
       setSelectedChannel(undefined);
       setSourceJobId(undefined);
       setSourceDocumentId(undefined);
+      clearPublicationDraft(draftScope);
+      setDraftSaved(false);
       await load();
       setMessage(
         ["failed", "cancelled"].includes(result.order.status)
@@ -461,13 +584,11 @@ function BillingWorkspace({
     selectedChannel && selectedChannel.priceAmount > brandMoney,
   );
   const channelLibraryParams = new URLSearchParams();
-  if (initialPublication.title)
-    channelLibraryParams.set("title", initialPublication.title);
+  channelLibraryParams.set("organizationId", scope.organizationId);
+  channelLibraryParams.set("brandId", scope.brandId);
   if (sourceJobId) channelLibraryParams.set("sourceJobId", sourceJobId);
   if (sourceDocumentId)
     channelLibraryParams.set("sourceDocumentId", sourceDocumentId);
-  if (initialPublication.note)
-    channelLibraryParams.set("note", initialPublication.note);
   const channelLibraryHref = `/dashboard/publication/channels${channelLibraryParams.size ? `?${channelLibraryParams}` : ""}`;
   const orderColumns: TableColumnsType<PublicationOrder> = [
     {
@@ -539,7 +660,7 @@ function BillingWorkspace({
       width: 110,
       render: (_, item) => (
         <Space>
-          {scope.canWrite &&
+          {scope.can("publication.create") &&
           (item.order.status === "submitted" ||
             item.order.status === "processing") ? (
             <Popconfirm
@@ -557,7 +678,7 @@ function BillingWorkspace({
               </Button>
             </Popconfirm>
           ) : null}
-          {scope.canWrite &&
+          {scope.can("publication.create") &&
           item.order.providerOrderId &&
           (item.order.status === "processing" ||
             item.order.status === "published") ? (
@@ -615,6 +736,30 @@ function BillingWorkspace({
           type={scope.error ? "error" : "info"}
         />
       ) : null}
+      {view === "new" && submissionResult ? (
+        <Alert
+          type={
+            submissionResult.status === "submitted"
+              ? "warning"
+              : ["failed", "cancelled"].includes(submissionResult.status)
+                ? "error"
+                : "success"
+          }
+          showIcon
+          message={`订单 ${submissionResult.id.slice(0, 8)} · ${submissionResult.status === "submitted" ? "投稿确认中" : ["failed", "cancelled"].includes(submissionResult.status) ? "发布未完成" : "已提交发布"}`}
+          action={
+            <Button
+              onClick={() =>
+                router.push(
+                  `/dashboard/publication/orders?${scopeQuery({ organizationId: scope.organizationId, brandId: scope.brandId })}`,
+                )
+              }
+            >
+              查看订单
+            </Button>
+          }
+        />
+      ) : null}
 
       {view === "orders" ? (
         <Card
@@ -650,12 +795,14 @@ function BillingWorkspace({
 
       {view === "new" ? (
         <Form<PublicationForm>
-          disabled={!scope.canWrite || Boolean(busy)}
+          disabled={!scope.can("publication.create") || Boolean(busy)}
           form={publicationForm}
           initialValues={{
             title: initialPublication.title,
             note: initialPublication.note,
+            ...restoredDraft?.values,
           }}
+          onValuesChange={saveDraft}
           layout="vertical"
           onFinish={(values) => void createOrder(values)}
         >
@@ -687,7 +834,10 @@ function BillingWorkspace({
                   >
                     从文档库选择文章
                   </Button>
-                  <Typography.Link href="/dashboard/content?stage=library">
+                  <Typography.Link
+                    onClick={saveDraft}
+                    href={`/dashboard/content?${scopeQuery({ stage: "library", organizationId: scope.organizationId, brandId: scope.brandId })}`}
+                  >
                     管理文档库
                   </Typography.Link>
                 </Space>
@@ -712,7 +862,26 @@ function BillingWorkspace({
                   <Alert
                     action={
                       <Button
-                        onClick={() => {
+                        onClick={async () => {
+                          if (sourceDocumentId) {
+                            try {
+                              const document = await api<{ body: string }>(
+                                `/api/v1/content-documents/${sourceDocumentId}?${scopeQuery({ organizationId: scope.organizationId, teamBindingId: scope.teamBindingId, brandId: scope.brandId })}`,
+                              );
+                              publicationForm.setFieldValue(
+                                "contentHtml",
+                                document.body,
+                              );
+                              setBodyFormat("html");
+                            } catch (error) {
+                              setMessage(
+                                error instanceof Error
+                                  ? error.message
+                                  : "正文读取失败",
+                              );
+                              return;
+                            }
+                          }
                           setSourceJobId(undefined);
                           setSourceDocumentId(undefined);
                         }}
@@ -731,18 +900,37 @@ function BillingWorkspace({
                   />
                 ) : (
                   <Form.Item
-                    label="HTML 正文"
+                    label={
+                      <Flex gap={12} align="center" wrap>
+                        <span>文章正文</span>
+                        <Segmented
+                          size="small"
+                          options={[
+                            { label: "普通正文", value: "text" },
+                            { label: "HTML", value: "html" },
+                          ]}
+                          value={bodyFormat}
+                          onChange={(value) =>
+                            setBodyFormat(value as "text" | "html")
+                          }
+                        />
+                      </Flex>
+                    }
                     name="contentHtml"
                     rules={[
                       {
                         required: selectedChannel?.provider === "frog_media",
-                        message:
-                          "请输入 HTML 正文，或从已完成的生成任务进入发布",
+                        message: "请输入文章正文，或从文档库选择文章",
                       },
                     ]}
                   >
                     <Input.TextArea
-                      placeholder="<p>请输入待发布正文</p>"
+                      maxLength={500000}
+                      placeholder={
+                        bodyFormat === "html"
+                          ? "<p>请输入待发布正文</p>"
+                          : "粘贴或输入文章正文，段落将自动排版"
+                      }
                       rows={12}
                     />
                   </Form.Item>
@@ -836,6 +1024,7 @@ function BillingWorkspace({
                   <Button
                     block
                     href={channelLibraryHref}
+                    onClick={saveDraft}
                     icon={<GlobalOutlined />}
                     className={styles.libraryButton}
                   >
@@ -866,7 +1055,25 @@ function BillingWorkspace({
                   </div>
 
                   {publicationBalanceInsufficient ? (
-                    <Alert message="当前发布余额不足" showIcon type="warning" />
+                    <Alert
+                      message="当前发布余额不足"
+                      description={
+                        organizations.find(
+                          (item) => item.id === scope.organizationId,
+                        )?.role === "tenant_admin" ? (
+                          <Typography.Link
+                            onClick={saveDraft}
+                            href={`/dashboard/balances?${scopeQuery({ organizationId: scope.organizationId, brandId: scope.brandId })}`}
+                          >
+                            前往资产划拨，为当前品牌分配发布余额
+                          </Typography.Link>
+                        ) : (
+                          "请联系企业管理员为当前品牌划拨发布余额。"
+                        )
+                      }
+                      showIcon
+                      type="warning"
+                    />
                   ) : null}
 
                   <Button
@@ -874,7 +1081,7 @@ function BillingWorkspace({
                     className={styles.submitButton}
                     disabled={
                       !scope.brandId ||
-                      !scope.canWrite ||
+                      !scope.can("publication.create") ||
                       !selectedChannel ||
                       publicationBalanceInsufficient
                     }
@@ -894,6 +1101,11 @@ function BillingWorkspace({
                       ? `提交后扣除 ${money(selectedChannel.priceAmount)}，失败或确认取消后自动退回`
                       : "选择媒体渠道后即可提交发布"}
                   </Typography.Paragraph>
+                  {draftSaved ? (
+                    <Typography.Text type="secondary">
+                      草稿已保存在当前标签页
+                    </Typography.Text>
+                  ) : null}
                 </Card>
               </div>
             </Col>

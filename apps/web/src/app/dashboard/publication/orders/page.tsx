@@ -24,6 +24,7 @@ export default async function PublicationOrdersPage() {
         title="发布订单"
       />
       <BillingClient
+        userId={session.user.id}
         initialPublication={{ title: "", note: "" }}
         organizations={organizations.map(
           ({ id, name, role, teamBindingId }) => ({

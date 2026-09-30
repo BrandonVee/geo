@@ -14,6 +14,7 @@ import {
 } from "@ant-design/icons";
 import {
   Button,
+  App,
   Card,
   Col,
   Descriptions,
@@ -155,6 +156,10 @@ export function DocumentLibrary({
   const [editingFolder, setEditingFolder] = useState<Folder>();
   const [folderSaving, setFolderSaving] = useState(false);
   const [editorForm] = Form.useForm<EditorValues>();
+  const [editorInitialValues, setEditorInitialValues] =
+    useState<Partial<EditorValues>>();
+  const [editorDirty, setEditorDirty] = useState(false);
+  const { modal } = App.useApp();
   const [folderForm] = Form.useForm<{ name: string }>();
   const scopeParams = useMemo(
     () => ({
@@ -234,8 +239,7 @@ export function DocumentLibrary({
 
   function openCreate(source: "manual" | "imported") {
     setEditing(undefined);
-    editorForm.resetFields();
-    editorForm.setFieldsValue({
+    setEditorInitialValues({
       source,
       status: "draft",
       language: "zh-CN",
@@ -245,12 +249,13 @@ export function DocumentLibrary({
           ? folderFilter
           : undefined,
     });
+    setEditorDirty(false);
     setEditorOpen(true);
   }
 
   function openEdit(document: DocumentDetail) {
     setEditing(document);
-    editorForm.setFieldsValue({
+    setEditorInitialValues({
       title: document.title,
       body: document.body,
       status: document.status === "archived" ? "draft" : document.status,
@@ -261,7 +266,25 @@ export function DocumentLibrary({
       tags: document.tags,
       changeSummary: "",
     });
+    setEditorDirty(false);
     setEditorOpen(true);
+  }
+  useEffect(() => {
+    if (!editorOpen) return;
+    editorForm.resetFields();
+    editorForm.setFieldsValue(editorInitialValues ?? {});
+  }, [editorOpen, editorForm, editorInitialValues]);
+  function closeEditor() {
+    if (saving) return;
+    if (!editorDirty) return setEditorOpen(false);
+    modal.confirm({
+      title: "放弃尚未保存的修改？",
+      content: "关闭后本次编辑内容不会保存。",
+      okText: "放弃修改",
+      cancelText: "继续编辑",
+      okButtonProps: { danger: true },
+      onOk: () => setEditorOpen(false),
+    });
   }
 
   async function saveDocument(values: EditorValues) {
@@ -695,7 +718,10 @@ export function DocumentLibrary({
       <Modal
         destroyOnHidden
         footer={null}
-        onCancel={() => setEditorOpen(false)}
+        onCancel={closeEditor}
+        closable={!saving}
+        maskClosable={!saving}
+        keyboard={!saving}
         open={editorOpen}
         title={
           editing ? `编辑文档 · v${editing.currentVersion}` : "保存到文档库"
@@ -706,6 +732,7 @@ export function DocumentLibrary({
           form={editorForm}
           layout="vertical"
           onFinish={(values) => void saveDocument(values)}
+          onValuesChange={() => setEditorDirty(true)}
         >
           <Row gutter={12}>
             <Col md={16} xs={24}>
@@ -842,9 +869,9 @@ export function DocumentLibrary({
                 >
                   编辑
                 </Button>
-                {canPublish && detail.status === "ready" ? (
+                {canPublish && canWrite && detail.status === "ready" ? (
                   <Button
-                    href={`/dashboard/publication/new?${new URLSearchParams({ title: detail.title, sourceDocumentId: detail.id }).toString()}`}
+                    href={`/dashboard/publication/new?${new URLSearchParams({ organizationId: scope.organizationId, brandId: scope.brandId, title: detail.title, sourceDocumentId: detail.id }).toString()}`}
                     icon={<SendOutlined />}
                     type="primary"
                   >

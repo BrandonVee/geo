@@ -342,6 +342,7 @@ export const deletePromptsBatchSchema = z
 export const promptListQuerySchema = z
   .object({
     ...brandScopeShape,
+    purpose: z.enum(["content"]).optional(),
     beginDate: dateSchema.optional(),
     endDate: dateSchema.optional(),
     page: queryInteger(1, 1, 100000),

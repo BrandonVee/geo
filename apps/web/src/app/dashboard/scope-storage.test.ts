@@ -5,6 +5,7 @@ import {
   readStoredScopeId,
   storeBrandId,
   storeOrganizationId,
+  selectScopeId,
 } from "./scope-storage";
 
 const values = new Map<string, string>();
@@ -20,6 +21,35 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("dashboard scope persistence", () => {
+  it("明确的跳转范围优先于浏览器记忆，并拒绝无权限的范围", () => {
+    expect(
+      selectScopeId("enterprise-a", "enterprise-b", [
+        "enterprise-a",
+        "enterprise-b",
+      ]),
+    ).toBe("enterprise-a");
+    expect(
+      selectScopeId("unknown", "enterprise-b", [
+        "enterprise-a",
+        "enterprise-b",
+      ]),
+    ).toBe("enterprise-b");
+    expect(selectScopeId("unknown", "missing", ["enterprise-a"])).toBe(
+      "enterprise-a",
+    );
+  });
+  it("浏览器禁止存储时仍可选择企业", () => {
+    vi.stubGlobal("localStorage", {
+      getItem: () => {
+        throw new Error("denied");
+      },
+      setItem: () => {
+        throw new Error("denied");
+      },
+    });
+    expect(readStoredOrganizationId(["organization-1"])).toBe("");
+    expect(() => storeOrganizationId("organization-1")).not.toThrow();
+  });
   it("returns only a stored id that is still available", () => {
     values.set("scope", "team-2");
 

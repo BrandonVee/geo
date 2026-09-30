@@ -1,4 +1,9 @@
-import { hasPermission, type Permission, type Role } from "@geo/core";
+import {
+  hasPermission,
+  type Permission,
+  type Role,
+  type OrganizationFeature,
+} from "@geo/core";
 import { ApiError } from "@/server/http/errors";
 import { assertOrganizationFeatureEnabled } from "@/server/permissions/organization-features";
 import { brandRepository } from "@/server/repositories/brands";
@@ -9,6 +14,7 @@ export async function resolveBrandScope(
   teamBindingId: string,
   userId: string,
   permission: Permission,
+  feature?: OrganizationFeature,
 ) {
   const membership = await brandRepository.findActiveMembership(
     organizationId,
@@ -16,7 +22,12 @@ export async function resolveBrandScope(
   );
   if (!membership)
     throw new ApiError(404, "ORGANIZATION_NOT_FOUND", "企业不存在");
-  await assertOrganizationFeatureEnabled(organizationId, userId, permission);
+  await assertOrganizationFeatureEnabled(
+    organizationId,
+    userId,
+    permission,
+    feature,
+  );
   const organizationRole = await organizationRepository.findMembershipRole(
     organizationId,
     userId,
@@ -60,12 +71,14 @@ export async function authorizeBrand(
   brandId: string,
   userId: string,
   permission: Permission,
+  feature?: OrganizationFeature,
 ) {
   const scope = await resolveBrandScope(
     organizationId,
     teamBindingId,
     userId,
     permission,
+    feature,
   );
   if (
     !(await brandRepository.findBrand(organizationId, teamBindingId, brandId))

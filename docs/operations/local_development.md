@@ -132,3 +132,5 @@ CI 还会在全新 PostgreSQL 18 中连续执行两次 `pnpm db:release`，并�
 成员额度的真实 PostgreSQL 并发回归在完成 `pnpm db:release` 后运行 `MEMBER_CAPACITY_DB_TESTS=1 node scripts/run-with-env.mjs pnpm --filter @geo/web exec vitest run src/server/repositories/members.integration.test.ts`。测试使用新建 UUID 范围并清理数据，覆盖并发新增、并发恢复与新增共同争用最后一个名额；默认测试跳过此用例。
 
 企业有效期与手动扣减的真实 PostgreSQL 回归：先执行 `pnpm db:release`，再运行 `ENTERPRISE_BALANCE_DB_TESTS=1 node scripts/run-with-env.mjs pnpm --filter @geo/db exec vitest run src/enterprise-balances.integration.test.ts`。用例仅创建独立 UUID 数据并清理，覆盖重复扣减、余额不足、到期阻止消费、续期恢复和冻结后退款。
+
+运营页面回归需本地数据库已迁移、Redis 可用、平台腾讯接入已配置，并运行 `pnpm dev:web`。安装浏览器后执行 `WORKFLOW_E2E=1 E2E_BASE_URL=http://localhost:3000 node scripts/run-with-env.mjs pnpm exec playwright test e2e/operator-workflows.spec.ts`，实际 Origin 需与认证配置一致。用例创建隔离账号与两家测试企业并清理，覆盖草稿恢复、企业切换、生成网络重试及品牌积分查看；腾讯和发布调用在浏览器中模拟，不进行真实投稿或生成。

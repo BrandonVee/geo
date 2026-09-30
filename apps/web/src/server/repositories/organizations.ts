@@ -6,11 +6,13 @@ import {
   memberRoles,
   organizationMembers,
   organizations,
+  organizationUserFeatureScopes,
+  brandAccess,
   roles,
 } from "@geo/db";
 import type { CreateOrganizationInput } from "@geo/contracts";
 import { platformAnswerBitConnectionSentinel } from "@geo/core";
-import { and, desc, eq, ne } from "drizzle-orm";
+import { and, desc, eq, ne, sql } from "drizzle-orm";
 
 export const organizationRepository = {
   listForUser(userId: string) {
@@ -21,7 +23,12 @@ export const organizationRepository = {
         slug: organizations.slug,
         status: organizations.status,
         planCode: organizations.planCode,
-        role: roles.code,
+        role: sql<
+          string | null
+        >`coalesce(${roles.code}, ${brandAccess.role}::text)`,
+        features: organizationUserFeatureScopes.features,
+        serviceExpiresAt: organizations.serviceExpiresAt,
+        pointsExpiresAt: organizations.pointsExpiresAt,
         teamBindingId: answerbitBrandMappings.teamBindingId,
         answerbitBrandId: answerbitBrandMappings.brandId,
         answerbitBrandName: answerbitBrandMappings.brandName,
@@ -38,6 +45,22 @@ export const organizationRepository = {
       )
       .leftJoin(memberRoles, eq(memberRoles.memberId, organizationMembers.id))
       .leftJoin(roles, eq(roles.id, memberRoles.roleId))
+      .leftJoin(
+        brandAccess,
+        and(
+          eq(brandAccess.organizationId, organizations.id),
+          eq(brandAccess.brandId, answerbitBrandMappings.brandId),
+          eq(brandAccess.teamBindingId, answerbitBrandMappings.teamBindingId),
+          eq(brandAccess.userId, organizationMembers.userId),
+        ),
+      )
+      .leftJoin(
+        organizationUserFeatureScopes,
+        and(
+          eq(organizationUserFeatureScopes.organizationId, organizations.id),
+          eq(organizationUserFeatureScopes.userId, organizationMembers.userId),
+        ),
+      )
       .where(
         and(
           eq(organizationMembers.userId, userId),

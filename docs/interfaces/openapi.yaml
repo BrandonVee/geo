@@ -889,11 +889,17 @@ paths:
   /v1/answerbit/prompts:
     get:
       summary: 分页查询品牌监控问题分组
+      description: 默认按 GEO 模块授权；purpose=content 仅用于内容生成选择目标问题，按内容读取权限授权，不开放问题写入。
       tags:
         - Monitoring
       security:
         - cookieSession: []
       parameters:
+        - in: query
+          name: purpose
+          schema:
+            type: string
+            enum: [content]
         - $ref: "#/components/parameters/OrganizationId"
         - $ref: "#/components/parameters/TeamBindingId"
         - $ref: "#/components/parameters/BrandId"
@@ -5049,6 +5055,22 @@ components:
           type:
             - string
             - "null"
+        features:
+          type: [array, "null"]
+          description: 当前用户在本企业的功能范围，null 表示继承角色默认能力
+          items:
+            type: string
+            enum:
+              [
+                geo_insights,
+                content,
+                publication,
+                balance,
+                report,
+                notification,
+                member_management,
+                enterprise_settings,
+              ]
         createdAt:
           type: string
           format: date-time

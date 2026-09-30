@@ -18,6 +18,7 @@ import {
   Input,
   List,
   Modal,
+  Popconfirm,
   Row,
   Select,
   Space,
@@ -37,6 +38,7 @@ import {
   useAnswerBitScope,
 } from "../use-answerbit-scope";
 import { DocumentLibrary } from "./document-library";
+import { PublicationAttempt } from "../billing/publication-attempt";
 type Article = {
   id: string;
   title: string;
@@ -149,9 +151,25 @@ export function ContentClient({
   const scope = useAnswerBitScope(organizations);
   const { organizationId, teamBindingId, brandId } = scope;
   const scopeVersion = useRef(0);
+  const readVersion = useRef(0);
+  const jobReadVersion = useRef(0);
+  const generationAttempt = useRef(new PublicationAttempt());
+  const generationSubmitting = useRef(false);
+  const [cancellingJob, setCancellingJob] = useState("");
   const [articles, setArticles] = useState<Article[]>([]);
   const [templates, setTemplates] = useState<Template[]>([]);
   const [prompts, setPrompts] = useState<Prompt[]>([]);
+  const [promptSearch, setPromptSearch] = useState("");
+  const [promptSearchQuery, setPromptSearchQuery] = useState("");
+  const initialPromptId = searchParams.get("promptId");
+  const initialPromptText = searchParams.get("promptText")?.slice(0, 500) ?? "";
+  const initialOrganizationId = searchParams.get("organizationId");
+  const initialBrandId = searchParams.get("brandId");
+  const preselectedPrompt = useRef("");
+  useEffect(() => {
+    const timer = setTimeout(() => setPromptSearchQuery(promptSearch), 300);
+    return () => clearTimeout(timer);
+  }, [promptSearch]);
   const [tags, setTags] = useState<Tag[]>([]);
   const [selectedGenerationTags, setSelectedGenerationTags] = useState<
     string[]
@@ -186,19 +204,42 @@ export function ContentClient({
     ? String(selectedTemplate.template_id)
     : "";
   const [selectedPrompts, setSelectedPrompts] = useState<string[]>([]);
+  const selectedPromptsRef = useRef<string[]>([]);
+  useEffect(() => {
+    selectedPromptsRef.current = selectedPrompts;
+  }, [selectedPrompts]);
   const [supplement, setSupplement] = useState("");
   const [highRefUrl, setHighRefUrl] = useState("");
   const [detail, setDetail] = useState<TraceDetail | null>(null);
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   useEffect(() => {
     scopeVersion.current += 1;
+    readVersion.current += 1;
+    jobReadVersion.current += 1;
+    generationAttempt.current.complete();
     setArticles([]);
+    setTemplates([]);
+    setPrompts([]);
+    setPromptSearch("");
+    setTags([]);
+    setSelectedPrompts([]);
+    setSelectedGenerationTags([]);
+    setSelectedTraceTags([]);
+    setSupplement("");
+    setHighRefUrl("");
+    setScrollId("");
+    setTotal(0);
+    setTraceCreateOpen(false);
     setJobs([]);
     setSelectedJob(null);
     setLibraryTags([]);
     setDetail(null);
     setMessage("");
   }, [organizationId, teamBindingId, brandId]);
+  useEffect(() => {
+    if (scope.brand && !scope.canWrite)
+      setTab((current) => (current === "generate" ? "library" : current));
+  }, [scope.brand, scope.canWrite]);
   function changeTab(nextTab: "library" | "trace" | "generate") {
     setTab(nextTab);
     const params = new URLSearchParams(searchParams.toString());
@@ -208,106 +249,128 @@ export function ContentClient({
   const load = useCallback(
     async (cursor?: string) => {
       if (!brandId) return;
-      const version = scopeVersion.current;
+      const version = ++readVersion.current;
+      const jobsVersion = ++jobReadVersion.current;
       setLoading(true);
       const base = { organizationId, teamBindingId, brandId };
-      try {
-        const [
-          articleResponse,
-          templateResponse,
-          promptResponse,
-          userTagResponse,
-          systemTagResponse,
-          jobResponse,
-          documentResponse,
-        ] = await Promise.all([
-          fetch(
-            `/api/v1/answerbit/articles?${scopeQuery({ ...base, limit: "20", ...(cursor ? { scrollId: cursor } : {}) })}`,
-          ),
-          fetch(
-            `/api/v1/answerbit/article-templates?${scopeQuery({ ...base, localCode: language })}`,
-          ),
-          fetch(
-            `/api/v1/answerbit/prompts?${scopeQuery({ ...base, pageSize: "100" })}`,
-          ),
-          fetch(
-            `/api/v1/answerbit/tags?${scopeQuery({ organizationId, teamBindingId, tagType: "1" })}`,
-          ),
-          fetch(
-            `/api/v1/answerbit/tags?${scopeQuery({ organizationId, teamBindingId, tagType: "2" })}`,
-          ),
-          fetch(
-            `/api/v1/answerbit/article-jobs?${scopeQuery({ ...base, limit: "20" })}`,
-          ),
-          fetch(
-            `/api/v1/content-documents?${scopeQuery({ ...base, limit: "100", offset: "0" })}`,
-          ),
-        ]);
-        const [
-          articleBody,
-          templateBody,
-          promptBody,
-          userTagBody,
-          systemTagBody,
-          jobBody,
-          documentBody,
-        ] = await Promise.all([
-          articleResponse.json(),
-          templateResponse.json(),
-          promptResponse.json(),
-          userTagResponse.json(),
-          systemTagResponse.json(),
-          jobResponse.json(),
-          documentResponse.json(),
-        ]);
-        if (version !== scopeVersion.current) return;
-        if (!articleResponse.ok) throw new Error(articleBody.error?.message);
-        const nextArticles = articleBody.data.list ?? [];
+      const read = async (path: string) => {
+        const response = await fetch(path, { cache: "no-store" });
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.error?.message ?? "读取失败");
+        return body.data;
+      };
+      const result = await Promise.allSettled([
+        tab === "trace"
+          ? read(
+              `/api/v1/answerbit/articles?${scopeQuery({ ...base, limit: "20", ...(cursor ? { scrollId: cursor } : {}) })}`,
+            )
+          : Promise.resolve(undefined),
+        tab === "generate"
+          ? read(
+              `/api/v1/answerbit/article-templates?${scopeQuery({ ...base, localCode: language })}`,
+            )
+          : Promise.resolve(undefined),
+        tab === "generate"
+          ? read(
+              `/api/v1/answerbit/prompts?${scopeQuery({ ...base, pageSize: "100", purpose: "content", ...(promptSearchQuery || initialPromptText ? { query: promptSearchQuery || initialPromptText } : {}) })}`,
+            )
+          : Promise.resolve(undefined),
+        tab !== "library"
+          ? read(
+              `/api/v1/answerbit/tags?${scopeQuery({ organizationId, teamBindingId, tagType: "1" })}`,
+            )
+          : Promise.resolve(undefined),
+        tab !== "library"
+          ? read(
+              `/api/v1/answerbit/tags?${scopeQuery({ organizationId, teamBindingId, tagType: "2" })}`,
+            )
+          : Promise.resolve(undefined),
+        read(
+          `/api/v1/answerbit/article-jobs?${scopeQuery({ ...base, limit: "20" })}`,
+        ),
+        tab === "generate"
+          ? read(
+              `/api/v1/content-documents?${scopeQuery({ ...base, limit: "100", offset: "0" })}`,
+            )
+          : Promise.resolve(undefined),
+      ]);
+      if (version !== readVersion.current) return;
+      const value = (index: number) =>
+        result[index].status === "fulfilled" ? result[index].value : undefined;
+      const articleData = value(0);
+      if (articleData) {
         setArticles((current) =>
-          cursor ? [...current, ...nextArticles] : nextArticles,
+          cursor ? [...current, ...articleData.list] : articleData.list,
         );
-        setScrollId(articleBody.data.scroll_id ?? "");
-        setTotal(articleBody.data.total ?? 0);
-        setTemplates(templateResponse.ok ? templateBody.data : []);
-        setPrompts(
-          promptResponse.ok
-            ? promptBody.data.titles.flatMap(
-                (group: { prompts: Prompt[] }) => group.prompts,
-              )
-            : [],
-        );
+        setScrollId(articleData.scroll_id ?? "");
+        setTotal(articleData.total ?? 0);
+      }
+      if (value(1)) setTemplates(value(1));
+      if (value(2)) {
+        const next = value(2).titles.flatMap(
+          (group: { prompts: Prompt[] }) => group.prompts,
+        ) as Prompt[];
+        setPrompts((current) => [
+          ...current.filter(
+            (prompt) =>
+              selectedPromptsRef.current.includes(prompt.id) &&
+              !next.some((item) => item.id === prompt.id),
+          ),
+          ...next,
+        ]);
+        const key = `${organizationId}:${brandId}:${initialPromptId}`;
+        if (
+          initialPromptId &&
+          preselectedPrompt.current !== key &&
+          next.some((prompt) => prompt.id === initialPromptId) &&
+          (!initialOrganizationId ||
+            initialOrganizationId === organizationId) &&
+          (!initialBrandId || initialBrandId === brandId)
+        ) {
+          preselectedPrompt.current = key;
+          setSelectedPrompts([initialPromptId]);
+        }
+      }
+      if (tab !== "library" && (value(3) || value(4))) {
         setTags(
-          [
-            ...(userTagResponse.ok ? (userTagBody.data as Tag[]) : []),
-            ...(systemTagResponse.ok ? (systemTagBody.data as Tag[]) : []),
-          ].filter(
-            (tag, index, all) =>
+          [...(value(3) ?? []), ...(value(4) ?? [])].filter(
+            (tag: Tag, index: number, all: Tag[]) =>
               all.findIndex((candidate) => candidate.tag_id === tag.tag_id) ===
               index,
           ),
         );
-        setJobs(jobResponse.ok ? jobBody.data : []);
-        setLibraryTags(
-          documentResponse.ok
-            ? documentBody.data.list.flatMap(
-                (document: { tags?: string[] }) => document.tags ?? [],
-              )
-            : [],
-        );
-        setTemplateType(
-          (current) =>
-            current || String(templateBody.data?.[0]?.template_id ?? ""),
-        );
-      } catch (error) {
-        if (version === scopeVersion.current)
-          setMessage(
-            error instanceof Error ? error.message : "内容数据加载失败",
-          );
-      } finally {
-        if (version === scopeVersion.current) setLoading(false);
       }
+      if (value(5) && jobsVersion === jobReadVersion.current) setJobs(value(5));
+      if (value(6))
+        setLibraryTags(
+          value(6).list.flatMap(
+            (document: { tags?: string[] }) => document.tags ?? [],
+          ),
+        );
+      const failures = result.flatMap((item) =>
+        item.status === "rejected"
+          ? [
+              item.reason instanceof Error
+                ? item.reason.message
+                : "内容数据加载失败",
+            ]
+          : [],
+      );
+      if (failures.length) setMessage([...new Set(failures)].join("；"));
+      setLoading(false);
     },
-    [organizationId, teamBindingId, brandId, language],
+    [
+      organizationId,
+      teamBindingId,
+      brandId,
+      language,
+      tab,
+      promptSearchQuery,
+      initialPromptId,
+      initialPromptText,
+      initialOrganizationId,
+      initialBrandId,
+    ],
   );
   useEffect(() => {
     void load();
@@ -320,6 +383,7 @@ export function ContentClient({
     const refreshJobs = async () => {
       if (document.hidden || !navigator.onLine || !brandId) return;
       const version = scopeVersion.current;
+      const jobsVersion = ++jobReadVersion.current;
       try {
         const response = await fetch(
           `/api/v1/answerbit/article-jobs?${scopeQuery({ organizationId, teamBindingId, brandId, limit: "20" })}`,
@@ -327,7 +391,11 @@ export function ContentClient({
         );
         if (!response.ok) return;
         const body = await response.json();
-        if (version !== scopeVersion.current) return;
+        if (
+          version !== scopeVersion.current ||
+          jobsVersion !== jobReadVersion.current
+        )
+          return;
         const nextJobs = body.data as Job[];
         setJobs(nextJobs);
         setSelectedJob((current) =>
@@ -352,7 +420,7 @@ export function ContentClient({
     return body;
   }
   async function trace() {
-    if (submitting || !scope.canWrite || !scope.brandId) return;
+    if (submitting || !scope.canWrite || !scope.brandId || scope.pointsExpired) return;
     setSubmitting("trace");
     try {
       const urls = traceUrls
@@ -386,7 +454,13 @@ export function ContentClient({
     }
   }
   async function generate() {
-    if (submitting || !scope.canWrite || !scope.brandId) return;
+    if (
+      generationSubmitting.current ||
+      submitting ||
+      !scope.canWrite ||
+      !scope.brandId || scope.pointsExpired
+    )
+      return;
     const template = selectedTemplate;
     if (!template)
       return setMessage("当前生成方式暂无可用模板，请切换方式或重试加载");
@@ -413,29 +487,38 @@ export function ContentClient({
       );
     if (contentTags.some((tag) => tag.length > 40))
       return setMessage("每个内容标签最多 40 个字符");
+    const payload = {
+      ...apiScope(scope),
+      expectedPoints: featurePointCosts.articleGeneration,
+      templateType: Number(activeTemplateType),
+      promptIds: selectedPrompts,
+      supplementalKnowledge: supplement || undefined,
+      highReference:
+        generationMode === "reference" ? { url: highRefUrl.trim() } : undefined,
+      tagIds: upstreamTagIds,
+      contentTags,
+      language,
+    };
+    const version = scopeVersion.current;
+    generationSubmitting.current = true;
+    jobReadVersion.current += 1;
     setSubmitting("generate");
     try {
       const body = await request("/api/v1/answerbit/article-jobs", {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "Idempotency-Key": crypto.randomUUID(),
+          "Idempotency-Key": generationAttempt.current.key(payload),
         },
-        body: JSON.stringify({
-          ...apiScope(scope),
-          expectedPoints: featurePointCosts.articleGeneration,
-          templateType: Number(activeTemplateType),
-          promptIds: selectedPrompts,
-          supplementalKnowledge: supplement || undefined,
-          highReference:
-            generationMode === "reference"
-              ? { url: highRefUrl.trim() }
-              : undefined,
-          tagIds: upstreamTagIds,
-          contentTags,
-          language,
-        }),
+        body: JSON.stringify(payload),
       });
+      if (version !== scopeVersion.current) return;
+      generationAttempt.current.complete();
+      if (body.data.status === "failed" || body.data.status === "cancelled") {
+        setMessage("上一次生成任务未完成，输入已保留。确认后可再次提交生成。");
+        await load();
+        return;
+      }
       setMessage(
         body.data.replayed ? "已返回相同幂等任务" : "生成任务已进入队列",
       );
@@ -446,11 +529,42 @@ export function ContentClient({
       changeTab("library");
       await load();
     } catch (error) {
+      if (version !== scopeVersion.current) return;
       setMessage((error as Error).message);
       if ((error as Error & { code?: string }).code === "FEATURE_PRICE_CHANGED")
         router.refresh();
     } finally {
+      generationSubmitting.current = false;
       setSubmitting("");
+    }
+  }
+  async function cancelJob(job: Job) {
+    if (cancellingJob) return;
+    const version = scopeVersion.current;
+    jobReadVersion.current += 1;
+    setCancellingJob(job.id);
+    try {
+      const result = await request(
+        `/api/v1/answerbit/article-jobs/${job.id}?${scopeQuery(apiScope(scope))}`,
+        { method: "DELETE" },
+      );
+      if (version !== scopeVersion.current) return;
+      setJobs((current) =>
+        current.map((item) => (item.id === job.id ? result.data : item)),
+      );
+      setSelectedJob((current) =>
+        current?.id === job.id ? result.data : current,
+      );
+      setMessage("等待中的生成任务已取消，未扣除积分。");
+    } catch (error) {
+      if (version === scopeVersion.current)
+        setMessage(
+          error instanceof Error
+            ? error.message
+            : "取消失败，请刷新任务状态后重试",
+        );
+    } finally {
+      setCancellingJob("");
     }
   }
   async function openArticle(id: string) {
@@ -586,6 +700,25 @@ export function ContentClient({
                 >
                   查看
                 </Button>,
+                ...(job.status === "queued" && scope.canWrite
+                  ? [
+                      <Popconfirm
+                        key="cancel"
+                        title="取消等待中的任务？"
+                        description="任务尚未开始，不会扣除积分。"
+                        onConfirm={() => void cancelJob(job)}
+                      >
+                        <Button
+                          danger
+                          size="small"
+                          loading={cancellingJob === job.id}
+                          disabled={Boolean(cancellingJob)}
+                        >
+                          取消
+                        </Button>
+                      </Popconfirm>,
+                    ]
+                  : []),
               ]}
             >
               <List.Item.Meta
@@ -633,7 +766,7 @@ export function ContentClient({
       />
     ) : (
       <Empty description="还没有生成任务" image={Empty.PRESENTED_IMAGE_SIMPLE}>
-        {showCreateAction ? (
+        {showCreateAction && scope.canWrite ? (
           <Button
             disabled={!scope.canWrite}
             onClick={() => changeTab("generate")}
@@ -657,17 +790,15 @@ export function ContentClient({
         <Tabs
           activeKey={tab}
           items={[
-            {
-              disabled: !scope.canWrite,
+            ...(scope.canWrite ? [{
               key: "generate",
               label: "AI 生成",
-            },
+            }] : []),
             {
               key: "library",
               label: "文档库",
             },
             {
-              disabled: !scope.canWrite,
               key: "trace",
               label: `效果追踪 ${articles.length ? `(${articles.length})` : ""}`,
             },
@@ -763,12 +894,15 @@ export function ContentClient({
                   </Form.Item>
                 ) : null}
                 <Form.Item
-                  extra="最多选择 20 个问题，系统将围绕这些用户问题组织内容。"
+                  extra={<Space wrap><Typography.Text type="secondary">最多选择 20 个问题，输入关键词可搜索更多。</Typography.Text>{scope.can("resource.create", "geo_insights") ? <Typography.Link href={`/dashboard/monitoring?${scopeQuery({ organizationId, brandId })}`}>添加监控问题</Typography.Link> : null}</Space>}
                   label="目标监控问题"
                   required
                 >
                   <Select
                     mode="multiple"
+                    filterOption={false}
+                    onSearch={setPromptSearch}
+                    loading={loading}
                     onChange={(values) =>
                       setSelectedPrompts(values.slice(0, 20))
                     }
@@ -777,7 +911,7 @@ export function ContentClient({
                       label: item.query_str + " · " + item.title_name,
                       value: item.id,
                     }))}
-                    placeholder="选择目标问题"
+                    placeholder="搜索并选择目标问题"
                     showSearch
                     value={selectedPrompts}
                   />
@@ -827,6 +961,7 @@ export function ContentClient({
                 <Button
                   disabled={
                     !scope.canWrite || !scope.brandId || !selectedTemplate
+                    || scope.pointsExpired || !selectedPrompts.length
                   }
                   htmlType="submit"
                   icon={<SendOutlined />}

@@ -48,6 +48,7 @@ async function prepare(
     | "resource.create"
     | "resource.update"
     | "resource.delete",
+  feature: "geo_insights" | "content" = "geo_insights",
 ) {
   await authorizeBrand(
     scope.organizationId,
@@ -55,6 +56,7 @@ async function prepare(
     scope.brandId,
     userId,
     permission,
+    feature,
   );
   return loadAnswerBitTeamContext(scope.organizationId, scope.teamBindingId);
 }
@@ -208,6 +210,7 @@ export const promptService = {
       input,
       userId,
       "resource.read",
+      input.purpose === "content" ? "content" : "geo_insights",
     );
     try {
       const data = await queryPromptGroupsLogged(

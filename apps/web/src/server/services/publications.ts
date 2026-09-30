@@ -1,3 +1,4 @@
+import { publicationBodyHtml } from "@geo/core";
 import type {
   AppealPublicationOrderInput,
   AdminPublicationChannelQuery,
@@ -288,7 +289,7 @@ export const publicationService = {
           "PUBLICATION_SOURCE_NOT_READY",
           "来源生成任务不存在或内容尚未完成",
         );
-      contentHtml = job.articleBody;
+      contentHtml = publicationBodyHtml(job.articleBody);
     }
     if (input.sourceDocumentId) {
       const document = await contentDocumentRepository.find(
@@ -305,7 +306,7 @@ export const publicationService = {
           "PUBLICATION_SOURCE_NOT_READY",
           "来源文档不存在、尚未定稿或正文为空",
         );
-      contentHtml = document.body;
+      contentHtml = publicationBodyHtml(document.body);
     }
     if (channel.provider === "frog_media" && !contentHtml)
       throw new ApiError(

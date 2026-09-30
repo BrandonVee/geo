@@ -7,6 +7,8 @@ import { auth } from "@/server/auth/auth";
 import { hasActiveUserAccess } from "@/server/auth/user-access";
 import { isPlatformAdministrator } from "@/server/permissions/platform";
 import { platformAnswerbitRepository } from "@/server/repositories/platform-answerbit";
+import { organizationService } from "@/server/services/organizations";
+import { WorkspaceAccessProvider } from "./workspace-access";
 
 export default async function DashboardLayout({
   children,
@@ -33,5 +35,26 @@ export default async function DashboardLayout({
     );
   }
 
-  return children;
+  const [organizations, platformAdmin] = await Promise.all([
+    organizationService.list(session.user.id),
+    isPlatformAdministrator(session.user.id),
+  ]);
+  return (
+    <WorkspaceAccessProvider
+      value={{
+        platformAdmin,
+        organizations: organizations.map((item) => ({
+          id: item.id,
+          name: item.name,
+          role: item.role,
+          status: item.status,
+          features: item.features,
+          serviceExpiresAt: item.serviceExpiresAt?.toISOString() ?? null,
+          pointsExpiresAt: item.pointsExpiresAt?.toISOString() ?? null,
+        })),
+      }}
+    >
+      {children}
+    </WorkspaceAccessProvider>
+  );
 }

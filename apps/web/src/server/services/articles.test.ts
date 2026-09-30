@@ -69,6 +69,66 @@ beforeEach(() => {
   });
 });
 describe("文章生成方式校验", () => {
+  it("网络失败重试同一任务直接返回原任务，不再投递", async () => {
+    const payload = {
+      brand_id: input.brandId,
+      template_type: input.templateType,
+      prompt_ids: input.promptIds,
+      knowledge_ids: [],
+      tag_ids: [],
+      language: input.language,
+    };
+    m.existing.mockResolvedValue({
+      ...scope,
+      id: "original-job",
+      requestedBy: "user",
+      tags: [],
+      requestPayload: { ciphertext: JSON.stringify(payload) },
+    });
+    m.decrypt.mockImplementation((value: string) => value);
+    const result = await articleService.createJob(
+      input,
+      "same-key",
+      "user",
+      "request",
+      { actorUserId: "user", requestId: "request" },
+    );
+    expect(result).toMatchObject({ id: "original-job", replayed: true });
+    expect(m.templates).not.toHaveBeenCalled();
+    expect(m.create).not.toHaveBeenCalled();
+    expect(m.enqueue).not.toHaveBeenCalled();
+  });
+  it.each([
+    { brandId: "other" },
+    { requestedBy: "other-user" },
+    { templateType: 2 },
+  ])("同键不能复用其他品牌、用户或不同生成请求 %j", async (changed) => {
+    const payload = {
+      brand_id: input.brandId,
+      template_type:
+        "templateType" in changed ? changed.templateType : input.templateType,
+      prompt_ids: input.promptIds,
+      knowledge_ids: [],
+      tag_ids: [],
+      language: input.language,
+    };
+    m.existing.mockResolvedValue({
+      ...scope,
+      id: "job",
+      requestedBy: "user",
+      ...changed,
+      tags: [],
+      requestPayload: { ciphertext: JSON.stringify(payload) },
+    });
+    m.decrypt.mockImplementation((value: string) => value);
+    await expect(
+      articleService.createJob(input, "same-key", "user", "request", {
+        actorUserId: "user",
+        requestId: "request",
+      }),
+    ).rejects.toMatchObject({ code: "ARTICLE_JOB_IDEMPOTENCY_CONFLICT" });
+    expect(m.create).not.toHaveBeenCalled();
+  });
   it.each([0, 1])(
     "匹配的模板类型 %s 正常保存并投递任务",
     async (is_high_ref) => {

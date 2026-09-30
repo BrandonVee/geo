@@ -206,11 +206,14 @@ describe("发布业务闭环", () => {
       }),
     );
   });
-  it("从当前品牌已定稿文档读取正文投稿", async () => {
+  it.each([
+    ["<p>文档库正文</p>", "<p>文档库正文</p>"],
+    ["文档 <内容>\n第二行", "<p>文档 &lt;内容&gt;<br />第二行</p>"],
+  ])("从当前品牌已定稿文档读取正文投稿：%s", async (body, expectedHtml) => {
     m.findDocument.mockResolvedValue({
       id: "document",
       status: "ready",
-      body: "<p>文档库正文</p>",
+      body,
     });
     await publicationService.create(
       {
@@ -231,13 +234,13 @@ describe("发布业务闭环", () => {
     );
     expect(m.createOrder).toHaveBeenCalledWith(
       expect.objectContaining({
-        contentHtml: "<p>文档库正文</p>",
+        contentHtml: expectedHtml,
         sourceDocumentId: "8a951454-70d8-44fb-8854-4cbbce2d57d7",
       }),
     );
     expect(m.submit).toHaveBeenCalledWith(
       "website",
-      expect.objectContaining({ content: "<p>文档库正文</p>" }),
+      expect.objectContaining({ content: expectedHtml }),
     );
   });
   it("其他品牌或操作者的幂等键不返回订单", async () => {

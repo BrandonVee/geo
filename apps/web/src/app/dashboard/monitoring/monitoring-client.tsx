@@ -450,7 +450,7 @@ export function MonitoringClient({
   const visiblePrompts = groups.flatMap((group) => group.prompts);
   const visiblePromptIds = visiblePrompts.map((prompt) => prompt.id);
   const promptColumns: TableColumnsType<Prompt> = [
-    ...(scope.canDelete
+    ...(scope.can("resource.delete", "geo_insights")
       ? [
           {
             key: "selection",
@@ -504,7 +504,7 @@ export function MonitoringClient({
       key: "category",
       width: 160,
       render: (_, item) =>
-        scope.canWrite ? (
+        scope.can("resource.create", "geo_insights") ? (
           <Select
             aria-label={`移动问题 ${item.query_str}`}
             disabled={Boolean(actionKey)}
@@ -564,7 +564,7 @@ export function MonitoringClient({
         </Typography.Text>
       ),
     },
-    ...(scope.canWrite
+    ...(scope.can("resource.create", "geo_insights")
       ? [
           {
             title: "操作",
@@ -584,6 +584,14 @@ export function MonitoringClient({
                 >
                   编辑
                 </Button>
+                {scope.can("resource.create") ? (
+                  <Button
+                    size="small"
+                    href={`/dashboard/content?${scopeQuery({ stage: "generate", organizationId: scope.organizationId, brandId: scope.brandId, promptId: item.id, promptText: item.query_str.slice(0, 500) })}`}
+                  >
+                    生成文章
+                  </Button>
+                ) : null}
                 <Button
                   aria-label={`${item.status === 1 ? "停用" : "启用"}问题 ${item.query_str}`}
                   disabled={Boolean(actionKey)}
@@ -597,7 +605,7 @@ export function MonitoringClient({
                 >
                   {item.status === 1 ? "停用" : "启用"}
                 </Button>
-                {scope.canDelete ? (
+                {scope.can("resource.delete", "geo_insights") ? (
                   <Popconfirm
                     title="确认删除这个监控问题？"
                     onConfirm={() => void removePrompt(item.id)}
@@ -930,7 +938,7 @@ export function MonitoringClient({
               />
             ))}
             <Tag>{total} 条</Tag>
-            {scope.canWrite ? (
+            {scope.can("resource.create", "geo_insights") ? (
               <Button
                 icon={<PlusOutlined />}
                 onClick={() => setPromptCreateOpen(true)}
@@ -942,7 +950,7 @@ export function MonitoringClient({
           </Space>
         }
       >
-        {scope.canDelete &&
+        {scope.can("resource.delete", "geo_insights") &&
         (visiblePromptIds.length || selectedPromptIds.length) ? (
           <Card size="small" style={{ marginBottom: 16 }}>
             <Flex align="center" gap={12} justify="space-between" wrap>
@@ -1037,7 +1045,7 @@ export function MonitoringClient({
         id="monitoring-categories"
         title="问题分类"
         extra={
-          scope.canWrite ? (
+          scope.can("resource.create", "geo_insights") ? (
             <Button
               disabled={!brandId}
               icon={<PlusOutlined />}
@@ -1057,7 +1065,7 @@ export function MonitoringClient({
                 <Card
                   size="small"
                   actions={
-                    scope.canWrite
+                    scope.can("resource.create", "geo_insights")
                       ? [
                           <Button
                             aria-label={`编辑分类 ${item.title_name}`}
@@ -1070,7 +1078,7 @@ export function MonitoringClient({
                           >
                             编辑
                           </Button>,
-                          ...(scope.canDelete
+                          ...(scope.can("resource.delete", "geo_insights")
                             ? [
                                 <Popconfirm
                                   description="分类下的问题可能受到影响。"

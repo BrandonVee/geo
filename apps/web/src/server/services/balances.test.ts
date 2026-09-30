@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({
   requirePlatformPermission: vi.fn(),
   authorizeBrand: vi.fn(),
   authorizeOrganization: vi.fn(),
+  membershipRole: vi.fn(),
   pointUsage: vi.fn(),
   deduct: vi.fn(),
   brandExists: vi.fn(),
@@ -41,6 +42,9 @@ vi.mock("@/server/repositories/balances", () => ({
 }));
 vi.mock("./organizations", () => ({
   organizationService: { authorize: mocks.authorizeOrganization },
+}));
+vi.mock("@/server/repositories/organizations", () => ({
+  organizationRepository: { findMembershipRole: mocks.membershipRole },
 }));
 
 import { balanceService } from "./balances";
@@ -134,7 +138,7 @@ describe("租户品牌积分用量", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.authorizeOrganization.mockResolvedValue({ role: "tenant_admin" });
+    mocks.membershipRole.mockResolvedValue({ role: "tenant_admin" });
     mocks.pointUsage.mockResolvedValue(repositoryResult);
   });
 
@@ -162,12 +166,16 @@ describe("租户品牌积分用量", () => {
   });
 
   it("品牌角色不返回企业可分配积分", async () => {
-    mocks.authorizeOrganization.mockResolvedValue({ role: "brand_viewer" });
+    mocks.membershipRole.mockResolvedValue({ role: null });
+    mocks.authorizeOrganization.mockRejectedValue(
+      new Error("No enterprise role"),
+    );
 
     const result = await balanceService.pointUsage(input, userId);
 
     expect(result.organizationBalance).toBeNull();
     expect(result.balance).toBe(680);
+    expect(mocks.authorizeOrganization).not.toHaveBeenCalled();
   });
 });
 

@@ -33,7 +33,10 @@ import {
   Tooltip,
   Typography,
 } from "antd";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
+import type { Permission } from "@geo/core";
+import { useWorkspaceAccess, workspacePermission } from "./workspace-access";
+import { readStoredOrganizationId, selectScopeId } from "./scope-storage";
 import { useEffect, useState, type ReactNode } from "react";
 import { ThemeToggle } from "../theme-toggle";
 import { SignOutButton } from "./sign-out-button";
@@ -138,6 +141,51 @@ export function DashboardShell({
   children: ReactNode;
 }) {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const workspace = useWorkspaceAccess();
+  const [selectedOrganizationId, setSelectedOrganizationId] = useState("");
+  const requestedOrganizationId = searchParams.get("organizationId");
+  useEffect(() => {
+    const ids = workspace.organizations.map((item) => item.id);
+    const update = () =>
+      setSelectedOrganizationId(
+        selectScopeId(null, readStoredOrganizationId(ids), ids),
+      );
+    setSelectedOrganizationId(
+      selectScopeId(
+        requestedOrganizationId,
+        readStoredOrganizationId(ids),
+        ids,
+      ),
+    );
+    window.addEventListener("geo:scope-change", update);
+    return () => window.removeEventListener("geo:scope-change", update);
+  }, [requestedOrganizationId, workspace.organizations]);
+  const currentOrganization = workspace.organizations.find(
+    (item) => item.id === selectedOrganizationId,
+  );
+  const navigationPermissions: Record<string, Permission> = {
+    overview: "answerbit.resource.read",
+    monitoring: "answerbit.resource.read",
+    citations: "answerbit.resource.read",
+    content: "resource.read",
+    metering: "balance.read",
+    balances: "balance.allocate",
+    publication_channels: "publication.read",
+    publication_new: "publication.create",
+    publication_orders: "publication.read",
+    notifications: "notification.read",
+    answerbit: "tenant.settings.read",
+    members: "tenant.member.manage",
+  };
+  const canNavigate = (key: string) => {
+    if (!currentOrganization) return key !== "balances" || canManageBalances;
+    return workspacePermission(
+      currentOrganization,
+      currentOrganization.role,
+      navigationPermissions[key],
+    );
+  };
   const screens = Grid.useBreakpoint();
   const [mounted, setMounted] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -160,12 +208,10 @@ export function DashboardShell({
         key: group.label,
         label: group.label,
         type: "group" as const,
-        children: group.keys
-          .filter((key) => key !== "balances" || canManageBalances)
-          .map((key) => {
-            const item = items.find((candidate) => candidate.key === key)!;
-            return { key: item.key, label: item.label, icon: item.icon };
-          }),
+        children: group.keys.filter(canNavigate).map((key) => {
+          const item = items.find((candidate) => candidate.key === key)!;
+          return { key: item.key, label: item.label, icon: item.icon };
+        }),
       }))}
       mode="inline"
       onClick={({ key }) => {
@@ -238,14 +284,16 @@ export function DashboardShell({
               type="text"
             />
           </Tooltip>
-          <Tooltip title="平台管理">
-            <Button
-              aria-label="进入平台管理"
-              href="/admin"
-              icon={<SafetyCertificateOutlined />}
-              type="text"
-            />
-          </Tooltip>
+          {workspace.platformAdmin ? (
+            <Tooltip title="平台管理">
+              <Button
+                aria-label="进入平台管理"
+                href="/admin"
+                icon={<SafetyCertificateOutlined />}
+                type="text"
+              />
+            </Tooltip>
+          ) : null}
           <Tooltip title="退出登录">
             <span>
               <SignOutButton compact />

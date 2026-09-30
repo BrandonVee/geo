@@ -36,6 +36,7 @@ export const competitorService = {
       brandId,
       userId,
       "resource.read",
+      "geo_insights",
     );
     const { connection, apiKey } = await loadAnswerBitTeamContext(
       organizationId,
@@ -70,6 +71,7 @@ export const competitorService = {
       input.brandId,
       userId,
       "resource.create",
+      "geo_insights",
     );
     const { connection, apiKey } = await loadAnswerBitTeamContext(
       input.organizationId,
@@ -123,6 +125,7 @@ export const competitorService = {
       input.brandId,
       userId,
       "resource.update",
+      "geo_insights",
     );
     const { connection, apiKey } = await loadAnswerBitTeamContext(
       input.organizationId,
@@ -179,6 +182,7 @@ export const competitorService = {
       brandId,
       userId,
       "resource.delete",
+      "geo_insights",
     );
     const { connection, apiKey } = await loadAnswerBitTeamContext(
       organizationId,

@@ -1,11 +1,15 @@
 "use client";
-import { Flex, Select, Typography } from "antd";
+import { Alert, Button, Flex, Select, Typography } from "antd";
+import { useSearchParams } from "next/navigation";
+import type { Permission, OrganizationFeature } from "@geo/core";
+import { useWorkspaceAccess, workspacePermission } from "./workspace-access";
 import { useCallback, useEffect, useState } from "react";
 import {
   readStoredBrandId,
   readStoredOrganizationId,
   storeBrandId,
   storeOrganizationId,
+  selectScopeId,
 } from "./scope-storage";
 export type ScopeOrganization = {
   id: string;
@@ -21,6 +25,20 @@ export type ScopeBrand = {
 const query = (input: Record<string, string>) =>
   new URLSearchParams(input).toString();
 export function useAnswerBitScope(organizations: ScopeOrganization[]) {
+  const workspace = useWorkspaceAccess();
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const update = () => setNow(Date.now());
+    const timer = window.setInterval(update, 60_000);
+    window.addEventListener("focus", update);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", update);
+    };
+  }, []);
+  const searchParams = useSearchParams();
+  const requestedOrganizationId = searchParams.get("organizationId");
+  const requestedBrandId = searchParams.get("brandId");
   const [organizationId, setOrganizationIdState] = useState(
     organizations[0]?.id ?? "",
   );
@@ -45,10 +63,14 @@ export function useAnswerBitScope(organizations: ScopeOrganization[]) {
   useEffect(() => {
     const availableIds = organizations.map((item) => item.id);
     setOrganizationId(
-      readStoredOrganizationId(availableIds) || organizations[0]?.id || "",
+      selectScopeId(
+        requestedOrganizationId,
+        readStoredOrganizationId(availableIds),
+        availableIds,
+      ),
     );
     setScopeRestored(true);
-  }, [organizations, setOrganizationId]);
+  }, [organizations, requestedOrganizationId, setOrganizationId]);
   useEffect(() => {
     if (!scopeRestored) return;
     if (!organizationId) {
@@ -78,30 +100,53 @@ export function useAnswerBitScope(organizations: ScopeOrganization[]) {
         if (controller.signal.aborted) return;
         const next = body.data ?? [];
         setBrands(next);
+        const availableIds = next.map((item: ScopeBrand) => item.id);
         setBrandId(
-          readStoredBrandId(
-            organizationId,
-            next.map((item: ScopeBrand) => item.id),
-          ) ||
-            next[0]?.id ||
-            "",
+          selectScopeId(
+            !requestedOrganizationId ||
+              requestedOrganizationId === organizationId
+              ? requestedBrandId
+              : null,
+            readStoredBrandId(organizationId, availableIds),
+            availableIds,
+          ),
         );
       })
       .catch((reason) => {
-        if (reason instanceof DOMException && reason.name === "AbortError")
-          return;
+        if (controller.signal.aborted) return;
         setError(reason instanceof Error ? reason.message : "品牌加载失败");
       });
     return () => controller.abort();
-  }, [brandLoadVersion, organizationId, scopeRestored, teamBindingId]);
+  }, [
+    brandLoadVersion,
+    organizationId,
+    scopeRestored,
+    teamBindingId,
+    requestedOrganizationId,
+    requestedBrandId,
+  ]);
   useEffect(() => {
     if (organizationId && brandId) storeBrandId(organizationId, brandId);
   }, [organizationId, brandId]);
   const brand = brands.find((item) => item.id === brandId);
-  const canWrite = Boolean(brand && brand.accessRole !== "brand_viewer");
-  const canDelete = Boolean(
-    brand && ["tenant_admin", "brand_admin"].includes(brand.accessRole),
+  const organization = workspace.organizations.find(
+    (item) => item.id === organizationId,
   );
+  const serviceExpired = Boolean(
+    organization?.serviceExpiresAt &&
+      new Date(organization.serviceExpiresAt).getTime() <= now,
+  );
+  const pointsExpired = Boolean(
+    organization?.pointsExpiresAt &&
+      new Date(organization.pointsExpiresAt).getTime() <= now,
+  );
+  const serviceUnavailable =
+    serviceExpired || Boolean(organization && organization.status !== "active");
+  const can = (permission: Permission, feature?: OrganizationFeature) =>
+    !serviceUnavailable &&
+    workspacePermission(organization, brand?.accessRole, permission, feature);
+  const canWrite = can("resource.create");
+  const canDelete = Boolean(can("resource.delete"));
   return {
     organizationId,
     setOrganizationId,
@@ -112,6 +157,11 @@ export function useAnswerBitScope(organizations: ScopeOrganization[]) {
     brand,
     canWrite,
     canDelete,
+    can,
+    organization,
+    serviceExpired,
+    pointsExpired,
+    serviceUnavailable,
     error,
     setError,
     reloadBrands,
@@ -126,6 +176,44 @@ export function ScopeFields({
 }) {
   return (
     <Flex gap={12} style={{ width: "100%" }} wrap>
+      {scope.organization &&
+      (scope.serviceUnavailable || scope.pointsExpired) ? (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ width: "100%" }}
+          message={
+            scope.serviceExpired
+              ? "企业服务已到期"
+              : scope.serviceUnavailable
+                ? "企业已被冻结"
+                : "企业积分已到期"
+          }
+          description={
+            scope.serviceUnavailable
+              ? "请联系平台管理员处理。您可以切换到其他已授权企业继续操作。"
+              : "积分余额会保留，请联系平台管理员续期；人民币发布业务可继续使用。"
+          }
+        />
+      ) : null}
+      {!organizations.length ? (
+        <Alert
+          message="尚未分配企业"
+          description="请联系平台管理员分配企业与品牌权限，完成后刷新页面。"
+          showIcon
+          type="info"
+          style={{ width: "100%" }}
+        />
+      ) : null}
+      {scope.error ? (
+        <Alert
+          message={scope.error}
+          showIcon
+          type="error"
+          style={{ width: "100%" }}
+          action={<Button onClick={scope.reloadBrands}>重试加载品牌</Button>}
+        />
+      ) : null}
       <Flex style={{ flex: "1 1 200px", minWidth: 180 }} vertical>
         <label htmlFor="answerbit-scope-organization">
           <Typography.Text type="secondary">企业</Typography.Text>
@@ -138,6 +226,8 @@ export function ScopeFields({
             label: item.name,
             value: item.id,
           }))}
+          showSearch
+          optionFilterProp="label"
           placeholder="尚未分配企业"
           value={scope.organizationId || undefined}
         />

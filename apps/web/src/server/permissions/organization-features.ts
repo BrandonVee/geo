@@ -1,5 +1,9 @@
 import { assertEnterpriseAccess } from "@geo/db";
-import { featureScopeAllowsPermission, type Permission } from "@geo/core";
+import {
+  featureScopeAllowsPermission,
+  type Permission,
+  type OrganizationFeature,
+} from "@geo/core";
 import { ApiError } from "@/server/http/errors";
 import { organizationFeatureScopeRepository } from "@/server/repositories/organization-feature-scopes";
 
@@ -10,13 +14,19 @@ export async function assertOrganizationFeatureEnabled(
   organizationId: string,
   userId: string,
   permission: Permission,
+  feature?: OrganizationFeature,
 ) {
   await assertEnterpriseAccess(organizationId);
   const scope = await organizationFeatureScopeRepository.find(
     organizationId,
     userId,
   );
-  if (scope && !featureScopeAllowsPermission(scope.features, permission))
+  if (
+    scope &&
+    !(feature
+      ? scope.features.includes(feature)
+      : featureScopeAllowsPermission(scope.features, permission))
+  )
     throw new ApiError(
       403,
       "ORGANIZATION_FEATURE_DISABLED",

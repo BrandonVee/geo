@@ -94,6 +94,54 @@ const publicJob = (
         updatedAt: job.updatedAt,
       }
     : undefined;
+
+function assertJobReplay(
+  job: NonNullable<Awaited<ReturnType<typeof articleRepository.findJob>>>,
+  input: CreateArticleJobInput,
+  userId: string,
+) {
+  let matches = false;
+  try {
+    if (typeof job.requestPayload?.ciphertext !== "string")
+      throw new Error("Invalid job payload");
+    const saved = answerBitArticleCreatePayloadSchema.parse(
+      JSON.parse(
+        getSecretCipher().decrypt(
+          job.requestPayload.ciphertext,
+          job.organizationId,
+        ),
+      ),
+    );
+    const requested = answerBitArticleCreatePayloadSchema.parse({
+      brand_id: input.brandId,
+      template_type: input.templateType,
+      prompt_ids: input.promptIds,
+      knowledge_ids: input.knowledgeIds,
+      once_knowledge: input.supplementalKnowledge,
+      high_ref: input.highReference,
+      tag_ids: input.tagIds,
+      language: input.language,
+    });
+    matches =
+      job.brandId === input.brandId &&
+      job.teamBindingId === input.teamBindingId &&
+      job.requestedBy === userId &&
+      JSON.stringify(saved) === JSON.stringify(requested) &&
+      JSON.stringify(
+        (job.tags ?? [])
+          .filter((tag) => tag.tagId.startsWith("local:"))
+          .map((tag) => tag.tagName),
+      ) === JSON.stringify(input.contentTags);
+  } catch {
+    matches = false;
+  }
+  if (!matches)
+    throw new ApiError(
+      409,
+      "ARTICLE_JOB_IDEMPOTENCY_CONFLICT",
+      "同一幂等键的生成内容或操作用户不一致，请重新提交",
+    );
+}
 export const articleService = {
   async list(input: ArticleListQuery, userId: string, requestId: string) {
     const { connection, apiKey } = await prepare(
@@ -270,13 +318,16 @@ export const articleService = {
     const { connection, apiKey } = await prepare(
       input,
       userId,
-      "answerbit.resource.execute",
+      "resource.create",
     );
     const existing = await articleRepository.findJobByIdempotency(
       input.organizationId,
       idempotencyKey,
     );
-    if (existing) return { ...publicJob(existing), replayed: true };
+    if (existing) {
+      assertJobReplay(existing, input, userId);
+      return { ...publicJob(existing), replayed: true };
+    }
     await assertEnterpriseAccess(input.organizationId, true);
     let templates;
     try {
@@ -353,7 +404,10 @@ export const articleService = {
           input.organizationId,
           idempotencyKey,
         );
-        if (duplicate) return { ...publicJob(duplicate), replayed: true };
+        if (duplicate) {
+          assertJobReplay(duplicate, input, userId);
+          return { ...publicJob(duplicate), replayed: true };
+        }
       }
       throw error;
     }
@@ -419,7 +473,7 @@ export const articleService = {
       scope.teamBindingId,
       scope.brandId,
       userId,
-      "answerbit.resource.execute",
+      "resource.create",
     );
     const job = await articleRepository.findJob(scope, jobId);
     if (!job)
