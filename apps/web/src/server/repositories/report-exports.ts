@@ -59,6 +59,7 @@ export const reportExportRepository = {
       .select({
         id: reportExports.id,
         reportType: reportExports.reportType,
+        filters: reportExports.filters,
         status: reportExports.status,
         filename: reportExports.filename,
         rowCount: reportExports.rowCount,

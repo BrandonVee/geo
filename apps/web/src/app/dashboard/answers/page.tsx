@@ -23,6 +23,7 @@ export default async function AnswersPage() {
         title="回答与引用"
       />
       <AnswersClient
+        userId={session.user.id}
         organizations={organizations.map(
           ({ id, name, role, teamBindingId }) => ({
             id,

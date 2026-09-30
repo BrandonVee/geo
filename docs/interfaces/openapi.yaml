@@ -3102,10 +3102,10 @@ paths:
         - $ref: "#/components/parameters/PageSize"
       responses:
         "200":
-          description: 导出任务分页列表
+          description: 导出任务分页列表；包含原始 filters、面向用户的 errorMessage、到期状态和有效 downloadUrl，不返回 CSV 内容
     post:
       summary: 创建异步 CSV 报表导出
-      description: 创建和 Worker 执行时均重新校验企业、TeamID、品牌和 report.export 权限；占用平台报表额度。
+      description: 创建和 Worker 执行时均重新校验企业、TeamID、品牌和 report.export 权限；占用平台报表额度。同一幂等键仅允许原请求用户、范围、报表类型和筛选条件一致的重放。
       tags:
         - Workspace Extensions
       parameters:
@@ -3133,6 +3133,8 @@ paths:
           description: 幂等重放
         "402":
           description: 导出额度不足
+        "409":
+          description: REPORT_EXPORT_IDEMPOTENCY_CONFLICT；同一幂等键对应的用户、范围或筛选条件不同
   /v1/report-exports/{exportId}:
     get:
       summary: 查询导出任务状态
@@ -4476,6 +4478,7 @@ components:
         filters:
           type: object
           maxProperties: 50
+          description: answers 页仅接受 teamBindingId、brandId、beginDate、endDate、platforms、兼容字段 platform、keyword 和字符串 mentionBrand（-1、0、1）；日期必须有效且开始不晚于结束。品牌必须属于当前企业并通过 GEO 权限检查，遗漏 teamBindingId 时服务端从品牌绑定补全。
         isDefault:
           type: boolean
           default: false
@@ -4534,6 +4537,11 @@ components:
         keyword:
           type: string
           maxLength: 500
+        mentionBrand:
+          type: integer
+          enum: [-1, 0, 1]
+          default: -1
+          description: 回答报表的品牌提及筛选；-1 全部、0 未提及、1 已提及
     NotificationRuleInput:
       oneOf:
         - type: object

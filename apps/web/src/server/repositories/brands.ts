@@ -7,6 +7,30 @@ import {
   organizationMembers,
 } from "@geo/db";
 export const brandRepository = {
+  async findTeamForBrand(organizationId: string, brandId: string) {
+    const [row] = await db
+      .select({ id: answerbitTeamBindings.id })
+      .from(answerbitBrandMappings)
+      .innerJoin(
+        answerbitTeamBindings,
+        and(
+          eq(answerbitTeamBindings.id, answerbitBrandMappings.teamBindingId),
+          eq(
+            answerbitTeamBindings.organizationId,
+            answerbitBrandMappings.organizationId,
+          ),
+        ),
+      )
+      .where(
+        and(
+          eq(answerbitBrandMappings.organizationId, organizationId),
+          eq(answerbitBrandMappings.brandId, brandId),
+          eq(answerbitTeamBindings.status, "active"),
+        ),
+      )
+      .limit(1);
+    return row;
+  },
   async findTeam(organizationId: string, teamBindingId: string) {
     const [team] = await db
       .select()

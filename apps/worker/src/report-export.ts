@@ -27,6 +27,36 @@ export function parseReportExportFilters(value: unknown): ReportExportFilters {
   return parsed.data;
 }
 
+export function reportExportPayload(
+  reportType: "answers" | "domain_rank" | "article_rank",
+  brandId: string,
+  filters: ReportExportFilters,
+  page: number,
+) {
+  return {
+    brand_id: brandId,
+    begin_date: filters.beginDate,
+    end_date: filters.endDate,
+    prompt_ids: filters.promptIds,
+    platforms: filters.platforms,
+    tag_ids: filters.tagIds,
+    page,
+    page_size: 100,
+    ...(reportType === "answers"
+      ? {
+          title_id: filters.titleIds,
+          include: 1,
+          mention_brand: filters.mentionBrand,
+          prompt: filters.keyword,
+          min_score: 0,
+          max_score: 100,
+        }
+      : reportType === "domain_rank"
+        ? { title_ids: filters.titleIds, domain: filters.keyword }
+        : { title_ids: filters.titleIds, keyword: filters.keyword }),
+  };
+}
+
 export class ReportExportBuffer {
   private readonly bufferedRows: Record<string, unknown>[] = [];
   private sourceBytes = 2;

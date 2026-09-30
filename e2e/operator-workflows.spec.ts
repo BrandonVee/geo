@@ -50,7 +50,8 @@ async function mockBusinessApis(
     if (
       path === "/api/v1/answerbit/brands" ||
       path === "/api/v1/point-usage" ||
-      path === "/api/v1/balances"
+      path === "/api/v1/balances" ||
+      path.startsWith("/api/v1/saved-views")
     )
       return route.continue();
     if (path.startsWith("/api/v1/publication-channels/"))
@@ -100,12 +101,72 @@ async function mockBusinessApis(
 const scopedPath = (path: string, index = 0) =>
   `${path}?${new URLSearchParams({ organizationId: fixture.scopes[index].organizationId, brandId: fixture.scopes[index].brandId })}`;
 
+async function mockAnswerReads(
+  page: Page,
+  onDetail?: (route: Route) => Promise<void>,
+) {
+  await page.route("**/api/v1/answerbit/answers**", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname !== "/api/v1/answerbit/answers") {
+      if (onDetail) return onDetail(route);
+      return fulfill(route, {
+        query: "回答详情",
+        llm_output: "当前范围的内容",
+        platform: "deepseek",
+        date: "2026-09-23",
+        score: 50,
+        links: [],
+      });
+    }
+    const scope = fixture.scopes.find(
+      (item) => item.brandId === url.searchParams.get("brandId"),
+    )!;
+    return fulfill(route, {
+      total: 1,
+      scores: [
+        {
+          task_id: scope.brandId,
+          query_id: "prompt-1",
+          query_str: `${scope.name} 的回答`,
+          platform: "deepseek",
+          date: "2026-09-23",
+          score: 50,
+          avg_rank: 1,
+          trace_article_cnt: 0,
+          exposure: 1,
+          title_name: "产品",
+          language: "zh",
+          zone: "cn",
+        },
+      ],
+    });
+  });
+  await page.route("**/api/v1/answerbit/citations/**", (route) =>
+    fulfill(route, { total: 0, reference_count: [] }),
+  );
+  await page.route("**/api/v1/answerbit/dashboard/platforms**", (route) =>
+    fulfill(route, { deepseek: "DeepSeek" }),
+  );
+  await page.route("**/api/v1/report-exports?**", (route) =>
+    fulfill(route, { list: [], pagination: { total: 0 } }),
+  );
+}
+
 test.describe("真实运营操作闭环", () => {
   test.skip(
     process.env.WORKFLOW_E2E !== "1",
     "需本机已迁移数据库、Redis 与已接入的开发服务",
   );
   test.beforeAll(async () => {
+    if (
+      process.env.WORKFLOW_DISPOSABLE_DB !== "1" ||
+      !/^\/geo_workflow_qa_[a-f0-9]+$/.test(
+        new URL(process.env.DATABASE_URL!).pathname,
+      )
+    )
+      throw new Error(
+        "Use scripts/test-operator-workflows.mjs: workflow QA requires a disposable database",
+      );
     database = await import("../packages/db/src/index");
     operators = await import(webRequire.resolve("drizzle-orm"));
   });
@@ -214,9 +275,17 @@ test.describe("真实运营操作闭环", () => {
       organizationMembers,
       organizations,
       users,
+      operationLogs,
     } = database;
     const { eq, inArray } = operators;
     const ids = fixture.scopes.map((scope) => scope.organizationId);
+    const audited = await db
+      .select({ id: operationLogs.id })
+      .from(operationLogs)
+      .where(inArray(operationLogs.organizationId, ids))
+      .limit(1);
+    // Audits are immutable. The runner drops this disposable database after QA.
+    if (audited.length) return;
     await db
       .delete(balanceAccounts)
       .where(inArray(balanceAccounts.organizationId, ids));
@@ -372,5 +441,224 @@ test.describe("真实运营操作闭环", () => {
       balance: 1000,
       organizationBalance: null,
     });
+  });
+
+  test("回答切换企业会清除旧列表、筛选和迟到详情，引用失败仍能看回答", async ({
+    page,
+  }) => {
+    await mockBusinessApis(page);
+    let releaseDetail: () => void = () => {};
+    let detailRequested = false;
+    const held = new Promise<void>((resolve) => {
+      releaseDetail = resolve;
+    });
+    await mockAnswerReads(page, async (route) => {
+      detailRequested = true;
+      await held;
+      await fulfill(route, {
+        query: "旧企业详情",
+        llm_output: "不应出现",
+        links: [],
+      }).catch(() => {});
+    });
+    await page.route("**/api/v1/answerbit/citations/domains**", (route) =>
+      route.fulfill({
+        status: 503,
+        json: { error: { message: "引用数据暂时不可用" } },
+      }),
+    );
+    await page.goto(scopedPath("/dashboard/answers"));
+    await expect(
+      page.getByText("流程测试企业 A 的回答", { exact: true }),
+    ).toBeVisible();
+    await expect(page.getByText(/引用域名：引用数据暂时不可用/)).toBeVisible();
+    await page.getByPlaceholder("问题、文章或域名").fill("旧企业条件");
+    await page.getByRole("button", { name: /查\s*看/ }).click();
+    await expect.poll(() => detailRequested).toBeTruthy();
+    await page.locator("#answerbit-scope-organization").focus();
+    await page.locator("#answerbit-scope-organization").press("ArrowDown");
+    await page.getByTitle("流程测试企业 B", { exact: true }).click();
+    releaseDetail();
+    await expect(
+      page.getByText("流程测试企业 B 的回答", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("流程测试企业 A 的回答", { exact: true }),
+    ).toHaveCount(0);
+    await expect(page.getByPlaceholder("问题、文章或域名")).toHaveValue("");
+    await expect(page.getByText("旧企业详情", { exact: true })).toHaveCount(0);
+    for (const width of [390, 768, 1440]) {
+      await page.setViewportSize({ width, height: 1000 });
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () => document.documentElement.scrollWidth <= window.innerWidth,
+          ),
+        )
+        .toBeTruthy();
+    }
+  });
+
+  test("保存的个人视图支持恢复、重命名和删除，GEO 权限不依赖内容模块", async ({
+    page,
+  }) => {
+    const { db, organizationUserFeatureScopes } = database;
+    await db.insert(organizationUserFeatureScopes).values(
+      fixture.scopes.map((scope) => ({
+        organizationId: scope.organizationId,
+        userId: fixture.userId,
+        features: ["geo_insights" as const],
+      })),
+    );
+    await mockBusinessApis(page);
+    await mockAnswerReads(page);
+    await page.goto(scopedPath("/dashboard/answers"));
+    await expect(
+      page.getByText("流程测试企业 A 的回答", { exact: true }),
+    ).toBeVisible();
+    await expect(page.getByRole("button", { name: /回答\s*CSV/ })).toHaveCount(
+      0,
+    );
+    await page.getByPlaceholder("问题、文章或域名").fill("选购问题");
+    await page.getByRole("button", { name: "保存当前条件" }).click();
+    await page.getByLabel("视图名称", { exact: true }).fill("每周分析");
+    await page.getByRole("button", { name: /^保\s*存$/ }).click();
+    await expect(
+      page.getByRole("button", { name: "每周分析", exact: true }),
+    ).toBeVisible();
+    await page.reload();
+    await page.getByRole("button", { name: "每周分析", exact: true }).click();
+    await expect(page.getByPlaceholder("问题、文章或域名")).toHaveValue(
+      "选购问题",
+    );
+    await page
+      .getByRole("button", { name: "重命名视图 每周分析", exact: true })
+      .click();
+    await page.getByLabel("视图名称", { exact: true }).fill("本周客户分析");
+    await page.getByRole("button", { name: /^保\s*存$/ }).click();
+    await expect(
+      page.getByRole("button", { name: "本周客户分析", exact: true }),
+    ).toBeVisible();
+    await page
+      .getByRole("button", { name: "删除视图 本周客户分析", exact: true })
+      .click();
+    await page.getByRole("button", { name: /^删\s*除$/ }).click();
+    await expect(
+      page.getByRole("button", { name: "本周客户分析", exact: true }),
+    ).toHaveCount(0);
+    const views = await page.request.get(
+      `/api/v1/saved-views?organizationId=${fixture.scopes[0].organizationId}&page=answers`,
+    );
+    expect((await views.json()).data).toEqual([]);
+  });
+
+  test("报告网络失败后刷新重试保留同一键，过期报告按原筛选重新导出", async ({
+    page,
+  }) => {
+    const keys: string[] = [],
+      payloads: Record<string, unknown>[] = [];
+    let jobs: unknown[] = [];
+    await mockBusinessApis(page, async (route) => {
+      keys.push(route.request().headers()["idempotency-key"]);
+      const payload = route.request().postDataJSON();
+      payloads.push(payload);
+      if (keys.length === 1) return route.abort("failed");
+      const job = {
+        id: "report-1",
+        reportType: "answers",
+        filters: {
+          beginDate: payload.beginDate,
+          endDate: payload.endDate,
+          keyword: payload.keyword,
+          mentionBrand: payload.mentionBrand,
+          platforms: [],
+          promptIds: [],
+          tagIds: [],
+          titleIds: [],
+        },
+        status: "queued",
+        filename: null,
+        rowCount: null,
+        downloadUrl: null,
+        expiresAt: null,
+        errorMessage: null,
+      };
+      jobs = [job];
+      return fulfill(route, job);
+    });
+    await mockAnswerReads(page);
+    await page.route("**/api/v1/report-exports?**", (route) =>
+      fulfill(route, { list: jobs, pagination: { total: jobs.length } }),
+    );
+    await page.goto(scopedPath("/dashboard/answers"));
+    await expect(
+      page.getByText("流程测试企业 A 的回答", { exact: true }),
+    ).toBeVisible();
+    await page.getByPlaceholder("问题、文章或域名").fill("选购问题");
+    await page.getByRole("button", { name: /回答\s*CSV/ }).click();
+    await expect.poll(() => keys.length).toBe(1);
+    await expect(
+      page.getByRole("button", { name: /回答\s*CSV/ }),
+    ).toBeEnabled();
+    await page.reload();
+    await page.getByPlaceholder("问题、文章或域名").fill("选购问题");
+    await page.getByRole("button", { name: /回答\s*CSV/ }).click();
+    await expect(page.getByText("等待生成", { exact: true })).toBeVisible();
+    expect(keys[1]).toBe(keys[0]);
+    expect(payloads[1]).toMatchObject({
+      keyword: "选购问题",
+      mentionBrand: -1,
+    });
+    jobs = [{ ...(jobs[0] as Record<string, unknown>), status: "expired" }];
+    await page.getByRole("button", { name: /刷新任务/ }).click();
+    await expect(page.getByText("文件已过期", { exact: true })).toBeVisible();
+    await page.getByPlaceholder("问题、文章或域名").fill("新的筛选问题");
+    await page.getByRole("button", { name: "重新导出", exact: true }).click();
+    await expect.poll(() => keys.length).toBe(3);
+    expect(keys[2]).not.toBe(keys[1]);
+    expect(payloads[2]).toMatchObject({ keyword: "选购问题" });
+
+    const downloadUrl = `/api/v1/report-exports/report-1/file?organizationId=${fixture.scopes[0].organizationId}`;
+    const readyJob = {
+      ...(jobs[0] as Record<string, unknown>),
+      status: "succeeded",
+      filename: "answers.csv",
+      downloadUrl,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      rowCount: 1,
+    };
+    let fileExpired = true;
+    await page.route("**/api/v1/report-exports/report-1/file?**", (route) =>
+      fileExpired
+        ? route.fulfill({
+            status: 410,
+            contentType: "application/json",
+            body: JSON.stringify({
+              error: { message: "文件已过期，请重新导出" },
+            }),
+          })
+        : route.fulfill({
+            status: 200,
+            contentType: "text/csv",
+            body: "问题,回答\n选购问题,测试回答\n",
+          }),
+    );
+    jobs = [readyJob];
+    await page.getByRole("button", { name: /刷新任务/ }).click();
+    await page.getByRole("button", { name: /下\s*载/ }).click();
+    await expect(
+      page.getByText("文件已过期，请重新导出", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: /下\s*载/ }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "重新导出", exact: true }),
+    ).toBeVisible();
+    fileExpired = false;
+    await page.getByRole("button", { name: /刷新任务/ }).click();
+    const downloaded = page.waitForEvent("download");
+    await page.getByRole("button", { name: /下\s*载/ }).click();
+    expect((await downloaded).suggestedFilename()).toBe("answers.csv");
   });
 });

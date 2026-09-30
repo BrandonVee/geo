@@ -133,4 +133,6 @@ CI 还会在全新 PostgreSQL 18 中连续执行两次 `pnpm db:release`，并�
 
 企业有效期与手动扣减的真实 PostgreSQL 回归：先执行 `pnpm db:release`，再运行 `ENTERPRISE_BALANCE_DB_TESTS=1 node scripts/run-with-env.mjs pnpm --filter @geo/db exec vitest run src/enterprise-balances.integration.test.ts`。用例仅创建独立 UUID 数据并清理，覆盖重复扣减、余额不足、到期阻止消费、续期恢复和冻结后退款。
 
-运营页面回归需本地数据库已迁移、Redis 可用、平台腾讯接入已配置，并运行 `pnpm dev:web`。安装浏览器后执行 `WORKFLOW_E2E=1 E2E_BASE_URL=http://localhost:3000 node scripts/run-with-env.mjs pnpm exec playwright test e2e/operator-workflows.spec.ts`，实际 Origin 需与认证配置一致。用例创建隔离账号与两家测试企业并清理，覆盖草稿恢复、企业切换、生成网络重试及品牌积分查看；腾讯和发布调用在浏览器中模拟，不进行真实投稿或生成。
+运营页面回归在 Redis 可用且 `MIGRATION_DATABASE_URL` 账号可创建、删除数据库时，安装 Playwright Chromium 后运行 `node scripts/test-operator-workflows.mjs`。脚本创建独立 `geo_workflow_qa_*` 数据库并完成迁移、种子和 RLS 检查，写入测试接入配置，再构建与启动生产 Web，以临时端口运行浏览器回归，结束后关闭服务并删除测试库。腾讯和发布地址指向测试服务，业务调用在浏览器中模拟；无需真实上游 Key 或已运行的开发服务。用例覆盖草稿恢复、企业切换、生成重试、积分查看、个人视图管理和报告重试；审计记录保持不可变，由测试库整体删除完成清理。测试文件要求一次性数据库标识，禁止直接对日常开发数据库执行。脚本支持透传 `--grep` 等 Playwright 参数。
+
+Worker 等待任务的权限复核回归在已迁移数据库执行 `WORKER_ACCESS_DB_TESTS=1 node scripts/run-with-env.mjs pnpm --filter @geo/worker exec vitest run src/job-access.integration.test.ts`。只创建独立 UUID 数据并清理，不创建任务或调用上游，覆盖成员／账号停用、角色降级、功能模块关闭、代理商到期和品牌归属。

@@ -1,6 +1,8 @@
 "use client";
 import {
   DownloadOutlined,
+  DeleteOutlined,
+  EditOutlined,
   EyeOutlined,
   ReloadOutlined,
   SaveOutlined,
@@ -18,6 +20,7 @@ import {
   Input,
   List,
   Modal,
+  Popconfirm,
   Pagination,
   Row,
   Select,
@@ -29,7 +32,12 @@ import {
   type TableColumnsType,
 } from "antd";
 import dayjs from "dayjs";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  answersSavedViewFiltersSchema,
+  type ReportExportFilters,
+} from "@geo/contracts";
+import { ReportAttempt } from "./report-attempt";
 import {
   ScopeFields,
   scopeQuery,
@@ -93,13 +101,33 @@ type SavedView = {
 };
 type ExportJob = {
   id: string;
-  reportType: string;
+  reportType: "answers" | "domain_rank" | "article_rank";
   status: string;
   filename: string | null;
   rowCount: number | null;
   downloadUrl: string | null;
   expiresAt: string | null;
+  errorMessage: string | null;
+  filters: ReportExportFilters | null;
 };
+const reportLabels: Record<string, string> = {
+  answers: "回答 CSV",
+  domain_rank: "域名 CSV",
+  article_rank: "文章 CSV",
+};
+const reportStatuses: Record<string, { label: string; color: string }> = {
+  queued: { label: "等待生成", color: "default" },
+  running: { label: "正在生成", color: "processing" },
+  succeeded: { label: "可下载", color: "success" },
+  failed: { label: "生成失败", color: "error" },
+  expired: { label: "文件已过期", color: "default" },
+};
+async function readData<T>(url: string, signal?: AbortSignal): Promise<T> {
+  const response = await fetch(url, { signal });
+  const body = await response.json();
+  if (!response.ok) throw new Error(body.error?.message ?? "请求失败，请重试");
+  return body.data;
+}
 const dates = () => {
   const end = new Date();
   const begin = new Date(end);
@@ -111,14 +139,35 @@ const dates = () => {
 };
 export function AnswersClient({
   organizations,
+  userId,
 }: {
   organizations: ScopeOrganization[];
+  userId: string;
 }) {
   const scope = useAnswerBitScope(organizations);
+  return (
+    <AnswersWorkspace
+      key={`${scope.organizationId}:${scope.teamBindingId}:${scope.brandId}`}
+      organizations={organizations}
+      scope={scope}
+      userId={userId}
+    />
+  );
+}
+function AnswersWorkspace({
+  organizations,
+  scope,
+  userId,
+}: {
+  organizations: ScopeOrganization[];
+  scope: ReturnType<typeof useAnswerBitScope>;
+  userId: string;
+}) {
   const initial = useMemo(() => dates(), []);
   const [beginDate, setBeginDate] = useState(initial.begin);
   const [endDate, setEndDate] = useState(initial.end);
   const [keyword, setKeyword] = useState("");
+  const [keywordQuery, setKeywordQuery] = useState("");
   const [mentionBrand, setMentionBrand] = useState("-1");
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>([]);
   const [platforms, setPlatforms] = useState<Record<string, string>>({});
@@ -133,61 +182,118 @@ export function AnswersClient({
   const [views, setViews] = useState<SavedView[]>([]);
   const [exports, setExports] = useState<ExportJob[]>([]);
   const [toolBusy, setToolBusy] = useState("");
-  const [pendingBrand, setPendingBrand] = useState("");
+  const [toolError, setToolError] = useState("");
+  const [messageType, setMessageType] = useState<"error" | "success" | "info">(
+    "info",
+  );
   const [viewOpen, setViewOpen] = useState(false);
   const [viewName, setViewName] = useState("");
+  const [editingView, setEditingView] = useState<SavedView | null>(null);
+  const [exportPage, setExportPage] = useState(1);
+  const [exportTotal, setExportTotal] = useState(0);
+  const [detailLoading, setDetailLoading] = useState("");
+  const reads = useRef<{
+    data?: AbortController;
+    tools?: AbortController;
+    detail?: AbortController;
+  }>({});
+  const mounted = useRef(true);
+  const toolSubmitting = useRef(false);
+  const attempts = useRef(new Map<string, ReportAttempt>());
+  const canRead = scope.can("answerbit.resource.read");
+  const canExport = scope.can("report.export");
   useEffect(() => {
-    setSelectedPlatforms([]);
-    setPlatforms({});
-    if (!scope.teamBindingId) return;
-    fetch(
+    mounted.current = true;
+    const currentReads = reads.current;
+    return () => {
+      mounted.current = false;
+      Object.values(currentReads).forEach((controller) => controller.abort());
+    };
+  }, []);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setKeywordQuery(keyword.trim()), 300);
+    return () => window.clearTimeout(timer);
+  }, [keyword]);
+  useEffect(() => {
+    if (!scope.teamBindingId || !canRead) return;
+    const controller = new AbortController();
+    void readData<Record<string, string>>(
       `/api/v1/answerbit/dashboard/platforms?${scopeQuery({ organizationId: scope.organizationId, teamBindingId: scope.teamBindingId })}`,
+      controller.signal,
     )
-      .then((response) => response.json())
-      .then((body) => setPlatforms(body.data ?? {}))
-      .catch(() => setPlatforms({}));
-  }, [scope.organizationId, scope.teamBindingId]);
-  const accessRole = scope.brand?.accessRole ?? "";
+      .then((data) => {
+        if (!controller.signal.aborted) setPlatforms(data ?? {});
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, [scope.organizationId, scope.teamBindingId, canRead]);
   const loadTools = useCallback(async () => {
     if (!scope.organizationId) return;
-    try {
-      const viewResponse = await fetch(
-        `/api/v1/saved-views?${scopeQuery({ organizationId: scope.organizationId, page: "answers" })}`,
-      );
-      const viewBody = await viewResponse.json();
-      if (viewResponse.ok) setViews(viewBody.data ?? []);
-      if (
-        scope.teamBindingId &&
-        scope.brandId &&
-        ["tenant_admin", "brand_admin"].includes(accessRole)
-      ) {
-        const exportResponse = await fetch(
-          `/api/v1/report-exports?${scopeQuery({ organizationId: scope.organizationId, teamBindingId: scope.teamBindingId, brandId: scope.brandId, page: "1", pageSize: "20" })}`,
-        );
-        const exportBody = await exportResponse.json();
-        if (exportResponse.ok) setExports(exportBody.data.list ?? []);
-      } else setExports([]);
-    } catch {}
-  }, [scope.organizationId, scope.teamBindingId, scope.brandId, accessRole]);
-  const scopeBrands = scope.brands;
-  const setScopeBrandId = scope.setBrandId;
+    reads.current.tools?.abort();
+    const controller = new AbortController();
+    reads.current.tools = controller;
+    const [viewResult, exportResult] = await Promise.allSettled([
+      canRead
+        ? readData<SavedView[]>(
+            `/api/v1/saved-views?${scopeQuery({ organizationId: scope.organizationId, page: "answers" })}`,
+            controller.signal,
+          )
+        : Promise.resolve([]),
+      canExport && scope.brandId
+        ? readData<{ list: ExportJob[]; pagination: { total: number } }>(
+            `/api/v1/report-exports?${scopeQuery({ organizationId: scope.organizationId, teamBindingId: scope.teamBindingId, brandId: scope.brandId, page: String(exportPage), pageSize: "5" })}`,
+            controller.signal,
+          )
+        : Promise.resolve({ list: [], pagination: { total: 0 } }),
+    ]);
+    if (controller.signal.aborted || !mounted.current) return;
+    if (viewResult.status === "fulfilled") setViews(viewResult.value ?? []);
+    if (exportResult.status === "fulfilled") {
+      setExports(exportResult.value.list ?? []);
+      setExportTotal(exportResult.value.pagination?.total ?? 0);
+    }
+    const errors = [viewResult, exportResult].flatMap((result) =>
+      result.status === "rejected"
+        ? [
+            result.reason instanceof Error
+              ? result.reason.message
+              : "视图或报告加载失败",
+          ]
+        : [],
+    );
+    setToolError(errors.join("；"));
+  }, [
+    scope.organizationId,
+    scope.teamBindingId,
+    scope.brandId,
+    canRead,
+    canExport,
+    exportPage,
+  ]);
   useEffect(() => {
     void loadTools();
   }, [loadTools]);
   useEffect(() => {
     if (!exports.some((job) => ["queued", "running"].includes(job.status)))
       return;
-    const timer = window.setInterval(() => void loadTools(), 3000);
-    return () => window.clearInterval(timer);
+    const refresh = () => {
+      if (document.visibilityState === "visible" && navigator.onLine)
+        void loadTools();
+    };
+    const timer = window.setInterval(refresh, 5000);
+    document.addEventListener("visibilitychange", refresh);
+    window.addEventListener("online", refresh);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refresh);
+      window.removeEventListener("online", refresh);
+    };
   }, [exports, loadTools]);
-  useEffect(() => {
-    if (pendingBrand && scopeBrands.some((item) => item.id === pendingBrand)) {
-      setScopeBrandId(pendingBrand);
-      setPendingBrand("");
-    }
-  }, [pendingBrand, scopeBrands, setScopeBrandId]);
   const load = useCallback(async () => {
-    if (!scope.brandId) return;
+    if (!scope.brandId || !canRead) return;
+    reads.current.data?.abort();
+    const controller = new AbortController();
+    reads.current.data = controller;
     setLoading(true);
     setMessage("");
     const base: Record<string, string> = {
@@ -200,35 +306,40 @@ export function AnswersClient({
       pageSize: "20",
     };
     if (selectedPlatforms.length) base.platforms = selectedPlatforms.join(",");
-    try {
-      const [taskResponse, domainResponse, articleResponse] = await Promise.all(
-        [
-          fetch(
-            `/api/v1/answerbit/answers?${scopeQuery({ ...base, mentionBrand, ...(keyword ? { prompt: keyword } : {}) })}`,
-          ),
-          fetch(
-            `/api/v1/answerbit/citations/domains?${scopeQuery({ ...base, ...(keyword ? { keyword } : {}) })}`,
-          ),
-          fetch(
-            `/api/v1/answerbit/citations/articles?${scopeQuery({ ...base, ...(keyword ? { keyword } : {}) })}`,
-          ),
-        ],
-      );
-      const [taskBody, domainBody, articleBody] = await Promise.all([
-        taskResponse.json(),
-        domainResponse.json(),
-        articleResponse.json(),
-      ]);
-      if (!taskResponse.ok) throw new Error(taskBody.error?.message);
-      setTasks(taskBody.data.scores);
-      setTotal(taskBody.data.total);
-      setDomains(domainResponse.ok ? domainBody.data.reference_count : []);
-      setArticles(articleResponse.ok ? articleBody.data.reference_count : []);
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "回答记录加载失败");
-    } finally {
-      setLoading(false);
+    const [taskResult, domainResult, articleResult] = await Promise.allSettled([
+      readData<{ scores: Task[]; total: number }>(
+        `/api/v1/answerbit/answers?${scopeQuery({ ...base, mentionBrand, ...(keywordQuery ? { prompt: keywordQuery } : {}) })}`,
+        controller.signal,
+      ),
+      readData<{ reference_count: Domain[] }>(
+        `/api/v1/answerbit/citations/domains?${scopeQuery({ ...base, ...(keywordQuery ? { keyword: keywordQuery } : {}) })}`,
+        controller.signal,
+      ),
+      readData<{ reference_count: Article[] }>(
+        `/api/v1/answerbit/citations/articles?${scopeQuery({ ...base, ...(keywordQuery ? { keyword: keywordQuery } : {}) })}`,
+        controller.signal,
+      ),
+    ]);
+    if (controller.signal.aborted || !mounted.current) return;
+    if (taskResult.status === "fulfilled") {
+      setTasks(taskResult.value.scores ?? []);
+      setTotal(taskResult.value.total ?? 0);
     }
+    if (domainResult.status === "fulfilled")
+      setDomains(domainResult.value.reference_count ?? []);
+    if (articleResult.status === "fulfilled")
+      setArticles(articleResult.value.reference_count ?? []);
+    const errors = [taskResult, domainResult, articleResult].flatMap(
+      (result, index) =>
+        result.status === "rejected"
+          ? [
+              `${["回答", "引用域名", "引用文章"][index]}：${result.reason instanceof Error ? result.reason.message : "加载失败"}`,
+            ]
+          : [],
+    );
+    setMessage(errors.join("；"));
+    setMessageType("error");
+    setLoading(false);
   }, [
     scope.organizationId,
     scope.teamBindingId,
@@ -237,104 +348,260 @@ export function AnswersClient({
     endDate,
     page,
     selectedPlatforms,
-    keyword,
+    keywordQuery,
     mentionBrand,
+    canRead,
   ]);
   useEffect(() => {
     void load();
   }, [load]);
   async function openDetail(taskId: string) {
-    const response = await fetch(
-      `/api/v1/answerbit/answers/${taskId}?${scopeQuery({ organizationId: scope.organizationId, teamBindingId: scope.teamBindingId, brandId: scope.brandId })}`,
-    );
-    const body = await response.json();
-    if (!response.ok) return setMessage(body.error?.message ?? "详情加载失败");
-    setDetail(body.data);
+    reads.current.detail?.abort();
+    const controller = new AbortController();
+    reads.current.detail = controller;
+    setDetailLoading(taskId);
+    try {
+      const data = await readData<Detail>(
+        `/api/v1/answerbit/answers/${taskId}?${scopeQuery({ organizationId: scope.organizationId, teamBindingId: scope.teamBindingId, brandId: scope.brandId })}`,
+        controller.signal,
+      );
+      if (!controller.signal.aborted) setDetail(data);
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        setMessageType("error");
+        setMessage(
+          error instanceof Error ? error.message : "详情加载失败，请重试",
+        );
+      }
+    } finally {
+      if (!controller.signal.aborted) setDetailLoading("");
+    }
   }
   async function saveView() {
     const name = viewName.trim();
-    if (!name) return;
+    if (!name || toolSubmitting.current || !canRead || !scope.brandId) return;
+    toolSubmitting.current = true;
     setToolBusy("view");
     try {
-      const response = await fetch("/api/v1/saved-views", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          organizationId: scope.organizationId,
-          name,
-          page: "answers",
-          filters: {
-            brandId: scope.brandId,
-            beginDate,
-            endDate,
-            platforms: selectedPlatforms,
-            keyword,
-            mentionBrand,
-          },
-        }),
-      });
+      const response = await fetch(
+        editingView
+          ? `/api/v1/saved-views/${editingView.id}`
+          : "/api/v1/saved-views",
+        {
+          method: editingView ? "PATCH" : "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            organizationId: scope.organizationId,
+            name,
+            ...(!editingView
+              ? {
+                  page: "answers",
+                  filters: {
+                    teamBindingId: scope.teamBindingId,
+                    brandId: scope.brandId,
+                    beginDate,
+                    endDate,
+                    platforms: selectedPlatforms,
+                    keyword,
+                    mentionBrand,
+                  },
+                }
+              : {}),
+          }),
+        },
+      );
       const body = await response.json();
+      if (!mounted.current) return;
       if (!response.ok) throw new Error(body.error?.message);
       setViewName("");
       setViewOpen(false);
+      setMessageType("success");
+      setMessage(editingView ? "视图名称已更新" : "当前条件已保存");
+      setEditingView(null);
       await loadTools();
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "视图保存失败");
+      if (mounted.current) {
+        setMessageType("error");
+        setMessage(error instanceof Error ? error.message : "视图保存失败");
+      }
     } finally {
-      setToolBusy("");
+      toolSubmitting.current = false;
+      if (mounted.current) setToolBusy("");
     }
   }
   function applyView(view: SavedView) {
-    const filter = view.filters;
-    if (typeof filter.brandId === "string") setPendingBrand(filter.brandId);
-    if (typeof filter.beginDate === "string") setBeginDate(filter.beginDate);
-    if (typeof filter.endDate === "string") setEndDate(filter.endDate);
-    if (Array.isArray(filter.platforms))
-      setSelectedPlatforms(
-        filter.platforms.filter(
-          (value): value is string => typeof value === "string",
-        ),
-      );
-    else if (typeof filter.platform === "string")
-      setSelectedPlatforms([filter.platform]);
-    if (typeof filter.keyword === "string") setKeyword(filter.keyword);
-    if (typeof filter.mentionBrand === "string")
-      setMentionBrand(filter.mentionBrand);
+    const parsed = answersSavedViewFiltersSchema.safeParse(view.filters);
+    if (!parsed.success) {
+      setMessageType("error");
+      setMessage("这个视图的筛选条件已失效，请重新保存条件。");
+      return;
+    }
+    const filter = parsed.data;
+    if (
+      (typeof filter.brandId === "string" &&
+        filter.brandId !== scope.brandId) ||
+      (typeof filter.teamBindingId === "string" &&
+        filter.teamBindingId !== scope.teamBindingId)
+    ) {
+      setMessageType("error");
+      setMessage("这个视图的品牌范围已变更，请在当前品牌重新保存条件。");
+      return;
+    }
+    setBeginDate(filter.beginDate ?? initial.begin);
+    setEndDate(filter.endDate ?? initial.end);
+    setSelectedPlatforms(
+      filter.platforms ?? (filter.platform ? [filter.platform] : []),
+    );
+    setKeyword(filter.keyword);
+    setKeywordQuery(filter.keyword);
+    setMentionBrand(filter.mentionBrand);
     setPage(1);
+    setMessage("");
+  }
+  async function deleteView(view: SavedView) {
+    if (toolSubmitting.current) return;
+    toolSubmitting.current = true;
+    setToolBusy(`delete:${view.id}`);
+    try {
+      const response = await fetch(`/api/v1/saved-views/${view.id}`, {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ organizationId: scope.organizationId }),
+      });
+      if (!mounted.current) return;
+      if (!response.ok) {
+        const body = await response.json();
+        throw new Error(body.error?.message ?? "视图删除失败");
+      }
+      setViews((items) => items.filter((item) => item.id !== view.id));
+      setMessageType("success");
+      setMessage("视图已删除");
+    } catch (error) {
+      if (mounted.current) {
+        setMessageType("error");
+        setMessage(error instanceof Error ? error.message : "视图删除失败");
+      }
+    } finally {
+      toolSubmitting.current = false;
+      if (mounted.current) setToolBusy("");
+    }
   }
   async function createExport(
     reportType: "answers" | "domain_rank" | "article_rank",
+    previous?: ExportJob,
   ) {
+    if (!canExport || !scope.brandId || toolSubmitting.current) return;
+    toolSubmitting.current = true;
     setToolBusy(reportType);
+    const payload = {
+      organizationId: scope.organizationId,
+      teamBindingId: scope.teamBindingId,
+      brandId: scope.brandId,
+      reportType,
+      ...(previous?.filters ?? {
+        beginDate,
+        endDate,
+        titleIds: [],
+        promptIds: [],
+        platforms: selectedPlatforms,
+        tagIds: [],
+        mentionBrand: Number(mentionBrand),
+        ...(keyword.trim() ? { keyword: keyword.trim() } : {}),
+      }),
+    };
+    let attempt = attempts.current.get(reportType);
+    if (!attempt) {
+      attempt = new ReportAttempt(
+        `geo.report.${userId}.${scope.organizationId}.${scope.brandId}.${reportType}`,
+      );
+      attempts.current.set(reportType, attempt);
+    }
     try {
       const response = await fetch("/api/v1/report-exports", {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "Idempotency-Key": `report-${crypto.randomUUID()}`,
+          "Idempotency-Key": attempt.key(payload),
         },
-        body: JSON.stringify({
-          organizationId: scope.organizationId,
-          teamBindingId: scope.teamBindingId,
-          brandId: scope.brandId,
-          reportType,
-          beginDate,
-          endDate,
-          titleIds: [],
-          promptIds: [],
-          platforms: selectedPlatforms,
-          tagIds: [],
-          ...(keyword ? { keyword } : {}),
-        }),
+        body: JSON.stringify(payload),
       });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error?.message);
-      setMessage("导出任务已提交，文件生成后将在下方显示下载入口");
-      await loadTools();
+      attempt.complete();
+      if (!mounted.current) return;
+      const job = body.data as ExportJob;
+      setExports((items) => [
+        job,
+        ...items.filter((item) => item.id !== job.id),
+      ]);
+      setMessageType(
+        ["failed", "expired"].includes(job.status) ? "error" : "success",
+      );
+      setMessage(
+        job.status === "failed"
+          ? "上次导出生成失败，可以重新导出。"
+          : job.status === "expired"
+            ? "上次导出文件已过期，可以重新导出。"
+            : "导出任务已提交，可离开页面等待；文件生成后会显示下载入口。",
+      );
+      if (exportPage !== 1) setExportPage(1);
+      else await loadTools();
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "导出任务创建失败");
+      if (mounted.current) {
+        setMessageType("error");
+        setMessage(
+          error instanceof TypeError
+            ? "导出请求未确认，请重试；重复点击不会创建重复任务。"
+            : error instanceof Error
+              ? error.message
+              : "导出请求未确认，请重试；重复点击不会创建重复任务。",
+        );
+      }
     } finally {
-      setToolBusy("");
+      toolSubmitting.current = false;
+      if (mounted.current) setToolBusy("");
+    }
+  }
+  async function downloadReport(job: ExportJob) {
+    if (!job.downloadUrl || toolSubmitting.current) return;
+    toolSubmitting.current = true;
+    setToolBusy(`download:${job.id}`);
+    try {
+      const response = await fetch(job.downloadUrl);
+      if (!response.ok) {
+        const body = await response.json();
+        if (response.status === 410 && mounted.current)
+          setExports((items) =>
+            items.map((item) =>
+              item.id === job.id
+                ? { ...item, status: "expired", downloadUrl: null }
+                : item,
+            ),
+          );
+        throw new Error(body.error?.message ?? "下载失败，请重试");
+      }
+      const blob = await response.blob();
+      if (!mounted.current) return;
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = job.filename ?? "geo-report.csv";
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (error) {
+      if (mounted.current) {
+        setMessageType("error");
+        setMessage(
+          error instanceof TypeError
+            ? "下载连接中断，请重试"
+            : error instanceof Error
+              ? error.message
+              : "下载失败，请重试",
+        );
+      }
+    } finally {
+      toolSubmitting.current = false;
+      if (mounted.current) setToolBusy("");
     }
   }
   const taskColumns: TableColumnsType<Task> = [
@@ -387,6 +654,7 @@ export function AnswersClient({
       width: 90,
       render: (_, item) => (
         <Button
+          loading={detailLoading === item.task_id}
           icon={<EyeOutlined />}
           onClick={() => void openDetail(item.task_id)}
           size="small"
@@ -469,7 +737,7 @@ export function AnswersClient({
       <Card
         extra={
           <Button
-            disabled={!scope.brandId}
+            disabled={!scope.brandId || !canRead}
             icon={<ReloadOutlined />}
             loading={loading}
             onClick={() => void load()}
@@ -485,7 +753,9 @@ export function AnswersClient({
           <Col lg={7} md={12} xs={24}>
             <Typography.Text type="secondary">日期范围</Typography.Text>
             <DatePicker.RangePicker
+              disabled={!canRead || !scope.brandId}
               allowClear={false}
+              disabledDate={(date) => date.isAfter(dayjs(), "day")}
               onChange={(values) => {
                 if (!values?.[0] || !values[1]) return;
                 setPage(1);
@@ -503,6 +773,7 @@ export function AnswersClient({
             <Select
               allowClear
               id="answers-platform-filter"
+              disabled={!canRead || !scope.brandId}
               labelRender={({ value }) => (
                 <ModelLabel
                   modelId={String(value)}
@@ -532,6 +803,7 @@ export function AnswersClient({
             </label>
             <Select
               id="answers-brand-mention-filter"
+              disabled={!canRead || !scope.brandId}
               onChange={(value) => {
                 setPage(1);
                 setMentionBrand(value);
@@ -548,6 +820,7 @@ export function AnswersClient({
           <Col lg={7} md={18} xs={24}>
             <Typography.Text type="secondary">关键词</Typography.Text>
             <Input.Search
+              disabled={!canRead || !scope.brandId}
               allowClear
               onChange={(event) => {
                 setPage(1);
@@ -561,16 +834,15 @@ export function AnswersClient({
         </Row>
       </Card>
 
-      {message || scope.error ? (
+      {message ? (
         <Alert
           closable
-          message={message || scope.error}
+          message={message}
           onClose={() => {
             setMessage("");
-            scope.setError("");
           }}
           showIcon
-          type={scope.error ? "error" : "info"}
+          type={messageType}
         />
       ) : null}
 
@@ -590,6 +862,7 @@ export function AnswersClient({
             ),
           }}
           pagination={false}
+          loading={loading}
           rowKey="task_id"
           scroll={{ x: 860 }}
         />
@@ -604,44 +877,87 @@ export function AnswersClient({
         </Flex>
       </Card>
 
-      <Card title="视图与导出">
+      <Card
+        title="视图与导出"
+        extra={
+          <Button onClick={() => void loadTools()} icon={<ReloadOutlined />}>
+            刷新任务
+          </Button>
+        }
+      >
+        {toolError ? (
+          <Alert
+            type="error"
+            showIcon
+            message={toolError}
+            action={<Button onClick={() => void loadTools()}>重试</Button>}
+            style={{ marginBottom: 16 }}
+          />
+        ) : null}
         <Flex gap={16} justify="space-between" wrap>
           <Space size={[8, 8]} wrap>
             <Button
               icon={<SaveOutlined />}
               loading={toolBusy === "view"}
-              onClick={() => setViewOpen(true)}
+              disabled={!canRead || !scope.brandId || Boolean(toolBusy)}
+              onClick={() => {
+                setEditingView(null);
+                setViewName("");
+                setViewOpen(true);
+              }}
             >
               保存当前条件
             </Button>
             {views.map((view) => (
-              <Button
-                key={view.id}
-                onClick={() => applyView(view)}
-                type={view.isDefault ? "primary" : "default"}
-              >
-                {view.name}
-              </Button>
+              <Space.Compact key={view.id}>
+                <Button onClick={() => applyView(view)}>{view.name}</Button>
+                <Button
+                  aria-label={`重命名视图 ${view.name}`}
+                  icon={<EditOutlined />}
+                  disabled={Boolean(toolBusy)}
+                  onClick={() => {
+                    setEditingView(view);
+                    setViewName(view.name);
+                    setViewOpen(true);
+                  }}
+                />
+                <Popconfirm
+                  title={`删除视图“${view.name}”？`}
+                  description="仅删除保存的筛选条件，回答记录会保留。"
+                  okText="删除"
+                  cancelText="取消"
+                  onConfirm={() => deleteView(view)}
+                >
+                  <Button
+                    aria-label={`删除视图 ${view.name}`}
+                    danger
+                    icon={<DeleteOutlined />}
+                    loading={toolBusy === `delete:${view.id}`}
+                    disabled={Boolean(toolBusy)}
+                  />
+                </Popconfirm>
+              </Space.Compact>
             ))}
           </Space>
-          {["tenant_admin", "brand_admin"].includes(
-            scope.brand?.accessRole ?? "",
-          ) ? (
+          {canExport ? (
             <Space size={[8, 8]} wrap>
               <Button
                 loading={toolBusy === "answers"}
+                disabled={Boolean(toolBusy)}
                 onClick={() => void createExport("answers")}
               >
                 回答 CSV
               </Button>
               <Button
                 loading={toolBusy === "domain_rank"}
+                disabled={Boolean(toolBusy)}
                 onClick={() => void createExport("domain_rank")}
               >
                 域名 CSV
               </Button>
               <Button
                 loading={toolBusy === "article_rank"}
+                disabled={Boolean(toolBusy)}
                 onClick={() => void createExport("article_rank")}
               >
                 文章 CSV
@@ -651,15 +967,17 @@ export function AnswersClient({
         </Flex>
         {exports.length ? (
           <List
-            dataSource={exports.slice(0, 3)}
-            header={<Typography.Text strong>最近导出</Typography.Text>}
+            dataSource={exports}
+            header={<Typography.Text strong>报告记录</Typography.Text>}
             renderItem={(job) => (
               <List.Item
-                actions={
-                  job.downloadUrl
+                actions={[
+                  ...(job.downloadUrl
                     ? [
                         <Button
-                          href={job.downloadUrl}
+                          onClick={() => void downloadReport(job)}
+                          loading={toolBusy === `download:${job.id}`}
+                          disabled={Boolean(toolBusy)}
                           icon={<DownloadOutlined />}
                           key="download"
                           size="small"
@@ -667,24 +985,70 @@ export function AnswersClient({
                           下载
                         </Button>,
                       ]
-                    : undefined
-                }
+                    : []),
+                  ...(["failed", "expired"].includes(job.status) &&
+                  job.filters &&
+                  canExport
+                    ? [
+                        <Button
+                          key="retry"
+                          size="small"
+                          disabled={Boolean(toolBusy)}
+                          onClick={() => void createExport(job.reportType, job)}
+                        >
+                          重新导出
+                        </Button>,
+                      ]
+                    : []),
+                ]}
               >
                 <List.Item.Meta
+                  style={{ minWidth: 0, overflowWrap: "anywhere" }}
                   description={
-                    job.rowCount === null ? "正在生成" : job.rowCount + " 行"
+                    <Space direction="vertical" size={2}>
+                      {job.filters ? (
+                        <Typography.Text type="secondary">
+                          {job.filters.beginDate} 至 {job.filters.endDate}
+                          {job.filters.keyword
+                            ? ` · ${job.filters.keyword}`
+                            : ""}
+                        </Typography.Text>
+                      ) : null}
+                      <Typography.Text
+                        type={job.status === "failed" ? "danger" : "secondary"}
+                      >
+                        {job.status === "failed"
+                          ? (job.errorMessage ?? "生成失败，可重新导出")
+                          : job.status === "expired"
+                            ? "文件保留时间为 24 小时，已过期，可重新导出"
+                            : job.status === "succeeded"
+                              ? `${job.rowCount ?? 0} 行 · 文件保留至 ${dayjs(job.expiresAt).format("MM-DD HH:mm")}`
+                              : job.status === "queued"
+                                ? "等待处理，可离开页面"
+                                : "正在生成，可离开页面"}
+                      </Typography.Text>
+                    </Space>
                   }
-                  title={job.filename ?? job.reportType}
+                  title={job.filename ?? reportLabels[job.reportType] ?? "报告"}
                 />
-                <Tag
-                  color={job.status === "completed" ? "success" : "processing"}
-                >
-                  {job.status}
+                <Tag color={reportStatuses[job.status]?.color ?? "default"}>
+                  {reportStatuses[job.status]?.label ?? "状态未知"}
                 </Tag>
               </List.Item>
             )}
             size="small"
           />
+        ) : null}
+        {exportTotal > 5 ? (
+          <Flex justify="flex-end" style={{ marginTop: 16 }}>
+            <Pagination
+              current={exportPage}
+              onChange={setExportPage}
+              pageSize={5}
+              showSizeChanger={false}
+              total={exportTotal}
+            />
+          </Flex>
         ) : null}
       </Card>
 
@@ -732,20 +1096,28 @@ export function AnswersClient({
       <Modal
         cancelText="取消"
         confirmLoading={toolBusy === "view"}
+        cancelButtonProps={{ disabled: Boolean(toolBusy) }}
+        closable={!toolBusy}
+        maskClosable={!toolBusy}
+        keyboard={!toolBusy}
         okButtonProps={{ disabled: !viewName.trim() }}
         okText="保存"
         onCancel={() => setViewOpen(false)}
         onOk={() => void saveView()}
         open={viewOpen}
-        title="保存筛选视图"
+        title={editingView ? "重命名视图" : "保存筛选视图"}
         width={640}
       >
-        <Typography.Paragraph type="secondary">
-          保存当前企业、品牌、日期和筛选条件。
-        </Typography.Paragraph>
+        {!editingView ? (
+          <Typography.Paragraph type="secondary">
+            保存当前企业、品牌、日期和筛选条件。
+          </Typography.Paragraph>
+        ) : null}
+        <label htmlFor="saved-view-name">视图名称</label>
         <Input
+          id="saved-view-name"
           autoFocus
-          maxLength={80}
+          maxLength={100}
           onChange={(event) => setViewName(event.target.value)}
           placeholder="视图名称"
           value={viewName}
@@ -753,7 +1125,11 @@ export function AnswersClient({
       </Modal>
 
       <Drawer
-        onClose={() => setDetail(null)}
+        onClose={() => {
+          reads.current.detail?.abort();
+          setDetailLoading("");
+          setDetail(null);
+        }}
         open={Boolean(detail)}
         title={detail?.query ?? "回答详情"}
         width={720}

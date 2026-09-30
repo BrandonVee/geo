@@ -1286,6 +1286,23 @@ const savedViewPageSchema = z.enum([
 const savedViewFiltersSchema = z
   .record(z.string().min(1).max(64), z.unknown())
   .refine((value) => Object.keys(value).length <= 50, "筛选字段过多");
+export const answersSavedViewFiltersSchema = z
+  .object({
+    teamBindingId: z.string().uuid().optional(),
+    brandId: z.string().trim().min(1).max(128).optional(),
+    beginDate: dateSchema.optional(),
+    endDate: dateSchema.optional(),
+    platforms: z.array(z.string().trim().min(1).max(128)).max(100).optional(),
+    platform: z.string().trim().min(1).max(128).optional(),
+    keyword: z.string().trim().max(500).optional().default(""),
+    mentionBrand: z.enum(["-1", "0", "1"]).optional().default("-1"),
+  })
+  .strict()
+  .refine(
+    (value) =>
+      !value.beginDate || !value.endDate || value.beginDate <= value.endDate,
+    { message: "开始日期不能晚于结束日期", path: ["beginDate"] },
+  );
 export const savedViewListQuerySchema = z
   .object({
     organizationId: z.string().uuid(),
@@ -1337,6 +1354,10 @@ const reportFilterFields = {
     .optional()
     .default([]),
   keyword: z.string().trim().max(500).optional(),
+  mentionBrand: z
+    .union([z.literal(-1), z.literal(0), z.literal(1)])
+    .optional()
+    .default(-1),
 };
 export const reportExportFiltersSchema = z
   .object(reportFilterFields)

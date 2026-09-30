@@ -35,6 +35,7 @@ async function prepare(
     input.brandId,
     userId,
     "resource.read",
+    "geo_insights",
   );
   const answerBit = await loadAnswerBitTeamContext(
     input.organizationId,
@@ -126,6 +127,7 @@ export const dashboardService = {
       teamBindingId,
       userId,
       "resource.read",
+      "geo_insights",
     );
     const { team, connection, apiKey } = await loadAnswerBitTeamContext(
       organizationId,

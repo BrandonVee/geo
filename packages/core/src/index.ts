@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 export { publicationBodyHtml } from "./publication-content";
+export * from "./user-access";
 export {
   decideAsyncJobRecovery,
   type AsyncJobRecoveryAction,

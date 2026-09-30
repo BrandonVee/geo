@@ -26,7 +26,6 @@ import {
   countConsecutiveFailures,
   decideAsyncJobRecovery,
   discardResponseBody,
-  hasPermission,
   InvalidAnswerBitEnvelopeError,
   parseAnswerBitEnvelope,
   platformAnswerBitCredentialAad,
@@ -35,7 +34,6 @@ import {
   readBoundedJsonResponse,
   runtimeTaskDefinitions,
   SecretCipher,
-  type Role,
   type QueueJobState,
   type RuntimeTaskName,
 } from "@geo/core";
@@ -63,16 +61,13 @@ import {
   articleGenerationJobs,
   balanceAccounts,
   balanceTransactions,
-  brandAccess,
   commitQuota,
   contentDocuments,
   contentDocumentVersions,
   db,
-  memberRoles,
   notificationRules,
   notifications,
   operationLogs,
-  organizationMembers,
   organizations,
   platformAnswerbitCredentials,
   platformFrogCredentials,
@@ -94,6 +89,7 @@ import {
 } from "@geo/db";
 import { PgBoss, type Job } from "pg-boss";
 import { runtimeTaskErrorCode } from "./runtime-task";
+import { assertWorkerJobAccess, WorkerJobAccessError } from "./job-access";
 import {
   type AnswerBitDataSchema,
   InvalidAnswerBitDataError,
@@ -107,6 +103,7 @@ import {
 import {
   maxReportExportRows,
   parseReportExportFilters,
+  reportExportPayload,
   ReportExportBuffer,
 } from "./report-export";
 import {
@@ -338,7 +335,6 @@ async function loadJob(organizationId: string, jobId: string) {
       ),
     )
     .limit(1);
-  if (!team) throw new Error("TEAM_BINDING_NOT_FOUND");
   return { job, team };
 }
 
@@ -641,7 +637,17 @@ async function processArticleGeneration(data: {
     pricingSnapshot: context.job.pricingSnapshot,
   };
   try {
-    if (!articleId) await assertEnterpriseAccess(data.organizationId, true);
+    if (!context.team) throw new Error("TEAM_BINDING_NOT_FOUND");
+    if (!articleId) {
+      await assertEnterpriseAccess(data.organizationId, true);
+      await assertWorkerJobAccess({
+        organizationId: data.organizationId,
+        teamBindingId: context.job.teamBindingId,
+        brandId: context.job.brandId,
+        userId: context.job.requestedBy,
+        permission: "resource.create",
+      });
+    }
     const requestPayload = parseArticleJobPayload(
       context.job.requestPayload,
       (ciphertext) => cipher.decrypt(ciphertext, data.organizationId),
@@ -887,16 +893,20 @@ async function processArticleGeneration(data: {
         errorCode:
           error instanceof EnterpriseAccessError
             ? error.code
-            : error instanceof InvalidArticleJobPayloadError
-              ? "INVALID_ARTICLE_JOB_PAYLOAD"
-              : error instanceof Error &&
-                  error.message === "ARTICLE_GENERATION_TIMEOUT"
-                ? "ARTICLE_GENERATION_TIMEOUT"
-                : uncertain
-                  ? "ANSWERBIT_CREATE_UNCERTAIN"
-                  : articleId
-                    ? "ARTICLE_CONTENT_FETCH_FAILED"
-                    : "ARTICLE_CREATE_FAILED",
+            : error instanceof WorkerJobAccessError
+              ? error.code === "JOB_PERMISSION_REVOKED"
+                ? "ARTICLE_PERMISSION_REVOKED"
+                : error.code
+              : error instanceof InvalidArticleJobPayloadError
+                ? "INVALID_ARTICLE_JOB_PAYLOAD"
+                : error instanceof Error &&
+                    error.message === "ARTICLE_GENERATION_TIMEOUT"
+                  ? "ARTICLE_GENERATION_TIMEOUT"
+                  : uncertain
+                    ? "ANSWERBIT_CREATE_UNCERTAIN"
+                    : articleId
+                      ? "ARTICLE_CONTENT_FETCH_FAILED"
+                      : "ARTICLE_CREATE_FAILED",
         completedAt: new Date(),
         executionId: null,
         updatedAt: new Date(),
@@ -993,51 +1003,13 @@ async function processReportExport(data: {
   if (!claimed) return;
   try {
     await assertEnterpriseAccess(data.organizationId);
-    const [membership] = await db
-      .select({
-        status: organizationMembers.status,
-        organizationStatus: organizations.status,
-        role: roles.code,
-      })
-      .from(organizationMembers)
-      .innerJoin(
-        organizations,
-        eq(organizations.id, organizationMembers.organizationId),
-      )
-      .leftJoin(memberRoles, eq(memberRoles.memberId, organizationMembers.id))
-      .leftJoin(roles, eq(roles.id, memberRoles.roleId))
-      .where(
-        and(
-          eq(organizationMembers.organizationId, data.organizationId),
-          eq(organizationMembers.userId, claimed.requestedBy),
-        ),
-      )
-      .limit(1);
-    if (
-      !membership ||
-      membership.status !== "active" ||
-      membership.organizationStatus !== "active"
-    )
-      throw new Error("REPORT_PERMISSION_REVOKED");
-    const organizationAllowed =
-      membership.role &&
-      hasPermission(membership.role as Role, "report.export");
-    if (!organizationAllowed) {
-      const [access] = await db
-        .select({ role: brandAccess.role })
-        .from(brandAccess)
-        .where(
-          and(
-            eq(brandAccess.organizationId, data.organizationId),
-            eq(brandAccess.teamBindingId, claimed.teamBindingId),
-            eq(brandAccess.brandId, claimed.brandId),
-            eq(brandAccess.userId, claimed.requestedBy),
-          ),
-        )
-        .limit(1);
-      if (!access || !hasPermission(access.role as Role, "report.export"))
-        throw new Error("REPORT_PERMISSION_REVOKED");
-    }
+    await assertWorkerJobAccess({
+      organizationId: data.organizationId,
+      teamBindingId: claimed.teamBindingId,
+      brandId: claimed.brandId,
+      userId: claimed.requestedBy,
+      permission: "report.export",
+    });
     const [team] = await db
       .select()
       .from(answerbitTeamBindings)
@@ -1061,27 +1033,12 @@ async function processReportExport(data: {
     let page = 1;
     let total = 0;
     do {
-      const payload = {
-        brand_id: claimed.brandId,
-        begin_date: filters.beginDate,
-        end_date: filters.endDate,
-        title_ids: filters.titleIds ?? [],
-        prompt_ids: filters.promptIds ?? [],
-        platforms: filters.platforms ?? [],
-        tag_ids: filters.tagIds ?? [],
-        ...(claimed.reportType === "answers"
-          ? {
-              include: 1,
-              mention_brand: -1,
-              min_score: 0,
-              max_score: 100,
-              page,
-              page_size: 100,
-            }
-          : claimed.reportType === "domain_rank"
-            ? { domain: filters.keyword, page, page_size: 100 }
-            : { keyword: filters.keyword, page, page_size: 100 }),
-      };
+      const payload = reportExportPayload(
+        claimed.reportType,
+        claimed.brandId,
+        filters,
+        page,
+      );
       const responseSchema =
         claimed.reportType === "answers"
           ? answerBitTaskListSchema
@@ -1163,9 +1120,15 @@ async function processReportExport(data: {
       .set({
         status: "failed",
         errorCode:
-          error instanceof Error
-            ? error.message.slice(0, 128)
-            : "REPORT_EXPORT_FAILED",
+          error instanceof EnterpriseAccessError
+            ? error.code
+            : error instanceof WorkerJobAccessError
+              ? error.code === "JOB_PERMISSION_REVOKED"
+                ? "REPORT_PERMISSION_REVOKED"
+                : error.code
+              : error instanceof Error
+                ? error.message.slice(0, 128)
+                : "REPORT_EXPORT_FAILED",
         completedAt: new Date(),
         executionId: null,
         updatedAt: new Date(),

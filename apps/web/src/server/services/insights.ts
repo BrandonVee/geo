@@ -27,6 +27,7 @@ async function prepare(scope: Scope, userId: string, requestId: string) {
     scope.brandId,
     userId,
     "resource.read",
+    "geo_insights",
   );
   const value = await loadAnswerBitTeamContext(
     scope.organizationId,
