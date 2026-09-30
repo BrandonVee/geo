@@ -121,6 +121,7 @@ export const platformAnswerbitRepository = {
         id: organizations.id,
         name: organizations.name,
         role: sql<string>`'super_admin'`,
+        brandId: answerbitBrandMappings.brandId,
         teamBindingId: answerbitBrandMappings.teamBindingId,
       })
       .from(organizations)

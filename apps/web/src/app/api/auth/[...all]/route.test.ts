@@ -13,7 +13,10 @@ vi.mock("@/server/env", () => ({
     BETTER_AUTH_TRUSTED_ORIGINS: "",
   }),
 }));
-vi.mock("@geo/core", () => ({ createRequestId: () => "auth-request-1" }));
+vi.mock("@geo/core", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@geo/core")>()),
+  createRequestId: () => "auth-request-1",
+}));
 vi.mock("better-auth/next-js", () => ({
   toNextJsHandler: () => ({ GET: mocks.get, POST: mocks.post }),
 }));

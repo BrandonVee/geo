@@ -112,3 +112,8 @@ export const answerBitArticleContentSchema = z
     ),
   })
   .passthrough();
+
+export const answerBitArticleProgressSchema = z.union([
+  answerBitArticleContentSchema,
+  z.object({ status: z.literal(0) }).passthrough(),
+]);

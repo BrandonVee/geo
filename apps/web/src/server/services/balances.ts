@@ -1,5 +1,6 @@
 import type {
   AdminGrantBalanceInput,
+  AdminDeductBalanceInput,
   AdminBalanceTransactionQuery,
   AllocateBrandBalanceInput,
   FeaturePointCostInput,
@@ -103,6 +104,44 @@ export const balanceService = {
         summary: `${input.asset} 管理员入账 ${input.amount}：${input.reason}`,
       },
     );
+    return result;
+  },
+  async deduct(
+    input: AdminDeductBalanceInput,
+    userId: string,
+    audit: AuditContext,
+  ) {
+    await requirePlatformPermission(userId, "platform.balance.manage");
+    if (
+      input.brandId &&
+      !(await balanceRepository.brandExists(
+        input.organizationId,
+        input.brandId,
+      ))
+    )
+      throw new ApiError(404, "BRAND_NOT_FOUND", "品牌不存在");
+    const result = await balanceRepository.deduct({
+      ...input,
+      actorUserId: userId,
+    });
+    if (!result.ok)
+      throw new ApiError(
+        result.code === "IDEMPOTENCY_CONFLICT" ? 409 : 422,
+        result.code,
+        result.code === "IDEMPOTENCY_CONFLICT"
+          ? "重复请求的扣减内容不一致"
+          : "当前账户余额不足，无法扣减",
+      );
+    if (!result.replayed)
+      await writeAudit(
+        { ...audit, organizationId: input.organizationId },
+        {
+          operation: "balance.deduct",
+          resourceType: "balance_transaction",
+          resourceId: result.transaction.id,
+          summary: `${input.asset} 管理员手动扣减 ${input.amount}：${input.reason}`,
+        },
+      );
     return result;
   },
   async allocate(

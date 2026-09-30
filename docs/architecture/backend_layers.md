@@ -23,7 +23,7 @@ Shared contracts/core/config/db/publication packages <- applications
 | Database       | `packages/db`                                                   | schema、迁移、RLS 上下文、共享事务原语     | Web Session 或视图逻辑                 |
 | Contracts/Core | `packages/contracts`、`packages/core`                           | 可复用契约与纯工具                         | 应用专属数据库编排                     |
 
-`packages/publication` 封装小青蛙协议客户端和批量状态协调器，由 Web 与 Worker 共用。协调器依赖注入持久化接口，不直接依赖数据库；品牌权限在 Service 校验，扣款、退款与版本条件更新仍在数据库领域事务内执行。
+`packages/publication` 封装媒体发布协议客户端和批量状态协调器，由 Web 与 Worker 共用。协调器依赖注入持久化接口，不直接依赖数据库；品牌权限在 Service 校验，扣款、退款与版本条件更新仍在数据库领域事务内执行。
 
 ## 请求与错误边界
 

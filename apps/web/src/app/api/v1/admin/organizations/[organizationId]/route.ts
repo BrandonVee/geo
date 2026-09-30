@@ -42,13 +42,13 @@ export async function PATCH(request: Request, context: Context) {
       throw new ApiError(
         400,
         "VALIDATION_ERROR",
-        "企业状态参数有误",
+        "企业状态或有效期参数有误",
         parsed.error.issues,
       );
     return apiJson({
       data: await adminService.updateOrganization(
         organizationId,
-        parsed.data.status,
+        parsed.data,
         user.id,
         auditContextFromRequest(request, organizationId, user.id, requestId),
       ),

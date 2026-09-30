@@ -151,7 +151,7 @@ describe("发布业务闭环", () => {
     );
     expect(m.listMedia).not.toHaveBeenCalled();
   });
-  it("把小青蛙平台余额转换为本地人民币分", async () => {
+  it("把媒体发布平台余额转换为本地人民币分", async () => {
     await expect(publicationService.providerBalance("user")).resolves.toEqual(
       expect.objectContaining({
         configured: true,
@@ -160,7 +160,7 @@ describe("发布业务闭环", () => {
       }),
     );
   });
-  it("小青蛙平台余额明确不足时不扣本地品牌余额", async () => {
+  it("媒体发布平台余额明确不足时不扣本地品牌余额", async () => {
     m.getBalance.mockResolvedValue({ power_count: 81, money: "0.79" });
     await expect(
       publicationService.create(input, "user", audit),

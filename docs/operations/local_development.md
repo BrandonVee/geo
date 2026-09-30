@@ -38,7 +38,7 @@ cp .env.example .env
 | `BETTER_AUTH_URL`              | Better Auth 的服务端基础地址                            |
 | `BETTER_AUTH_TRUSTED_ORIGINS`  | 允许的浏览器 Origin，逗号分隔                           |
 | `ANSWERBIT_BASE_URL`           | 腾讯 AnswerBit API 基础地址                             |
-| `FROG_PUBLICATION_BASE_URL`    | 小青蛙聚合发布兼容回退地址；优先使用管理网页保存的配置  |
+| `FROG_PUBLICATION_BASE_URL`    | 媒体发布服务兼容回退地址；优先使用管理网页保存的配置    |
 | `FROG_PUBLICATION_API_KEY`     | 兼容回退 Key；可留空并在发布履约页验证、加密保存        |
 
 生成本地加密密钥可使用：
@@ -60,7 +60,7 @@ pnpm db:release
 pnpm dev
 ```
 
-全新数据库先由 `packages/db/drizzle/v1.sql` 建立基线，再依次执行 `v2.sql` 小青蛙平台凭证、`v3.sql` 分级定价结构、`v4.sql` 本地文档库结构及历史生成内容回填、`v5.sql` AnswerBit 读取缓存、`v6.sql` 积分加价规则与 `v7.sql` 异步文章价格快照，记录 schema `v7`、执行 seed `v2` 的幂等种子并完成 RLS 检查。升级到 v6 时，未修改的旧等级规则转为当前发布加价率；已由管理员修改的规则保留原实际扣费，旧折扣显示为负加价率。v7 为新文章任务保存提交时的价格快照，旧任务仍按执行时规则计价。后续 schema 变化继续通过 `pnpm db:generate` 生成增量迁移并递增 `vN`，不直接修改已发布迁移。
+全新数据库先由 `packages/db/drizzle/v1.sql` 建立基线，再依次执行 `v2.sql` 媒体发布平台凭证、`v3.sql` 分级定价结构、`v4.sql` 本地文档库结构及历史生成内容回填、`v5.sql` AnswerBit 读取缓存、`v6.sql` 积分加价规则与 `v7.sql` 异步文章价格快照，随后执行 `v8.sql` 企业服务与积分到期日，记录 schema `v8`、执行 seed `v2` 的幂等种子并完成 RLS 检查。升级到 v6 时，未修改的旧等级规则转为当前发布加价率；已由管理员修改的规则保留原实际扣费，旧折扣显示为负加价率。v7 为新文章任务保存提交时的价格快照，旧任务仍按执行时规则计价。后续 schema 变化继续通过 `pnpm db:generate` 生成增量迁移并递增 `vN`，不直接修改已发布迁移。
 
 访问：
 
@@ -86,7 +86,7 @@ POSTGRES_PORT=55432 docker compose up -d postgres
 
 ## Worker
 
-`pnpm dev` 默认并行启动 Web 与 Worker，不需要另开终端。Worker 依赖与 Web 相同的 `DATABASE_URL` 和 `APP_ENCRYPTION_KEY`，负责文章生成、报告导出、通知评估、腾讯目录同步、聚合发布履约同步、异步任务恢复和资源维护。启动完成后每 30 秒写入一次平台运行心跳；计费维护、异步任务恢复、通知评估、目录同步与聚合发布同步还会更新各自最近执行状态、耗时和错误码。`/admin?section=operations` 应显示 1 个在线 Worker、5 项周期任务（小青蛙 Key 未配置时发布同步跳过上游工作），且文章/报告过期任务均为 0。
+`pnpm dev` 默认并行启动 Web 与 Worker，不需要另开终端。Worker 依赖与 Web 相同的 `DATABASE_URL` 和 `APP_ENCRYPTION_KEY`，负责文章生成、报告导出、通知评估、腾讯目录同步、聚合发布履约同步、异步任务恢复和资源维护。启动完成后每 30 秒写入一次平台运行心跳；计费维护、异步任务恢复、通知评估、目录同步与聚合发布同步还会更新各自最近执行状态、耗时和错误码。`/admin?section=operations` 应显示 1 个在线 Worker、5 项周期任务（媒体发布 Key 未配置时发布同步跳过上游工作），且文章/报告过期任务均为 0。
 
 `pnpm db:up` 会同时启动本地 PostgreSQL 和 Redis。Redis 用于 Better Auth 会话缓存与分布式登录限流；持久 Session 仍写入 PostgreSQL。
 
@@ -130,3 +130,5 @@ CI 还会在全新 PostgreSQL 18 中连续执行两次 `pnpm db:release`，并�
 文档库的真实 PostgreSQL 回归在完成 `pnpm db:release` 后运行 `CONTENT_DOCUMENT_DB_TESTS=1 node scripts/run-with-env.mjs pnpm --filter @geo/web exec vitest run src/server/repositories/content-documents.integration.test.ts`。测试使用新建 UUID 范围并清理数据，覆盖文档与首版创建、并发版本递增、历史恢复及文件夹品牌隔离；默认测试跳过此用例。
 
 成员额度的真实 PostgreSQL 并发回归在完成 `pnpm db:release` 后运行 `MEMBER_CAPACITY_DB_TESTS=1 node scripts/run-with-env.mjs pnpm --filter @geo/web exec vitest run src/server/repositories/members.integration.test.ts`。测试使用新建 UUID 范围并清理数据，覆盖并发新增、并发恢复与新增共同争用最后一个名额；默认测试跳过此用例。
+
+企业有效期与手动扣减的真实 PostgreSQL 回归：先执行 `pnpm db:release`，再运行 `ENTERPRISE_BALANCE_DB_TESTS=1 node scripts/run-with-env.mjs pnpm --filter @geo/db exec vitest run src/enterprise-balances.integration.test.ts`。用例仅创建独立 UUID 数据并清理，覆盖重复扣减、余额不足、到期阻止消费、续期恢复和冻结后退款。

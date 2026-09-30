@@ -14,6 +14,7 @@ import {
   Empty,
   Form,
   Input,
+  List,
   Modal,
   Popconfirm,
   Row,
@@ -72,6 +73,14 @@ type PublicationForm = {
   note?: string;
 };
 type AppealForm = { reason: 1 | 2 | 3 | 4; detail?: string };
+type LibraryDocument = {
+  id: string;
+  title: string;
+  bodyPreview: string;
+  contentLength: number;
+  source: "ai_generated" | "manual" | "imported";
+  updatedAt: string;
+};
 const money = (amount: number) =>
   new Intl.NumberFormat("zh-CN", { style: "currency", currency: "CNY" }).format(
     amount / 100,
@@ -116,6 +125,17 @@ function BillingWorkspace({
   const [sourceDocumentId, setSourceDocumentId] = useState(
     initialPublication.sourceDocumentId,
   );
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [libraryLoading, setLibraryLoading] = useState(false);
+  const [libraryDocuments, setLibraryDocuments] = useState<LibraryDocument[]>(
+    [],
+  );
+  const [libraryTotal, setLibraryTotal] = useState(0);
+  const [libraryError, setLibraryError] = useState("");
+  const [libraryPreview, setLibraryPreview] = useState<
+    (LibraryDocument & { body: string }) | undefined
+  >();
+  const [libraryPreviewLoading, setLibraryPreviewLoading] = useState(false);
   const attempt = useRef(new PublicationAttempt());
   const submitting = useRef(false);
   const readVersion = useRef(0);
@@ -136,6 +156,60 @@ function BillingWorkspace({
   const [publicationForm] = Form.useForm<PublicationForm>();
   const [appealForm] = Form.useForm<AppealForm>();
   const [appealOrderId, setAppealOrderId] = useState<string>();
+  async function loadLibrary(query = "") {
+    if (!scope.brandId) return;
+    setLibraryLoading(true);
+    setLibraryError("");
+    try {
+      const result = await api<{ list: LibraryDocument[]; total: number }>(
+        `/api/v1/content-documents?${scopeQuery({
+          organizationId: scope.organizationId,
+          teamBindingId: scope.teamBindingId,
+          brandId: scope.brandId,
+          status: "ready",
+          limit: "100",
+          offset: "0",
+          ...(query.trim() ? { q: query.trim() } : {}),
+        })}`,
+        { cache: "no-store" },
+      );
+      setLibraryDocuments(result.list);
+      setLibraryTotal(result.total);
+    } catch (error) {
+      setLibraryError(
+        error instanceof Error ? error.message : "文档库读取失败",
+      );
+    } finally {
+      setLibraryLoading(false);
+    }
+  }
+  function chooseLibraryDocument(document: LibraryDocument) {
+    setSourceDocumentId(document.id);
+    setSourceJobId(undefined);
+    publicationForm.setFieldsValue({
+      title: document.title,
+      contentHtml: undefined,
+    });
+    setLibraryOpen(false);
+    setLibraryPreview(undefined);
+  }
+  async function previewLibraryDocument(document: LibraryDocument) {
+    setLibraryPreviewLoading(true);
+    try {
+      const detail = await api<LibraryDocument & { body: string }>(
+        `/api/v1/content-documents/${document.id}?${scopeQuery({
+          organizationId: scope.organizationId,
+          teamBindingId: scope.teamBindingId,
+          brandId: scope.brandId,
+        })}`,
+      );
+      setLibraryPreview(detail);
+    } catch (error) {
+      setLibraryError(error instanceof Error ? error.message : "文档读取失败");
+    } finally {
+      setLibraryPreviewLoading(false);
+    }
+  }
   const load = useCallback(
     async (signal?: AbortSignal) => {
       if (!scope.organizationId || !scope.teamBindingId || !scope.brandId)
@@ -603,6 +677,20 @@ function BillingWorkspace({
                   </div>
                 }
               >
+                <Space style={{ marginBottom: 16 }} wrap>
+                  <Button
+                    disabled={!scope.brandId}
+                    onClick={() => {
+                      setLibraryOpen(true);
+                      void loadLibrary();
+                    }}
+                  >
+                    从文档库选择文章
+                  </Button>
+                  <Typography.Link href="/dashboard/content?stage=library">
+                    管理文档库
+                  </Typography.Link>
+                </Space>
                 <Form.Item
                   label="内容标题"
                   name="title"
@@ -812,6 +900,94 @@ function BillingWorkspace({
           </Row>
         </Form>
       ) : null}
+
+      <Modal
+        footer={null}
+        onCancel={() => setLibraryOpen(false)}
+        open={libraryOpen}
+        title="选择已定稿文章"
+        width={760}
+      >
+        <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+          <Input.Search
+            enterButton="搜索"
+            onSearch={(value) => void loadLibrary(value)}
+            placeholder="搜索文档标题或正文"
+          />
+          {libraryError ? (
+            <Alert message={libraryError} showIcon type="error" />
+          ) : null}
+          <List
+            dataSource={libraryDocuments}
+            loading={libraryLoading}
+            locale={{ emptyText: "当前品牌没有已定稿文章" }}
+            renderItem={(document) => (
+              <List.Item
+                actions={[
+                  <Button
+                    key="preview"
+                    loading={libraryPreviewLoading}
+                    onClick={() => void previewLibraryDocument(document)}
+                    type="link"
+                  >
+                    查看
+                  </Button>,
+                  <Button
+                    disabled={document.contentLength === 0}
+                    key="choose"
+                    onClick={() => chooseLibraryDocument(document)}
+                    type="link"
+                  >
+                    用于发布
+                  </Button>,
+                ]}
+              >
+                <List.Item.Meta
+                  description={document.bodyPreview || "暂无正文预览"}
+                  title={
+                    <Space wrap>
+                      <Typography.Text strong>{document.title}</Typography.Text>
+                      <Tag>
+                        {document.source === "ai_generated"
+                          ? "腾讯 AI 生成"
+                          : document.source === "imported"
+                            ? "外部导入"
+                            : "本平台创作"}
+                      </Tag>
+                    </Space>
+                  }
+                />
+              </List.Item>
+            )}
+          />
+          {libraryTotal > 100 ? (
+            <Typography.Text type="secondary">
+              当前显示前 100 篇；可通过搜索找到更多文章。
+            </Typography.Text>
+          ) : null}
+        </Space>
+      </Modal>
+
+      <Modal
+        footer={
+          <Button
+            onClick={() =>
+              libraryPreview && chooseLibraryDocument(libraryPreview)
+            }
+            type="primary"
+          >
+            使用这篇文章
+          </Button>
+        }
+        onCancel={() => setLibraryPreview(undefined)}
+        open={Boolean(libraryPreview)}
+        title={libraryPreview?.title ?? "文档预览"}
+        width={760}
+      >
+        <Typography.Paragraph style={{ whiteSpace: "pre-wrap" }}>
+          {libraryPreview?.body}
+        </Typography.Paragraph>
+      </Modal>
 
       <Modal
         forceRender

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   answerBitArticleContentSchema,
+  answerBitArticleProgressSchema,
   answerBitBrandListSchema,
   answerBitDashboardMetricsSchema,
   answerBitTaskListSchema,
@@ -45,6 +46,15 @@ describe("AnswerBit shared response contracts", () => {
         title: "Title",
         main_body: "Body",
       }).success,
+    ).toBe(false);
+  });
+
+  it("accepts an incomplete article only while Tencent reports generation in progress", () => {
+    expect(
+      answerBitArticleProgressSchema.safeParse({ status: 0 }).success,
+    ).toBe(true);
+    expect(
+      answerBitArticleProgressSchema.safeParse({ status: 1 }).success,
     ).toBe(false);
   });
 });

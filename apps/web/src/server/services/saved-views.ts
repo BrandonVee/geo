@@ -1,3 +1,4 @@
+import { assertEnterpriseAccess } from "@geo/db";
 import type {
   CreateSavedViewInput,
   UpdateSavedViewInput,
@@ -9,6 +10,7 @@ import { authorizeBrand } from "@/server/permissions/brand-scope";
 import { organizationRepository } from "@/server/repositories/organizations";
 import { savedViewRepository } from "@/server/repositories/saved-views";
 async function member(organizationId: string, userId: string) {
+  await assertEnterpriseAccess(organizationId);
   const membership = await organizationRepository.findMembershipRole(
     organizationId,
     userId,

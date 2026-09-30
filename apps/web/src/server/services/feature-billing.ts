@@ -1,3 +1,4 @@
+import { assertEnterpriseAccess } from "@geo/db";
 import {
   consumeBalance,
   getEffectiveFeaturePointCost,
@@ -44,6 +45,7 @@ export async function runPointBilledFeature<T>(
   input: FeatureCharge,
   execute: () => Promise<T>,
 ): Promise<T> {
+  await assertEnterpriseAccess(input.organizationId, true);
   const pricing = await assertPointBilledFeatureQuote(
     input.featureCode,
     input.actorUserId,
@@ -69,7 +71,7 @@ export async function runPointBilledFeature<T>(
         "ANSWERBIT_POINTS_INSUFFICIENT",
         `当前品牌积分不足，${input.featureName}需要 ${configuredPoints} 积分`,
       );
-    chargedPoints = "transaction" in consumed ? consumed.transaction.amount : 0;
+    chargedPoints = consumed.transaction?.amount ?? 0;
   }
 
   try {

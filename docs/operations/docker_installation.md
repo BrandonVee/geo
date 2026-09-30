@@ -22,7 +22,7 @@ bash scripts/install-docker.sh
 1. 公共访问 Origin、宿主机端口、版本号和 Compose 项目名；
 2. 内置基础设施或外部 PostgreSQL/Redis；
 3. 外部模式下的业务数据库 URL、迁移数据库 URL 和 Redis URL；
-4. AnswerBit 地址，以及可选的小青蛙兼容回退地址与 Key；小青蛙推荐在启动后的“发布履约”网页中验证并保存；
+4. AnswerBit 地址，以及可选的媒体发布兼容回退地址与 Key；媒体发布推荐在启动后的“发布履约”网页中验证并保存；
 5. 是否立即构建并启动。
 
 脚本自动生成独立的 `APP_ENCRYPTION_KEY` 与 `BETTER_AUTH_SECRET`，把最终配置写入权限为 `600` 的 `.env.production`。该文件已被 Git 忽略，不得复制到镜像、日志或代码仓库。`APP_ENCRYPTION_KEY` 必须单独备份，更新版本时继续使用原值。

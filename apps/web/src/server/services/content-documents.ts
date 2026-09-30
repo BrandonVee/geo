@@ -9,6 +9,12 @@ import type { AuditContext } from "@/server/audit/write-audit";
 import { writeAudit } from "@/server/audit/write-audit";
 import { ApiError, databaseErrorCode } from "@/server/http/errors";
 import { authorizeBrand } from "@/server/permissions/brand-scope";
+import {
+  isPlatformAdministrator,
+  requirePlatformPermission,
+} from "@/server/permissions/platform";
+import { brandRepository } from "@/server/repositories/brands";
+import { organizationRepository } from "@/server/repositories/organizations";
 import { contentDocumentRepository } from "@/server/repositories/content-documents";
 
 type Scope = {
@@ -26,6 +32,36 @@ async function authorize(
     | "resource.update"
     | "resource.delete",
 ) {
+  if (await isPlatformAdministrator(userId)) {
+    await requirePlatformPermission(userId, permission);
+    const organization = await organizationRepository.findById(
+      scope.organizationId,
+    );
+    if (!organization || organization.status === "closed")
+      throw new ApiError(404, "ORGANIZATION_NOT_FOUND", "企业不存在");
+    if (organization.status !== "active")
+      throw new ApiError(403, "ORGANIZATION_SUSPENDED", "企业已被冻结或关闭");
+    if (
+      !(await brandRepository.findTeam(
+        scope.organizationId,
+        scope.teamBindingId,
+      ))
+    )
+      throw new ApiError(
+        404,
+        "TEAM_BINDING_NOT_FOUND",
+        "企业腾讯范围不存在或已停用",
+      );
+    if (
+      !(await brandRepository.findBrand(
+        scope.organizationId,
+        scope.teamBindingId,
+        scope.brandId,
+      ))
+    )
+      throw new ApiError(404, "BRAND_NOT_FOUND", "品牌不属于当前企业范围");
+    return;
+  }
   await authorizeBrand(
     scope.organizationId,
     scope.teamBindingId,

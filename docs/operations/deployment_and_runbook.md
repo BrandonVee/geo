@@ -25,7 +25,7 @@
 5. 每个版本执行一次的数据库发布任务，使用独立迁移身份；
 6. TLS 终止与反向代理，将公共流量只转发到 Web。
 
-Web 与 Worker 应使用同一数据库、AnswerBit 地址和规范 Base64 编码的 32 字节加密主密钥；Web 另外通过 `REDIS_URL` 接入 Redis。小青蛙聚合发布在部署完成后由平台管理员进入“发布履约”填写 API 地址和 Key，系统验证后把 Key 加密保存到 PostgreSQL，Web 与 Worker 通过共享数据库和 `APP_ENCRYPTION_KEY` 使用同一配置。`FROG_PUBLICATION_BASE_URL` 与 `FROG_PUBLICATION_API_KEY` 只为旧部署兼容保留；数据库尚无网页配置时才回退使用。`APP_URL`、`BETTER_AUTH_URL`、trusted origins、`ANSWERBIT_BASE_URL` 与 `FROG_PUBLICATION_BASE_URL` 都必须配置为不含路径、查询参数、凭证或片段的 HTTP(S) Origin；网页保存的小青蛙地址使用相同规则，防止 operation 路径覆盖配置路径或凭证混入目标地址。`NODE_ENV=production` 以启用安全 Cookie。Web 启动路径统一读取 `packages/config` 的 Web schema，Worker 启动时读取不含认证与 Redis 字段的 Worker schema；数据库/Redis 协议、密钥编码、URL、可信 Origin 和版本标识不合法时不得进入正常服务。
+Web 与 Worker 应使用同一数据库、AnswerBit 地址和规范 Base64 编码的 32 字节加密主密钥；Web 另外通过 `REDIS_URL` 接入 Redis。媒体发布服务在部署完成后由平台管理员进入“媒体发布”填写 API 地址和 Key，系统验证后把 Key 加密保存到 PostgreSQL，Web 与 Worker 通过共享数据库和 `APP_ENCRYPTION_KEY` 使用同一配置。`FROG_PUBLICATION_BASE_URL` 与 `FROG_PUBLICATION_API_KEY` 只为旧部署兼容保留；数据库尚无网页配置时才回退使用。`APP_URL`、`BETTER_AUTH_URL`、trusted origins、`ANSWERBIT_BASE_URL` 与 `FROG_PUBLICATION_BASE_URL` 都必须配置为不含路径、查询参数、凭证或片段的 HTTP(S) Origin；网页保存的媒体发布地址使用相同规则，防止 operation 路径覆盖配置路径或凭证混入目标地址。`NODE_ENV=production` 以启用安全 Cookie。Web 启动路径统一读取 `packages/config` 的 Web schema，Worker 启动时读取不含认证与 Redis 字段的 Worker schema；数据库/Redis 协议、密钥编码、URL、可信 Origin 和版本标识不合法时不得进入正常服务。
 
 单机自托管可直接运行 `pnpm install:docker`，由交互式引导生成 `.env.production` 并使用 `docker-compose.production.yml` 构建和启动。该 Compose 支持内置 PostgreSQL/Redis 与外部托管连接两种模式，详细步骤见 [Docker 安装引导](./docker_installation.md)。
 
@@ -45,7 +45,7 @@ docker build --target worker -t REGISTRY/answerbit-geo-worker:VERSION .
 
 镜像构建阶段只使用不可用于运行的占位配置完成静态分析，真实运行 `DATABASE_URL`、迁移 `MIGRATION_DATABASE_URL`、认证密钥、加密主密钥和腾讯地址必须由运行环境注入，禁止写入 build args、镜像层或前端变量。数据库迁移、种子和 RLS 检查不在 Web/Worker 容器启动时自动执行；`MIGRATION_DATABASE_URL` 不得注入 Web 或 Worker。
 
-当前仓库用 `packages/db/drizzle/v1.sql` 表达初始数据库基线，`v2.sql` 增加网页保存的小青蛙平台凭证，`v3.sql` 增加客户价格等级与渠道成本/售价，`v4.sql` 增加品牌文档库、不可变版本、文件夹和发布来源关联，并回填已有成功生成内容，`v5.sql` 增加 AnswerBit 只读数据缓存，`v6.sql` 转换积分加价率并保留旧自定义折扣，`v7.sql` 增加异步文章价格快照。全新环境依次执行 v1—v7；已完整应用旧 0000—0044 迁移链或 `0044_baseline` 的环境依据保留的最终时间戳跳过基线建表，再执行后续版本。版本记录步骤校验当前结构并把 schema 修订推进为 `v7`，种子修订推进为 `v2`。切换前必须确认历史库已经执行 `0044_lively_shard`；不得在发布任务之外手工清空或篡改 `drizzle.__drizzle_migrations`。未完整升级的历史库先使用旧版本补齐迁移。新结构变更继续追加迁移并递增 `vN` 发布修订。
+当前仓库用 `packages/db/drizzle/v1.sql` 表达初始数据库基线，`v2.sql` 增加网页保存的媒体发布平台凭证，`v3.sql` 增加客户价格等级与渠道成本/售价，`v4.sql` 增加品牌文档库、不可变版本、文件夹和发布来源关联，并回填已有成功生成内容，`v5.sql` 增加 AnswerBit 只读数据缓存，`v6.sql` 转换积分加价率并保留旧自定义折扣，`v7.sql` 增加异步文章价格快照，`v8.sql` 增加企业服务与积分到期日（存量企业不强制补期，新企业默认一个月服务和一年积分有效期）。全新环境依次执行 v1—v8；已完整应用旧 0000—0044 迁移链或 `0044_baseline` 的环境依据保留的最终时间戳跳过基线建表，再执行后续版本。版本记录步骤校验当前结构并把 schema 修订推进为 `v8`，种子修订推进为 `v2`。切换前必须确认历史库已经执行 `0044_lively_shard`；不得在发布任务之外手工清空或篡改 `drizzle.__drizzle_migrations`。未完整升级的历史库先使用旧版本补齐迁移。新结构变更继续追加迁移并递增 `vN` 发布修订。
 
 ## 持续集成门禁
 
@@ -108,11 +108,11 @@ Redis 可启用 AOF 并纳入基础设施备份，但它只承载登录限流和
 1. 隔离写流量并记录故障窗口；
 2. 在独立实例恢复指定恢复点的备份，使用目标应用版本的 release 镜像完成数据库发布，并验证 `system_release_state`；
 3. 检查用户、组织、余额流水、发布单、固定 TeamID 的统一 AnswerBit 密文、官方权限、品牌目录与企业 BrandID 映射，以及 pg-boss 任务；
-4. 使用同一 `APP_ENCRYPTION_KEY` 验证统一 AnswerBit Key 与小青蛙 Key 密文可解密；
+4. 使用同一 `APP_ENCRYPTION_KEY` 验证统一 AnswerBit Key 与媒体发布 Key 密文可解密；
 5. 运行 RLS 检查与应用冒烟；
 6. 切换流量后监控重复任务和幂等流水。
 
-`APP_ENCRYPTION_KEY` 必须独立备份；丢失该密钥会使平台统一 AnswerBit Key 与小青蛙 Key 密文失去可用性，并影响全部企业。报告导出文件是短期派生物，不作为核心恢复来源。
+`APP_ENCRYPTION_KEY` 必须独立备份；丢失该密钥会使平台统一 AnswerBit Key 与媒体发布 Key 密文失去可用性，并影响全部企业。报告导出文件是短期派生物，不作为核心恢复来源。
 
 ## 故障处置
 

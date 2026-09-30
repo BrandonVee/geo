@@ -141,10 +141,10 @@ describe("运行环境校验", () => {
       { ANSWERBIT_BASE_URL: "https://answerbit.test?tenant=1" },
     ],
     [
-      "小青蛙凭证",
+      "媒体发布凭证",
       { FROG_PUBLICATION_BASE_URL: "https://user:pass@frog.test" },
     ],
-    ["小青蛙片段", { FROG_PUBLICATION_BASE_URL: "https://frog.test#api" }],
+    ["媒体发布片段", { FROG_PUBLICATION_BASE_URL: "https://frog.test#api" }],
   ])("拒绝包含%s的上游基础地址", (_name, override) => {
     expect(() => workerEnv({ ...base, ...override })).toThrow(
       /HTTP\(S\) origin/,

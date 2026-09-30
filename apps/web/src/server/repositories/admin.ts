@@ -32,6 +32,7 @@ type UserPage = Page & {
   accountType?: "admin" | "agent" | "customer";
 };
 type UserUpdate = {
+  name?: string;
   status?: "active" | "disabled";
   accountType?: "agent" | "customer";
   pricingTier?: "retail" | "bronze" | "silver" | "gold";
@@ -254,6 +255,8 @@ export const adminRepository = {
           id: organizations.id,
           name: organizations.name,
           slug: organizations.slug,
+          serviceExpiresAt: organizations.serviceExpiresAt,
+          pointsExpiresAt: organizations.pointsExpiresAt,
           status: organizations.status,
           planCode: organizations.planCode,
           createdAt: organizations.createdAt,
@@ -290,10 +293,17 @@ export const adminRepository = {
     ]);
     return { list, pagination: pageMeta(input, count?.value ?? 0) };
   },
-  updateOrganization(id: string, status: "active" | "suspended") {
+  updateOrganization(
+    id: string,
+    input: {
+      status?: "active" | "suspended";
+      serviceExpiresAt?: Date;
+      pointsExpiresAt?: Date;
+    },
+  ) {
     return db
       .update(organizations)
-      .set({ status, updatedAt: new Date() })
+      .set({ ...input, updatedAt: new Date() })
       .where(and(eq(organizations.id, id), ne(organizations.status, "closed")))
       .returning()
       .then((rows) => rows[0]);
@@ -304,6 +314,8 @@ export const adminRepository = {
         id: organizations.id,
         name: organizations.name,
         slug: organizations.slug,
+        serviceExpiresAt: organizations.serviceExpiresAt,
+        pointsExpiresAt: organizations.pointsExpiresAt,
         status: organizations.status,
         planCode: organizations.planCode,
         createdAt: organizations.createdAt,

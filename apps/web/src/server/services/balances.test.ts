@@ -5,6 +5,8 @@ const mocks = vi.hoisted(() => ({
   authorizeBrand: vi.fn(),
   authorizeOrganization: vi.fn(),
   pointUsage: vi.fn(),
+  deduct: vi.fn(),
+  brandExists: vi.fn(),
   setPointCost: vi.fn(),
   writeAudit: vi.fn(),
 }));
@@ -32,6 +34,8 @@ vi.mock("@/server/audit/write-audit", () => ({
 vi.mock("@/server/repositories/balances", () => ({
   balanceRepository: {
     pointUsage: mocks.pointUsage,
+    deduct: mocks.deduct,
+    brandExists: mocks.brandExists,
     setPointCost: mocks.setPointCost,
   },
 }));
@@ -164,5 +168,51 @@ describe("租户品牌积分用量", () => {
 
     expect(result.organizationBalance).toBeNull();
     expect(result.balance).toBe(680);
+  });
+});
+
+describe("管理员手动扣减", () => {
+  const input = {
+    organizationId: "org",
+    brandId: "brand",
+    asset: "answerbit_points" as const,
+    amount: 10,
+    reason: "人工纠错扣减",
+    idempotencyKey: "request-key",
+  };
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+  it("缺少平台权限不能扣减", async () => {
+    mocks.requirePlatformPermission.mockRejectedValue(new Error("forbidden"));
+    await expect(balanceService.deduct(input, userId, audit)).rejects.toThrow(
+      "forbidden",
+    );
+    expect(mocks.deduct).not.toHaveBeenCalled();
+  });
+  it("拒绝跨企业品牌；余额不足不写成功审计", async () => {
+    mocks.brandExists.mockResolvedValue(false);
+    await expect(
+      balanceService.deduct(input, userId, audit),
+    ).rejects.toMatchObject({ code: "BRAND_NOT_FOUND" });
+    expect(mocks.deduct).not.toHaveBeenCalled();
+    mocks.brandExists.mockResolvedValue(true);
+    mocks.deduct.mockResolvedValue({ ok: false, code: "INSUFFICIENT_BALANCE" });
+    await expect(
+      balanceService.deduct(input, userId, audit),
+    ).rejects.toMatchObject({ code: "INSUFFICIENT_BALANCE" });
+    expect(mocks.writeAudit).not.toHaveBeenCalled();
+  });
+  it("幂等重放不重复写成功审计", async () => {
+    mocks.brandExists.mockResolvedValue(true);
+    mocks.deduct.mockResolvedValue({
+      ok: true,
+      replayed: true,
+      transaction: { id: "ledger" },
+    });
+    await expect(
+      balanceService.deduct(input, userId, audit),
+    ).resolves.toMatchObject({ replayed: true });
+    expect(mocks.writeAudit).not.toHaveBeenCalled();
   });
 });

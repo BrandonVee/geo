@@ -29,7 +29,7 @@ import {
   type TableColumnsType,
 } from "antd";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ScopeFields,
   scopeQuery,
@@ -73,6 +73,7 @@ type Job = {
   articleTitle: string | null;
   articleBody: string | null;
   templateType: number | null;
+  generationMode: "standard" | "reference" | null;
   tags: { tagId: string; tagName: string }[] | null;
   errorCode: string | null;
   createdAt: string;
@@ -147,6 +148,7 @@ export function ContentClient({
   const searchParams = useSearchParams();
   const scope = useAnswerBitScope(organizations);
   const { organizationId, teamBindingId, brandId } = scope;
+  const scopeVersion = useRef(0);
   const [articles, setArticles] = useState<Article[]>([]);
   const [templates, setTemplates] = useState<Template[]>([]);
   const [prompts, setPrompts] = useState<Prompt[]>([]);
@@ -167,12 +169,36 @@ export function ContentClient({
   const [traceUrls, setTraceUrls] = useState("");
   const [traceCreateOpen, setTraceCreateOpen] = useState(false);
   const [language, setLanguage] = useState("zh-CN");
+  const [generationMode, setGenerationMode] = useState<
+    "standard" | "reference"
+  >("standard");
   const [templateType, setTemplateType] = useState("");
+  const availableTemplates = templates.filter((item) =>
+    generationMode === "reference"
+      ? item.is_high_ref === 1
+      : item.is_high_ref === 0,
+  );
+  const selectedTemplate =
+    availableTemplates.find(
+      (item) => String(item.template_id) === templateType,
+    ) ?? availableTemplates[0];
+  const activeTemplateType = selectedTemplate
+    ? String(selectedTemplate.template_id)
+    : "";
   const [selectedPrompts, setSelectedPrompts] = useState<string[]>([]);
   const [supplement, setSupplement] = useState("");
   const [highRefUrl, setHighRefUrl] = useState("");
   const [detail, setDetail] = useState<TraceDetail | null>(null);
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
+  useEffect(() => {
+    scopeVersion.current += 1;
+    setArticles([]);
+    setJobs([]);
+    setSelectedJob(null);
+    setLibraryTags([]);
+    setDetail(null);
+    setMessage("");
+  }, [organizationId, teamBindingId, brandId]);
   function changeTab(nextTab: "library" | "trace" | "generate") {
     setTab(nextTab);
     const params = new URLSearchParams(searchParams.toString());
@@ -182,6 +208,7 @@ export function ContentClient({
   const load = useCallback(
     async (cursor?: string) => {
       if (!brandId) return;
+      const version = scopeVersion.current;
       setLoading(true);
       const base = { organizationId, teamBindingId, brandId };
       try {
@@ -233,6 +260,7 @@ export function ContentClient({
           jobResponse.json(),
           documentResponse.json(),
         ]);
+        if (version !== scopeVersion.current) return;
         if (!articleResponse.ok) throw new Error(articleBody.error?.message);
         const nextArticles = articleBody.data.list ?? [];
         setArticles((current) =>
@@ -271,9 +299,12 @@ export function ContentClient({
             current || String(templateBody.data?.[0]?.template_id ?? ""),
         );
       } catch (error) {
-        setMessage(error instanceof Error ? error.message : "内容数据加载失败");
+        if (version === scopeVersion.current)
+          setMessage(
+            error instanceof Error ? error.message : "内容数据加载失败",
+          );
       } finally {
-        setLoading(false);
+        if (version === scopeVersion.current) setLoading(false);
       }
     },
     [organizationId, teamBindingId, brandId, language],
@@ -286,9 +317,31 @@ export function ContentClient({
       !jobs.some((job) => job.status === "queued" || job.status === "running")
     )
       return;
-    const timer = window.setInterval(() => void load(), 2500);
+    const refreshJobs = async () => {
+      if (document.hidden || !navigator.onLine || !brandId) return;
+      const version = scopeVersion.current;
+      try {
+        const response = await fetch(
+          `/api/v1/answerbit/article-jobs?${scopeQuery({ organizationId, teamBindingId, brandId, limit: "20" })}`,
+          { cache: "no-store" },
+        );
+        if (!response.ok) return;
+        const body = await response.json();
+        if (version !== scopeVersion.current) return;
+        const nextJobs = body.data as Job[];
+        setJobs(nextJobs);
+        setSelectedJob((current) =>
+          current
+            ? (nextJobs.find((job) => job.id === current.id) ?? current)
+            : null,
+        );
+      } catch {
+        // The manual refresh action remains available if a status request fails.
+      }
+    };
+    const timer = window.setInterval(() => void refreshJobs(), 15_000);
     return () => window.clearInterval(timer);
-  }, [jobs, load]);
+  }, [jobs, organizationId, teamBindingId, brandId]);
   async function request(url: string, options?: RequestInit) {
     const response = await fetch(url, options);
     const body = await response.json();
@@ -334,11 +387,11 @@ export function ContentClient({
   }
   async function generate() {
     if (submitting || !scope.canWrite || !scope.brandId) return;
-    const template = templates.find(
-      (item) => String(item.template_id) === templateType,
-    );
+    const template = selectedTemplate;
+    if (!template)
+      return setMessage("当前生成方式暂无可用模板，请切换方式或重试加载");
     if (!selectedPrompts.length) return setMessage("至少选择一个目标问题");
-    if (template?.is_high_ref === 1 && !highRefUrl)
+    if (generationMode === "reference" && !highRefUrl.trim())
       return setMessage("该模板需要参考文章 URL");
     const upstreamTagIds = selectedGenerationTags.filter((value) =>
       tags.some((tag) => tag.tag_id === value),
@@ -371,10 +424,13 @@ export function ContentClient({
         body: JSON.stringify({
           ...apiScope(scope),
           expectedPoints: featurePointCosts.articleGeneration,
-          templateType: Number(templateType),
+          templateType: Number(activeTemplateType),
           promptIds: selectedPrompts,
           supplementalKnowledge: supplement || undefined,
-          highReference: highRefUrl ? { url: highRefUrl } : undefined,
+          highReference:
+            generationMode === "reference"
+              ? { url: highRefUrl.trim() }
+              : undefined,
           tagIds: upstreamTagIds,
           contentTags,
           language,
@@ -540,6 +596,17 @@ export function ContentClient({
                         "zh-CN",
                       )} · 模板 ${job.templateType ?? "—"}`}
                     </Typography.Text>
+                    <AntTag
+                      color={
+                        job.generationMode === "reference" ? "purple" : "blue"
+                      }
+                    >
+                      {job.generationMode === "reference"
+                        ? "参考文章生成"
+                        : job.generationMode === "standard"
+                          ? "普通文章生成"
+                          : "历史任务 · 方式未知"}
+                    </AntTag>
                     {job.tags?.length ? (
                       <Space size={[4, 4]} wrap>
                         {job.tags.map((tag) => (
@@ -629,24 +696,64 @@ export function ContentClient({
         <Row align="stretch" gutter={[16, 16]}>
           <Col xl={16} xs={24}>
             <Card title="创建 AI 文章">
+              <Tabs
+                activeKey={generationMode}
+                onChange={(value) => {
+                  setGenerationMode(value as "standard" | "reference");
+                  setTemplateType("");
+                  setHighRefUrl("");
+                  setMessage("");
+                }}
+                items={[
+                  { key: "standard", label: "普通文章生成" },
+                  { key: "reference", label: "参考文章生成" },
+                ]}
+              />
+              <Typography.Paragraph>
+                {generationMode === "reference"
+                  ? "提供一篇参考文章链接，选择高引用模板，围绕目标问题生成文章。"
+                  : "选择普通模板，围绕目标问题和补充资料生成文章。"}
+              </Typography.Paragraph>
+              <Typography.Paragraph type="secondary">
+                腾讯生成通常需要 5–10
+                分钟。提交后可离开页面，任务状态和结果会保存在这里；完成后文章自动进入文档库。
+              </Typography.Paragraph>
               <Form layout="vertical" onFinish={() => void generate()}>
-                <Form.Item label="文章模板" required>
+                <Form.Item
+                  label={
+                    generationMode === "reference"
+                      ? "高引用模板"
+                      : "普通文章模板"
+                  }
+                  extra={selectedTemplate?.description}
+                  required
+                >
                   <Select
                     onChange={setTemplateType}
-                    options={templates.map((item) => ({
+                    options={availableTemplates.map((item) => ({
                       label:
                         item.template_name +
                         (item.is_high_ref ? " · 高引用模板" : ""),
                       value: String(item.template_id),
                     }))}
                     placeholder="选择模板"
-                    value={templateType || undefined}
+                    value={activeTemplateType || undefined}
                   />
                 </Form.Item>
-                {templates.find(
-                  (item) => String(item.template_id) === templateType,
-                )?.is_high_ref === 1 ? (
-                  <Form.Item label="参考文章 URL" required>
+                {!availableTemplates.length && !loading ? (
+                  <Alert
+                    type="info"
+                    showIcon
+                    message="当前语言下暂无此类模板，请切换生成方式或语言。"
+                    style={{ marginBottom: 16 }}
+                  />
+                ) : null}
+                {generationMode === "reference" ? (
+                  <Form.Item
+                    label="参考文章链接"
+                    extra="填写腾讯可访问的完整文章链接（http:// 或 https://）。"
+                    required
+                  >
                     <Input
                       onChange={(event) => setHighRefUrl(event.target.value)}
                       placeholder="https://"
@@ -718,14 +825,19 @@ export function ContentClient({
                   </Col>
                 </Row>
                 <Button
-                  disabled={!scope.canWrite || !scope.brandId}
+                  disabled={
+                    !scope.canWrite || !scope.brandId || !selectedTemplate
+                  }
                   htmlType="submit"
                   icon={<SendOutlined />}
                   loading={submitting === "generate"}
                   type="primary"
                 >
-                  提交生成 · 消耗{" "}
-                  {featurePointCosts.articleGeneration.toLocaleString()} 积分
+                  {generationMode === "reference"
+                    ? "提交参考文章生成"
+                    : "提交普通文章生成"}{" "}
+                  · 消耗 {featurePointCosts.articleGeneration.toLocaleString()}{" "}
+                  积分
                 </Button>
               </Form>
             </Card>
@@ -737,9 +849,18 @@ export function ContentClient({
                   查看全部
                 </Button>
               }
-              title="最近生成任务"
+              title={
+                generationMode === "reference"
+                  ? "最近参考文章任务"
+                  : "最近普通文章任务"
+              }
             >
-              {renderJobList(jobs.slice(0, 6), false)}
+              {renderJobList(
+                jobs
+                  .filter((job) => job.generationMode === generationMode)
+                  .slice(0, 6),
+                false,
+              )}
             </Card>
           </Col>
         </Row>
@@ -748,6 +869,7 @@ export function ContentClient({
       {tab === "library" ? (
         <Space direction="vertical" size="large" style={{ width: "100%" }}>
           <DocumentLibrary
+            key={`${organizationId}:${teamBindingId}:${brandId}`}
             canDelete={scope.canDelete}
             canWrite={scope.canWrite}
             onMessage={setMessage}
@@ -1013,17 +1135,12 @@ export function ContentClient({
                 {selectedJob.articleBody}
               </Typography.Paragraph>
               <Button
-                href={
-                  "/dashboard/publication/new?" +
-                  new URLSearchParams({
-                    title: selectedJob.articleTitle ?? "AnswerBit 生成内容",
-                    sourceJobId: selectedJob.id,
-                  }).toString() +
-                  "#publication"
-                }
-                type="primary"
+                onClick={() => {
+                  setSelectedJob(null);
+                  changeTab("library");
+                }}
               >
-                已完成审核，进入发布
+                在文档库维护
               </Button>
             </Space>
           ) : (

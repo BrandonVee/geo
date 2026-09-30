@@ -102,7 +102,7 @@ export const publicationService = {
         moneyAmount: null,
         powerCount: null,
         checkedAt: null,
-        message: "尚未配置小青蛙 API Key",
+        message: "尚未配置媒体发布 API Key",
       };
     try {
       const balance = await client.getBalance();
@@ -112,7 +112,7 @@ export const publicationService = {
         moneyAmount: frogPriceToCents(balance.money),
         powerCount: balance.power_count,
         checkedAt: new Date().toISOString(),
-        message: "小青蛙账户连接正常",
+        message: "媒体发布账户连接正常",
       };
     } catch (error) {
       console.error(
@@ -130,8 +130,8 @@ export const publicationService = {
         checkedAt: new Date().toISOString(),
         message:
           error instanceof FrogPublicationError && error.kind === "timeout"
-            ? "小青蛙账户余额查询超时"
-            : "小青蛙账户余额暂时不可用",
+            ? "媒体发布账户余额查询超时"
+            : "媒体发布账户余额暂时不可用",
       };
     }
   },
@@ -259,7 +259,7 @@ export const publicationService = {
           throw new ApiError(
             503,
             "FROG_PUBLICATION_BALANCE_INSUFFICIENT",
-            "小青蛙平台发布余额不足，请联系平台管理员充值",
+            "媒体发布平台余额不足，请联系平台管理员充值",
           );
       } catch (error) {
         if (error instanceof ApiError) throw error;
@@ -619,7 +619,7 @@ export const publicationService = {
       throw new ApiError(
         422,
         "PUBLICATION_PRICE_BELOW_COST",
-        "聚合渠道售价不能低于小青蛙采购成本",
+        "聚合渠道售价不能低于媒体发布渠道采购成本",
       );
     const row = await publicationRepository.upsertChannel({
       id: channelId,

@@ -1,3 +1,4 @@
+import { assertEnterpriseAccess } from "./enterprise-access";
 import {
   and,
   desc,
@@ -164,6 +165,11 @@ export async function allocateBalance(input: {
         transaction: replay,
         replayed: true as const,
       };
+    await assertEnterpriseAccess(
+      input.organizationId,
+      input.asset === "answerbit_points",
+      tx,
+    );
     if (input.asset === "answerbit_points") {
       const [actor] = await tx
         .select({
@@ -261,7 +267,6 @@ export async function consumeBalance(input: {
   reason: string;
   actorUserId?: string;
 }) {
-  if (input.amount === 0) return { ok: true as const, skipped: true as const };
   return db.transaction(async (tx) => {
     await lockIdempotencyKey(tx, input.organizationId, input.idempotencyKey);
     const [replay] = await tx
@@ -280,6 +285,13 @@ export async function consumeBalance(input: {
         transaction: replay,
         replayed: true as const,
       };
+    await assertEnterpriseAccess(
+      input.organizationId,
+      input.asset === "answerbit_points",
+      tx,
+    );
+    if (input.amount === 0)
+      return { ok: true as const, skipped: true as const };
     const account = await ensureAccount(
       tx,
       input.organizationId,
@@ -599,4 +611,86 @@ export function listFeaturePointCosts() {
     .select()
     .from(featurePointCosts)
     .orderBy(featurePointCosts.featureCode);
+}
+
+/** Manual debit: immutable adjustment, conditional debit and idempotent replay. */
+export async function deductBalance(input: {
+  organizationId: string;
+  brandId?: string;
+  asset: BalanceAsset;
+  amount: number;
+  reason: string;
+  idempotencyKey: string;
+  actorUserId: string;
+}) {
+  if (!Number.isSafeInteger(input.amount) || input.amount <= 0)
+    throw new Error("INVALID_DEDUCTION_AMOUNT");
+  return db.transaction(async (tx) => {
+    await lockIdempotencyKey(tx, input.organizationId, input.idempotencyKey);
+    const [replay] = await tx
+      .select()
+      .from(balanceTransactions)
+      .where(
+        and(
+          eq(balanceTransactions.organizationId, input.organizationId),
+          eq(balanceTransactions.idempotencyKey, input.idempotencyKey),
+        ),
+      )
+      .limit(1);
+    const [account] = await tx
+      .select()
+      .from(balanceAccounts)
+      .where(accountWhere(input.organizationId, input.asset, input.brandId))
+      .limit(1);
+    if (replay) {
+      if (
+        replay.operation !== "adjust" ||
+        replay.referenceType !== "admin_deduction" ||
+        replay.sourceAccountId !== account?.id ||
+        replay.amount !== input.amount ||
+        replay.reason !== input.reason ||
+        replay.actorUserId !== input.actorUserId
+      )
+        return { ok: false as const, code: "IDEMPOTENCY_CONFLICT" as const };
+      return {
+        ok: true as const,
+        transaction: replay,
+        replayed: true as const,
+      };
+    }
+    if (!account)
+      return { ok: false as const, code: "INSUFFICIENT_BALANCE" as const };
+    const [updated] = await tx
+      .update(balanceAccounts)
+      .set({
+        balance: sql`${balanceAccounts.balance} - ${input.amount}`,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(balanceAccounts.id, account.id),
+          gte(balanceAccounts.balance, input.amount),
+        ),
+      )
+      .returning();
+    if (!updated)
+      return { ok: false as const, code: "INSUFFICIENT_BALANCE" as const };
+    const [transaction] = await tx
+      .insert(balanceTransactions)
+      .values({
+        organizationId: input.organizationId,
+        asset: input.asset,
+        operation: "adjust",
+        amount: input.amount,
+        sourceAccountId: account.id,
+        sourceBalanceAfter: updated.balance,
+        referenceType: "admin_deduction",
+        referenceId: account.id,
+        reason: input.reason,
+        idempotencyKey: input.idempotencyKey,
+        actorUserId: input.actorUserId,
+      })
+      .returning();
+    return { ok: true as const, transaction, replayed: false as const };
+  });
 }

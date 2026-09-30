@@ -7,6 +7,12 @@ import {
 
 const mocks = vi.hoisted(() => ({
   authorizeBrand: vi.fn(),
+  isPlatformAdministrator: vi.fn(),
+  requirePlatformPermission: vi.fn(),
+  findById: vi.fn(),
+  findTeam: vi.fn(),
+  findBrand: vi.fn(),
+  list: vi.fn(),
   writeAudit: vi.fn(),
   create: vi.fn(),
   find: vi.fn(),
@@ -20,6 +26,11 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/server/permissions/brand-scope", () => ({
   authorizeBrand: mocks.authorizeBrand,
 }));
+vi.mock("@/server/permissions/platform", () => mocks);
+vi.mock("@/server/repositories/organizations", () => ({
+  organizationRepository: mocks,
+}));
+vi.mock("@/server/repositories/brands", () => ({ brandRepository: mocks }));
 vi.mock("@/server/audit/write-audit", () => ({
   writeAudit: mocks.writeAudit,
 }));
@@ -47,6 +58,10 @@ const document = {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  mocks.isPlatformAdministrator.mockResolvedValue(false);
+  mocks.findById.mockResolvedValue({ status: "active" });
+  mocks.findTeam.mockResolvedValue({ id: scope.teamBindingId });
+  mocks.findBrand.mockResolvedValue({ brandId: scope.brandId });
   mocks.authorizeBrand.mockResolvedValue(undefined);
   mocks.writeAudit.mockResolvedValue(undefined);
 });
@@ -215,5 +230,62 @@ describe("内容文档服务", () => {
       ),
     ).rejects.toMatchObject({ status: 409, code: "CONTENT_FOLDER_EXISTS" });
     expect(mocks.writeAudit).not.toHaveBeenCalled();
+  });
+});
+
+describe("文章库平台与企业权限边界", () => {
+  it("平台管理员无需企业成员关系即可读取、维护文档，但必须具备对应平台权限", async () => {
+    mocks.isPlatformAdministrator.mockResolvedValue(true);
+    mocks.find.mockResolvedValue(document);
+    await expect(
+      contentDocumentService.get(scope, documentId, userId),
+    ).resolves.toEqual(document);
+    expect(mocks.authorizeBrand).not.toHaveBeenCalled();
+    expect(mocks.requirePlatformPermission).toHaveBeenCalledWith(
+      userId,
+      "resource.read",
+    );
+    mocks.requirePlatformPermission.mockRejectedValue(new Error("无写权限"));
+    await expect(
+      contentDocumentService.archive(scope, documentId, userId, audit),
+    ).rejects.toThrow("无写权限");
+    expect(mocks.update).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["findById", undefined, "ORGANIZATION_NOT_FOUND"],
+    ["findById", { status: "closed" }, "ORGANIZATION_NOT_FOUND"],
+    ["findById", { status: "suspended" }, "ORGANIZATION_SUSPENDED"],
+    ["findTeam", undefined, "TEAM_BINDING_NOT_FOUND"],
+    ["findBrand", undefined, "BRAND_NOT_FOUND"],
+  ] as const)(
+    "管理员不能绕过范围状态和品牌归属：%s %j",
+    async (method, result, code) => {
+      mocks.isPlatformAdministrator.mockResolvedValue(true);
+      mocks[method].mockResolvedValue(result);
+      await expect(
+        contentDocumentService.get(scope, documentId, userId),
+      ).rejects.toMatchObject({ code });
+      expect(mocks.find).not.toHaveBeenCalled();
+    },
+  );
+
+  it("普通用户和代理商共享获授权品牌的全部文章，不按作者过滤", async () => {
+    const input = { ...scope, limit: 20, offset: 0, unfiled: false };
+    mocks.list.mockResolvedValue({
+      list: [{ ...document, createdBy: "another-user" }],
+      total: 1,
+    });
+    await expect(
+      contentDocumentService.list(input, userId),
+    ).resolves.toMatchObject({ total: 1 });
+    expect(mocks.authorizeBrand).toHaveBeenCalledWith(
+      scope.organizationId,
+      scope.teamBindingId,
+      scope.brandId,
+      userId,
+      "resource.read",
+    );
+    expect(mocks.list).toHaveBeenCalledWith(input);
   });
 });

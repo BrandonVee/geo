@@ -34,7 +34,7 @@ import {
   Typography,
   type TableColumnsType,
 } from "antd";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { scopeQuery } from "../use-answerbit-scope";
 
 type Scope = {
@@ -121,18 +121,22 @@ export function DocumentLibrary({
   scope,
   canWrite,
   canDelete,
+  canPublish = true,
   refreshToken,
   onMessage,
 }: {
   scope: Scope;
   canWrite: boolean;
   canDelete: boolean;
+  canPublish?: boolean;
   refreshToken: string;
   onMessage: (message: string) => void;
 }) {
   const [documents, setDocuments] = useState<DocumentListItem[]>([]);
   const [folders, setFolders] = useState<Folder[]>([]);
   const [total, setTotal] = useState(0);
+  const [pagination, setPagination] = useState({ filterKey: "", page: 1 });
+  const loadVersion = useRef(0);
   const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState("");
   const [folderFilter, setFolderFilter] = useState("all");
@@ -161,11 +165,19 @@ export function DocumentLibrary({
     [scope.brandId, scope.organizationId, scope.teamBindingId],
   );
 
+  const filterKey = JSON.stringify([
+    scopeParams,
+    query,
+    folderFilter,
+    statusFilter,
+    sourceFilter,
+  ]);
+  const page = pagination.filterKey === filterKey ? pagination.page : 1;
   const queryString = useMemo(() => {
     const values: Record<string, string> = {
       ...scopeParams,
-      limit: "100",
-      offset: "0",
+      limit: "20",
+      offset: String((page - 1) * 20),
     };
     if (query.trim()) values.q = query.trim();
     if (folderFilter === "unfiled") values.unfiled = "true";
@@ -173,10 +185,11 @@ export function DocumentLibrary({
     if (statusFilter !== "active") values.status = statusFilter;
     if (sourceFilter !== "all") values.source = sourceFilter;
     return scopeQuery(values);
-  }, [folderFilter, query, scopeParams, sourceFilter, statusFilter]);
+  }, [folderFilter, query, scopeParams, sourceFilter, statusFilter, page]);
 
   const load = useCallback(async () => {
     if (!scopeParams.brandId) return;
+    const version = ++loadVersion.current;
     setLoading(true);
     try {
       const [documentData, folderData] = await Promise.all([
@@ -185,18 +198,23 @@ export function DocumentLibrary({
         ),
         api<Folder[]>(`/api/v1/content-folders?${scopeQuery(scopeParams)}`),
       ]);
+      if (version !== loadVersion.current) return;
       setDocuments(documentData.list);
       setTotal(documentData.total);
       setFolders(folderData);
     } catch (error) {
-      onMessage(error instanceof Error ? error.message : "文档库加载失败");
+      if (version === loadVersion.current)
+        onMessage(error instanceof Error ? error.message : "文档库加载失败");
     } finally {
-      setLoading(false);
+      if (version === loadVersion.current) setLoading(false);
     }
   }, [onMessage, queryString, scopeParams]);
 
   useEffect(() => {
     void load();
+    return () => {
+      loadVersion.current += 1;
+    };
   }, [load, refreshToken]);
 
   async function loadDetail(documentId: string) {
@@ -584,7 +602,7 @@ export function DocumentLibrary({
                 </Button>
               </Space>
             }
-            title="我的文档库"
+            title="企业文章库"
           >
             <Flex gap={10} style={{ marginBottom: 16 }} wrap>
               <Input.Search
@@ -628,7 +646,15 @@ export function DocumentLibrary({
                   />
                 ),
               }}
-              pagination={false}
+              pagination={{
+                current: page,
+                pageSize: 20,
+                total,
+                showSizeChanger: false,
+                showTotal: (count) => `共 ${count} 篇`,
+                onChange: (nextPage) =>
+                  setPagination({ filterKey, page: nextPage }),
+              }}
               rowKey="id"
               scroll={{ x: 900 }}
             />
@@ -816,7 +842,7 @@ export function DocumentLibrary({
                 >
                   编辑
                 </Button>
-                {detail.status === "ready" ? (
+                {canPublish && detail.status === "ready" ? (
                   <Button
                     href={`/dashboard/publication/new?${new URLSearchParams({ title: detail.title, sourceDocumentId: detail.id }).toString()}`}
                     icon={<SendOutlined />}

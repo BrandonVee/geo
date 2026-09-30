@@ -8,7 +8,6 @@ import {
   Col,
   Empty,
   Form,
-  Input,
   InputNumber,
   Row,
   Select,
@@ -44,7 +43,7 @@ type Transaction = {
   reason: string;
   createdAt: string;
 };
-type AllocationForm = { asset: Asset; amount: number; reason: string };
+type AllocationForm = { asset: Asset; amount: number };
 
 const money = (amount: number) =>
   new Intl.NumberFormat("zh-CN", {
@@ -140,7 +139,6 @@ export function BalanceManagementClient({
             values.asset === "publication_cny"
               ? Math.round(values.amount * 100)
               : values.amount,
-          reason: values.reason,
           idempotencyKey: crypto.randomUUID(),
         }),
       });
@@ -327,16 +325,6 @@ export function BalanceManagementClient({
                   step={asset === "publication_cny" ? 0.01 : 1}
                   style={{ width: "100%" }}
                 />
-              </Form.Item>
-              <Form.Item
-                label="划拨说明"
-                name="reason"
-                rules={[
-                  { required: true, message: "请输入划拨说明" },
-                  { min: 4, message: "至少输入 4 个字符" },
-                ]}
-              >
-                <Input placeholder="说明本次划拨用途" />
               </Form.Item>
               <Button
                 block

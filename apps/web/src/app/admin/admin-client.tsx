@@ -64,6 +64,8 @@ import {
 import dayjs, { type Dayjs } from "dayjs";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { EnterpriseValidity } from "./enterprise-validity";
+import { AdminDocumentLibrary } from "./admin-document-library";
 import { MeteringClient } from "../dashboard/metering/metering-client";
 import type { ScopeOrganization } from "../dashboard/use-answerbit-scope";
 import { ThemeToggle } from "../theme-toggle";
@@ -72,6 +74,7 @@ type Tab =
   | "organizations"
   | "users"
   | "integration"
+  | "library"
   | "metering"
   | "balances"
   | "publications"
@@ -136,6 +139,8 @@ const runtimeTaskStatusMeta = {
   missing: { color: "default", label: "未上报" },
 } as const;
 type Organization = {
+  serviceExpiresAt: string | null;
+  pointsExpiresAt: string | null;
   id: string;
   name: string;
   slug: string;
@@ -375,6 +380,8 @@ type UserAccessForm = {
   }>;
 };
 type GrantForm = {
+  operation: "grant" | "deduct";
+  account: "enterprise" | "brand";
   asset: BalanceAccount["asset"];
   amount: number;
   reason: string;
@@ -389,6 +396,10 @@ type PricingTierRuleForm = {
 type MemberForm = {
   userId: string;
   role: "tenant_admin" | "brand_admin" | "brand_editor" | "brand_viewer";
+};
+type UserOrganizationForm = {
+  organizationId: string;
+  role: MemberForm["role"];
 };
 type PlatformCredentialForm = {
   teamId: string;
@@ -426,6 +437,7 @@ const tabs: [Tab, string, string][] = [
   ["publication-channels", "07", "发布渠道"],
   ["publication-orders", "08", "发布订单"],
   ["operations", "09", "运行与审计"],
+  ["library", "10", "文章库"],
 ];
 const adminNavigationGroups: Array<{ label: string; keys: Tab[] }> = [
   { label: "总览", keys: ["overview"] },
@@ -439,7 +451,7 @@ const adminNavigationGroups: Array<{ label: string; keys: Tab[] }> = [
   },
   {
     label: "业务运营",
-    keys: ["metering", "publication-channels", "publication-orders"],
+    keys: ["library", "metering", "publication-channels", "publication-orders"],
   },
   { label: "系统治理", keys: ["operations"] },
 ];
@@ -462,6 +474,11 @@ const adminSectionMeta: Record<
     title: "企业与品牌",
     description: "管理腾讯品牌对应的平台企业、成员关系与资源状态。",
   },
+  library: {
+    eyebrow: "业务运营 / 本地内容",
+    title: "文章库",
+    description: "按企业查看和维护全平台的 AI 生成、手工创作与导入文章。",
+  },
   metering: {
     eyebrow: "业务运营 / 腾讯资源",
     title: "腾讯资源与用量",
@@ -480,7 +497,7 @@ const adminSectionMeta: Record<
   publications: {
     eyebrow: "服务接入 / 内容发布",
     title: "发布平台接入",
-    description: "连接小青蛙聚合发布平台，验证 API，并查看上游账户资源。",
+    description: "连接媒体发布平台，验证接口，并查看上游账户资源。",
   },
   "publication-channels": {
     eyebrow: "业务运营 / 内容发布",
@@ -646,7 +663,7 @@ export function AdminClient({
   meteringOrganizations,
   userName,
 }: {
-  meteringOrganizations: ScopeOrganization[];
+  meteringOrganizations: (ScopeOrganization & { brandId: string })[];
   userName: string;
 }) {
   const { token } = theme.useToken();
@@ -662,11 +679,20 @@ export function AdminClient({
   const [userForm] = Form.useForm<UserForm>();
   const [userAccessForm] = Form.useForm<UserAccessForm>();
   const [grantForm] = Form.useForm<GrantForm>();
+  const grantOperation = Form.useWatch("operation", grantForm);
+  const grantKey = useRef(crypto.randomUUID());
+  const [validityOrganization, setValidityOrganization] =
+    useState<Organization | null>(null);
   const [costForm] = Form.useForm<CostForm>();
   const [channelForm] = Form.useForm<ChannelForm>();
   const [pricingTierRuleForm] = Form.useForm<PricingTierRuleForm>();
   const [frogCredentialForm] = Form.useForm<FrogCredentialForm>();
   const [memberForm] = Form.useForm<MemberForm>();
+  const [userOrganizationForm] = Form.useForm<UserOrganizationForm>();
+  const [userOrganizationOptions, setUserOrganizationOptions] = useState<
+    Organization[]
+  >([]);
+  const userOrganizationSearchVersion = useRef(0);
   const [platformCredentialForm] = Form.useForm<PlatformCredentialForm>();
   const [platformBrandForm] = Form.useForm<PlatformBrandForm>();
   const [platformBrandUpdateForm] = Form.useForm<PlatformBrandUpdateForm>();
@@ -790,6 +816,10 @@ export function AdminClient({
     null,
   );
   const [message, setMessage] = useState("");
+  const [editingUserName, setEditingUserName] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
   const [busy, setBusy] = useState("");
   const [organizationDetail, setOrganizationDetail] =
     useState<OrganizationDetail | null>(null);
@@ -929,7 +959,7 @@ export function AdminClient({
           style={{ marginBottom: 0, marginTop: 14 }}
           type="secondary"
         >
-          数据流：小青蛙目录同步到本地缓存 → 平台设置售价与可售状态 →
+          数据流：媒体发布渠道目录同步到本地缓存 → 平台设置售价与可售状态 →
           客户按等级价格下单并扣发布余额 → 聚合渠道自动投稿、人工渠道后台处理 →
           成功保存交付结果，失败或确认取消后原路退回发布余额。
         </Typography.Paragraph>
@@ -1275,6 +1305,16 @@ export function AdminClient({
     });
   }, [editingUserAccess, userAccessForm]);
   useEffect(() => {
+    if (!userDetail) return;
+    userOrganizationForm.resetFields();
+    userOrganizationForm.setFieldValue(
+      "role",
+      userDetail.user.accountType === "customer"
+        ? "brand_editor"
+        : "tenant_admin",
+    );
+  }, [userDetail, userOrganizationForm]);
+  useEffect(() => {
     if (!editingPlatformBrand) return;
     platformBrandUpdateForm.setFieldsValue({
       brandName: editingPlatformBrand.brandName,
@@ -1288,7 +1328,12 @@ export function AdminClient({
   useEffect(() => {
     if (!grantOrganization) return;
     grantForm.resetFields();
-    grantForm.setFieldValue("asset", "answerbit_points");
+    grantForm.setFieldsValue({
+      asset: "answerbit_points",
+      operation: "grant",
+      account: "enterprise",
+    });
+    grantKey.current = crypto.randomUUID();
   }, [grantForm, grantOrganization]);
   async function patch(url: string, body: unknown, key: string) {
     setBusy(key);
@@ -1385,6 +1430,90 @@ export function AdminClient({
       setMessage((error as Error).message);
     } finally {
       setDetailLoading("");
+    }
+  }
+  async function searchUserOrganizations(query = "") {
+    const version = ++userOrganizationSearchVersion.current;
+    try {
+      const params = new URLSearchParams({
+        page: "1",
+        pageSize: "100",
+        status: "active",
+      });
+      if (query.trim()) params.set("q", query.trim());
+      const result = await api<PageData<Organization>>(
+        `/api/v1/admin/organizations?${params}`,
+      );
+      if (version === userOrganizationSearchVersion.current)
+        setUserOrganizationOptions(result.list);
+    } catch (error) {
+      if (version === userOrganizationSearchVersion.current)
+        setMessage((error as Error).message);
+    }
+  }
+  async function saveUserOrganization(values: UserOrganizationForm) {
+    if (!userDetail) return;
+    const userId = userDetail.user.id;
+    setBusy("user-organization");
+    try {
+      await api(
+        `/api/v1/admin/organizations/${values.organizationId}/members`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ userId, role: values.role }),
+        },
+      );
+      userOrganizationForm.resetFields();
+      setMessage("企业权限已保存");
+      await Promise.all([openUser(userId), load()]);
+    } catch (error) {
+      setMessage((error as Error).message);
+    } finally {
+      setBusy("");
+    }
+  }
+  async function removeUserOrganization(
+    member: UserDetail["memberships"][number],
+  ) {
+    if (!userDetail) return;
+    const userId = userDetail.user.id;
+    setBusy("user-organization-" + member.memberId);
+    try {
+      await api(
+        `/api/v1/admin/organizations/${member.organizationId}/members/${member.memberId}`,
+        { method: "DELETE" },
+      );
+      setMessage("已移出企业，相关品牌权限已清除");
+      await Promise.all([openUser(userId), load()]);
+    } catch (error) {
+      setMessage((error as Error).message);
+    } finally {
+      setBusy("");
+    }
+  }
+  async function saveUserName() {
+    if (
+      !editingUserName ||
+      !editingUserName.name.trim() ||
+      busy === "user-name"
+    )
+      return;
+    const { id, name } = editingUserName;
+    setBusy("user-name");
+    try {
+      await api(`/api/v1/admin/users/${id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: name.trim() }),
+      });
+      setEditingUserName(null);
+      setMessage("用户名称已更新");
+      await Promise.all([load(), openUser(id)]);
+    } catch (error) {
+      setMessage((error as Error).message);
+    } finally {
+      setBusy("");
     }
   }
   function openUserAccessEditor(detail: UserDetail) {
@@ -1641,26 +1770,41 @@ export function AdminClient({
     }
   }
   async function grant(values: GrantForm) {
-    if (!grantOrganization) return;
+    if (!grantOrganization || busy === `grant-${grantOrganization.id}`) return;
     const { asset, amount: quantity, reason } = values;
     const organizationId = grantOrganization.id;
     setBusy(`grant-${organizationId}`);
     try {
-      await api("/api/v1/admin/balance-grants", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          organizationId,
-          asset,
-          amount:
-            asset === "publication_cny" ? Math.round(quantity * 100) : quantity,
-          reason,
-          idempotencyKey: crypto.randomUUID(),
-        }),
-      });
+      await api(
+        values.operation === "deduct"
+          ? "/api/v1/admin/balance-deductions"
+          : "/api/v1/admin/balance-grants",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            organizationId,
+            brandId:
+              values.operation === "deduct" && values.account === "brand"
+                ? grantOrganization.answerbitBrandId
+                : undefined,
+            asset,
+            amount:
+              asset === "publication_cny"
+                ? Math.round(quantity * 100)
+                : quantity,
+            reason,
+            idempotencyKey: grantKey.current,
+          }),
+        },
+      );
       grantForm.resetFields();
       setGrantOrganization(null);
-      setMessage("余额已由平台管理员入账");
+      setMessage(
+        values.operation === "deduct"
+          ? "扣减成功，已记录资产流水与审计"
+          : "余额已由平台管理员入账",
+      );
       await load();
     } catch (error) {
       setMessage((error as Error).message);
@@ -1717,7 +1861,7 @@ export function AdminClient({
         // 配置已经保存成功；余额卡片保留现状，后续刷新时会再次读取。
       }
       setMessage(
-        `小青蛙 API Key 已加密保存；安全读取能力已验证（分类 ${saved.verification.websiteFieldCount + saved.verification.wemediaFieldCount} 项）。完整渠道正在后台同步，页面可以继续操作。`,
+        `媒体发布 API Key 已加密保存；安全读取能力已验证（分类 ${saved.verification.websiteFieldCount + saved.verification.wemediaFieldCount} 项）。完整渠道正在后台同步，页面可以继续操作。`,
       );
     } catch (error) {
       setMessage((error as Error).message);
@@ -1894,10 +2038,23 @@ export function AdminClient({
       title: "状态",
       dataIndex: "status",
       width: 110,
-      render: (value: string) => (
+      render: (value: string, item) => (
         <Badge
-          status={value === "active" ? "success" : "warning"}
-          text={value === "active" ? "正常" : "已冻结"}
+          status={
+            value === "active" &&
+            (!item.serviceExpiresAt ||
+              dayjs(item.serviceExpiresAt).isAfter(dayjs()))
+              ? "success"
+              : "warning"
+          }
+          text={
+            value !== "active"
+              ? "已冻结"
+              : item.serviceExpiresAt &&
+                  !dayjs(item.serviceExpiresAt).isAfter(dayjs())
+                ? "到期冻结"
+                : "正常"
+          }
         />
       ),
     },
@@ -1908,6 +2065,7 @@ export function AdminClient({
       width: compactTable ? 240 : 400,
       render: (_, item) => (
         <Space size={compactTable ? 6 : 8}>
+          <Button onClick={() => setValidityOrganization(item)}>有效期</Button>
           <Button
             aria-label={`管理企业 ${item.name}`}
             icon={compactTable ? <SettingOutlined /> : undefined}
@@ -2187,7 +2345,7 @@ export function AdminClient({
       dataIndex: "provider",
       width: 105,
       render: (value: string) =>
-        value === "frog_media" ? "小青蛙 API" : "人工渠道",
+        value === "frog_media" ? "媒体发布" : "人工渠道",
     },
     {
       title: "采购成本",
@@ -2341,6 +2499,45 @@ export function AdminClient({
 
   return (
     <Layout className="admin-platform-shell">
+      {validityOrganization ? (
+        <EnterpriseValidity
+          key={validityOrganization.id}
+          organization={validityOrganization}
+          onClose={() => setValidityOrganization(null)}
+          onSaved={() => {
+            setValidityOrganization(null);
+            setMessage("企业有效期已更新");
+            void load();
+            if (organizationDetail)
+              void openOrganization(organizationDetail.organization.id);
+          }}
+        />
+      ) : null}
+      <Modal
+        title="修改用户名称"
+        open={Boolean(editingUserName)}
+        onCancel={() => setEditingUserName(null)}
+        onOk={() => void saveUserName()}
+        confirmLoading={busy === "user-name"}
+        okButtonProps={{ disabled: !editingUserName?.name.trim() }}
+        destroyOnHidden
+      >
+        <Typography.Paragraph type="secondary">
+          修改显示名称，登录账号保持原值。
+        </Typography.Paragraph>
+        <Input
+          aria-label="用户名称"
+          maxLength={120}
+          value={editingUserName?.name ?? ""}
+          onChange={(event) => {
+            const name = event.target.value;
+            setEditingUserName((current) =>
+              current ? { ...current, name } : null,
+            );
+          }}
+          onPressEnter={() => void saveUserName()}
+        />
+      </Modal>
       {desktopNavigation ? (
         <Layout.Sider
           className="admin-platform-sidebar"
@@ -2935,6 +3132,13 @@ export function AdminClient({
                 </Card>
               ) : null}
 
+              {tab === "library" ? (
+                <AdminDocumentLibrary
+                  organizations={meteringOrganizations}
+                  onMessage={setMessage}
+                />
+              ) : null}
+
               {tab === "metering" ? (
                 <MeteringClient
                   canViewPlatformAccount
@@ -3003,7 +3207,7 @@ export function AdminClient({
                     title="客户等级与利润策略"
                   >
                     <Alert
-                      message="客户等级在用户目录中分配；渠道自定义售价优先于等级加价规则，小青蛙同步不会覆盖平台定价。"
+                      message="客户等级在用户目录中分配；渠道自定义售价优先于等级加价规则，媒体发布渠道同步不会覆盖平台定价。"
                       showIcon
                       style={{ marginBottom: 16 }}
                       type="success"
@@ -3448,7 +3652,7 @@ export function AdminClient({
                                 }}
                                 type="primary"
                               >
-                                入账
+                                入账 / 扣减
                               </Button>
                             ),
                           },
@@ -3646,7 +3850,8 @@ export function AdminClient({
                             render: (value: number, item) => (
                               <Typography.Text
                                 type={
-                                  item.operation === "consume"
+                                  item.operation === "consume" ||
+                                  item.referenceType === "admin_deduction"
                                     ? "danger"
                                     : item.operation === "grant" ||
                                         item.operation === "restore"
@@ -3654,7 +3859,8 @@ export function AdminClient({
                                       : undefined
                                 }
                               >
-                                {item.operation === "consume"
+                                {item.operation === "consume" ||
+                                item.referenceType === "admin_deduction"
                                   ? "−"
                                   : item.operation === "grant" ||
                                       item.operation === "restore"
@@ -3777,7 +3983,7 @@ export function AdminClient({
                             : "待配置"}
                         </Tag>
                       }
-                      title="小青蛙 API 接入设置"
+                      title="媒体发布接入设置"
                     >
                       <Row gutter={[24, 20]}>
                         <Col lg={10} xs={24}>
@@ -3825,7 +4031,7 @@ export function AdminClient({
                           >
                             <Form.Item
                               htmlFor="admin-frog-base-url"
-                              label="小青蛙 API 地址（必填）"
+                              label="媒体发布接口地址（必填）"
                               name="baseUrl"
                               rules={[
                                 { required: true, message: "请输入 API 地址" },
@@ -3847,7 +4053,7 @@ export function AdminClient({
                                   : "完整 Key 仅在本次提交时传输，不会再次回显"
                               }
                               htmlFor="admin-frog-api-key"
-                              label="小青蛙 API Key（必填）"
+                              label="媒体发布 API Key（必填）"
                               name="apiKey"
                               rules={[
                                 { required: true, message: "请输入 API Key" },
@@ -3893,7 +4099,7 @@ export function AdminClient({
                               : "未配置"}
                         </Tag>
                       }
-                      title="小青蛙平台账户"
+                      title="媒体发布平台账户"
                     >
                       <div className="admin-publication-provider-stats">
                         <div>
@@ -3936,7 +4142,7 @@ export function AdminClient({
                       <Alert
                         message={
                           publicationProviderBalance?.message ??
-                          "正在读取小青蛙账户余额"
+                          "正在读取媒体发布账户余额"
                         }
                         showIcon
                         style={{ marginTop: 16 }}
@@ -4001,7 +4207,7 @@ export function AdminClient({
                                 <Typography.Text type="secondary">
                                   {money(item.order.priceAmount)} ·{" "}
                                   {item.channel.provider === "frog_media"
-                                    ? "小青蛙"
+                                    ? "媒体发布"
                                     : "人工渠道"}
                                 </Typography.Text>
                               </Space>
@@ -4152,7 +4358,7 @@ export function AdminClient({
                             }}
                             options={[
                               { label: "全部来源", value: "all" },
-                              { label: "小青蛙 API", value: "frog_media" },
+                              { label: "媒体发布", value: "frog_media" },
                               { label: "人工渠道", value: "manual" },
                             ]}
                             style={{ width: "100%" }}
@@ -5233,7 +5439,7 @@ export function AdminClient({
             {editingUserAccess.user.accountType === "customer" &&
             editingUserAccess.brandAccess.length > 0 ? (
               <Alert
-                description="请先从所属企业移除全部显式品牌权限，再切换账户类型。"
+                description="关闭此窗口，在用户档案的企业成员关系中移出原品牌企业，再重新打开账户设置切换为代理商。"
                 message="当前用户仍有品牌级权限，暂不能切换为代理商"
                 showIcon
                 style={{ marginBottom: 20 }}
@@ -5529,7 +5735,28 @@ export function AdminClient({
       >
         {organizationDetail ? (
           <Flex gap={20} vertical>
+            <Button
+              onClick={() =>
+                setValidityOrganization(organizationDetail.organization)
+              }
+            >
+              设置企业 / 积分有效期
+            </Button>
             <Descriptions bordered column={mobile ? 1 : 3} size="small">
+              <Descriptions.Item label="企业到期">
+                {organizationDetail.organization.serviceExpiresAt
+                  ? dayjs(
+                      organizationDetail.organization.serviceExpiresAt,
+                    ).format("YYYY-MM-DD HH:mm")
+                  : "待设置"}
+              </Descriptions.Item>
+              <Descriptions.Item label="积分到期">
+                {organizationDetail.organization.pointsExpiresAt
+                  ? dayjs(
+                      organizationDetail.organization.pointsExpiresAt,
+                    ).format("YYYY-MM-DD HH:mm")
+                  : "待设置"}
+              </Descriptions.Item>
               <Descriptions.Item label="腾讯企业名称">
                 {organizationDetail.organization.name}
               </Descriptions.Item>
@@ -5748,7 +5975,12 @@ export function AdminClient({
 
       <Drawer
         destroyOnHidden
-        onClose={() => setUserDetail(null)}
+        onClose={() => {
+          setUserDetail(null);
+          userOrganizationSearchVersion.current += 1;
+          setUserOrganizationOptions([]);
+          userOrganizationForm.resetFields();
+        }}
         open={Boolean(userDetail)}
         title="用户档案"
         width={mobile ? "100%" : 860}
@@ -5806,12 +6038,25 @@ export function AdminClient({
                     </Space>
                   </Space>
                 </Space>
+                <Button
+                  icon={<EditOutlined />}
+                  onClick={() =>
+                    setEditingUserName({
+                      id: userDetail.user.id,
+                      name: userDetail.user.name,
+                    })
+                  }
+                >
+                  修改名称
+                </Button>
                 {userDetail.user.accountType !== "admin" ? (
                   <Button
                     onClick={() => openUserAccessEditor(userDetail)}
                     type="primary"
                   >
-                    编辑权限与额度
+                    {userDetail.user.accountType === "customer"
+                      ? "转为代理商 / 编辑账户"
+                      : "编辑代理商设置"}
                   </Button>
                 ) : null}
               </Flex>
@@ -5903,6 +6148,74 @@ export function AdminClient({
               ) : null}
             </Descriptions>
 
+            <Card size="small" title="添加或调整企业权限">
+              <Form<UserOrganizationForm>
+                form={userOrganizationForm}
+                initialValues={{
+                  role:
+                    userDetail.user.accountType === "customer"
+                      ? "brand_editor"
+                      : "tenant_admin",
+                }}
+                layout="vertical"
+                onFinish={(values) => void saveUserOrganization(values)}
+              >
+                <Row gutter={12}>
+                  <Col md={12} xs={24}>
+                    <Form.Item
+                      label="目标企业"
+                      name="organizationId"
+                      rules={[{ required: true, message: "请选择目标企业" }]}
+                    >
+                      <Select
+                        filterOption={false}
+                        onOpenChange={(open) => {
+                          if (open) void searchUserOrganizations();
+                        }}
+                        onSearch={(value) =>
+                          void searchUserOrganizations(value)
+                        }
+                        options={userOrganizationOptions.map(
+                          (organization) => ({
+                            label: organization.name,
+                            value: organization.id,
+                          }),
+                        )}
+                        placeholder="搜索腾讯企业名称"
+                        showSearch
+                      />
+                    </Form.Item>
+                  </Col>
+                  <Col md={12} xs={24}>
+                    <Form.Item
+                      label="企业角色"
+                      name="role"
+                      rules={[{ required: true, message: "请选择企业角色" }]}
+                    >
+                      <Select
+                        options={
+                          userDetail.user.accountType === "customer"
+                            ? [
+                                { label: "品牌管理员", value: "brand_admin" },
+                                { label: "品牌编辑", value: "brand_editor" },
+                                { label: "品牌查看者", value: "brand_viewer" },
+                              ]
+                            : [{ label: "企业管理员", value: "tenant_admin" }]
+                        }
+                      />
+                    </Form.Item>
+                  </Col>
+                </Row>
+                <Button
+                  htmlType="submit"
+                  loading={busy === "user-organization"}
+                  type="primary"
+                >
+                  保存企业权限
+                </Button>
+              </Form>
+            </Card>
+
             <Card size="small" title="企业成员关系">
               <Table<UserDetail["memberships"][number]>
                 columns={[
@@ -5975,6 +6288,29 @@ export function AdminClient({
                       />
                     ),
                   },
+                  {
+                    title: "操作",
+                    key: "action",
+                    width: 110,
+                    render: (_, item) => (
+                      <Popconfirm
+                        description="该企业的品牌权限也会一并移除。"
+                        okText="确认移出"
+                        onConfirm={() => void removeUserOrganization(item)}
+                        title="将用户移出企业？"
+                      >
+                        <Button
+                          danger
+                          loading={
+                            busy === "user-organization-" + item.memberId
+                          }
+                          size="small"
+                        >
+                          移出企业
+                        </Button>
+                      </Popconfirm>
+                    ),
+                  },
                 ]}
                 dataSource={userDetail.memberships}
                 locale={{ emptyText: <Empty description="尚未加入任何企业" /> }}
@@ -6021,21 +6357,54 @@ export function AdminClient({
         footer={null}
         onCancel={() => setGrantOrganization(null)}
         open={Boolean(grantOrganization)}
-        title={"向 " + (grantOrganization?.name ?? "") + " 入账"}
+        title={(grantOrganization?.name ?? "") + " · 资产调整"}
+        forceRender
         width={680}
       >
         <Alert
-          description="平台管理员向企业总账户入账，再由企业管理员或代理商划分到品牌。"
+          description="入账进入企业资金池；手动扣减可选择企业资金池或品牌账户，须填写原因并保留流水。"
           showIcon
           style={{ marginBottom: 20 }}
           type="info"
         />
         <Form<GrantForm>
           form={grantForm}
+          disabled={Boolean(
+            grantOrganization && busy === `grant-${grantOrganization.id}`,
+          )}
+          onValuesChange={() => {
+            grantKey.current = crypto.randomUUID();
+          }}
           layout="vertical"
           onFinish={(values) => void grant(values)}
           size="large"
         >
+          <Form.Item label="操作" name="operation" rules={[{ required: true }]}>
+            <Radio.Group
+              options={[
+                { label: "入账", value: "grant" },
+                { label: "手动扣减", value: "deduct" },
+              ]}
+            />
+          </Form.Item>
+          {grantOperation === "deduct" ? (
+            <Form.Item
+              label="扣减账户"
+              name="account"
+              rules={[{ required: true }]}
+            >
+              <Radio.Group
+                options={[
+                  { label: "企业资金池", value: "enterprise" },
+                  {
+                    label: "品牌账户",
+                    value: "brand",
+                    disabled: !grantOrganization?.answerbitBrandId,
+                  },
+                ]}
+              />
+            </Form.Item>
+          ) : null}
           <Form.Item label="资产" name="asset" rules={[{ required: true }]}>
             <Select
               options={[
@@ -6055,10 +6424,10 @@ export function AdminClient({
             <InputNumber min={0.01} style={{ width: "100%" }} />
           </Form.Item>
           <Form.Item
-            label="入账原因"
+            label="调整原因"
             name="reason"
             rules={[
-              { required: true, message: "请输入入账原因" },
+              { required: true, message: "请输入调整原因" },
               { min: 4, message: "至少 4 个字符" },
             ]}
           >
@@ -6072,7 +6441,7 @@ export function AdminClient({
             )}
             type="primary"
           >
-            确认入账
+            {grantOperation === "deduct" ? "确认手动扣减" : "确认入账"}
           </Button>
         </Form>
       </Modal>
@@ -6094,7 +6463,7 @@ export function AdminClient({
             <Descriptions bordered column={mobile ? 1 : 3} size="small">
               <Descriptions.Item label="来源">
                 {editingChannel.provider === "frog_media"
-                  ? "小青蛙 API"
+                  ? "媒体发布"
                   : "人工渠道"}
               </Descriptions.Item>
               <Descriptions.Item label="采购成本">

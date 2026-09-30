@@ -22,7 +22,7 @@ const pngBase64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 
 describe("平台资源管理契约", () => {
-  it("小青蛙配置只接受 HTTP(S) Origin", () => {
+  it("媒体发布配置只接受 HTTP(S) Origin", () => {
     expect(
       adminSetFrogCredentialSchema.safeParse({
         baseUrl: "https://frog.example.com",

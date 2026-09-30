@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@geo/db", () => ({
+  assertEnterpriseAccess: vi.fn(),
   consumeBalance: mocks.consumeBalance,
   getEffectiveFeaturePointCost: mocks.getEffectiveFeaturePointCost,
   restoreBalance: mocks.restoreBalance,

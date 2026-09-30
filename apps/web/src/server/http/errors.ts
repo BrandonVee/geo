@@ -1,3 +1,4 @@
+import { EnterpriseAccessError } from "@geo/core";
 import { apiJson } from "./response";
 
 export class ApiError extends Error {
@@ -25,6 +26,11 @@ export const databaseErrorCode = (error: unknown) => {
   return undefined;
 };
 export const errorResponse = (error: unknown, requestId: string) => {
+  if (error instanceof EnterpriseAccessError)
+    return apiJson(
+      { error: { code: error.code, message: error.message }, requestId },
+      { status: error.code === "ORGANIZATION_NOT_FOUND" ? 404 : 403 },
+    );
   if (error instanceof ApiError)
     return apiJson(
       {

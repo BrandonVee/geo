@@ -1,3 +1,4 @@
+import { assertEnterpriseAccess } from "./enterprise-access";
 import {
   and,
   asc,
@@ -480,6 +481,7 @@ export async function createPublicationOrderWithBalance(input: {
       return { ok: false as const, code: "IDEMPOTENCY_CONFLICT" as const };
     if (replay)
       return { ok: true as const, order: replay, replayed: true as const };
+    await assertEnterpriseAccess(input.organizationId, false, tx);
     const [channel] = await tx
       .select()
       .from(publicationChannels)

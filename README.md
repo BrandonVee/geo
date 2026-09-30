@@ -86,9 +86,9 @@ docker build --target worker -t answerbit-geo-worker:VERSION .
 
 `release` 镜像仅携带数据库发布所需依赖，读取 `MIGRATION_DATABASE_URL` 后依次执行配置校验、迁移、记录 schema 版本、幂等种子和 RLS 检查，任一步失败即以非零状态退出；只读根文件系统下需要为 `/tmp` 挂载临时可写目录。发布任务成功后再启动 Web 与 Worker。Web 镜像运行 Next.js standalone 并内置 readiness 健康检查；Worker 镜像运行构建后的单文件 bundle。真实数据库、认证和加密密钥只在容器运行时注入。
 
-平台管理员可在发布履约台验证并加密保存小青蛙 API Key，查看上游余额与算力；发布单提交时按渠道人民币价格快照从品牌发布余额扣减，聚合订单自动同步、人工渠道由管理员履约，失败和取消会自动返还原品牌余额。
+平台管理员可在媒体发布页面验证并加密保存媒体发布 API Key，查看上游余额与算力；发布单提交时按渠道人民币价格快照从品牌发布余额扣减，聚合订单自动同步、人工渠道由管理员履约，失败和取消会自动返还原品牌余额。
 
-数据库以 `packages/db/drizzle/v1.sql` 初始化 44 张表的完整基线，`v2.sql` 增加网页保存的小青蛙平台凭证，`v3.sql` 增加客户价格等级、采购成本、上游状态与渠道固定售价，`v4.sql` 增加品牌文档库、不可变版本、文件夹及发布来源关联，`v5.sql` 增加 AnswerBit 只读分析缓存；`system_release_state` 当前记录 schema `v5`、seed `v2`。v1 基线包含当时的枚举、约束、索引、8 个触发器函数、RLS 与授权，不再重放历史增删过程。基线会创建无登录权限的 `geo_tenant_app` 与 `geo_platform_app` 角色。新增 Repository 事务应分别使用 `withTenantDbContext` 或 `withPlatformDbContext`，上下文通过事务级 `set_config` 注入且在提交后自动清除；迁移账号仅用于迁移与本地开发，不应作为生产 Web 直连账号。旧环境升级前必须完整执行原 0000—0044 迁移链，并保留 `drizzle.__drizzle_migrations`。
+数据库以 `packages/db/drizzle/v1.sql` 初始化 44 张表的完整基线，`v2.sql` 增加网页保存的媒体发布平台凭证，`v3.sql` 增加客户价格等级、采购成本、上游状态与渠道固定售价，`v4.sql` 增加品牌文档库、不可变版本、文件夹及发布来源关联，`v5.sql` 增加 AnswerBit 只读分析缓存；`system_release_state` 当前记录 schema `v5`、seed `v2`。v1 基线包含当时的枚举、约束、索引、8 个触发器函数、RLS 与授权，不再重放历史增删过程。基线会创建无登录权限的 `geo_tenant_app` 与 `geo_platform_app` 角色。新增 Repository 事务应分别使用 `withTenantDbContext` 或 `withPlatformDbContext`，上下文通过事务级 `set_config` 注入且在提交后自动清除；迁移账号仅用于迁移与本地开发，不应作为生产 Web 直连账号。旧环境升级前必须完整执行原 0000—0044 迁移链，并保留 `drizzle.__drizzle_migrations`。
 
 ## 后端分层
 

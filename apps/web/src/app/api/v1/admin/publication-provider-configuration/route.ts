@@ -31,7 +31,7 @@ export async function PUT(request: Request) {
       throw new ApiError(
         400,
         "VALIDATION_ERROR",
-        "小青蛙平台接入参数有误",
+        "媒体发布平台接入参数有误",
         parsed.error.issues,
       );
     return apiJson({

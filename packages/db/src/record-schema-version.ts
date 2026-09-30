@@ -44,7 +44,9 @@ try {
     !(
       await client.query<{ complete: boolean }>(`
       SELECT
-        to_regclass('public.platform_frog_credentials') IS NOT NULL
+        EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'organizations' AND column_name = 'service_expires_at')
+        AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'organizations' AND column_name = 'points_expires_at')
+        AND to_regclass('public.platform_frog_credentials') IS NOT NULL
         AND to_regclass('public.pricing_tier_rules') IS NOT NULL
         AND to_regclass('public.publication_channel_price_overrides') IS NOT NULL
         AND to_regclass('public.content_folders') IS NOT NULL

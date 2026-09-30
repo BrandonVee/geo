@@ -1,3 +1,4 @@
+import { assertEnterpriseAccess } from "@geo/db";
 import {
   answerBitArticleCreatePayloadSchema,
   type ArticleDetailQuery,
@@ -52,6 +53,20 @@ async function prepare(scope: Scope, userId: string, permission: Permission) {
   );
   return loadAnswerBitTeamContext(scope.organizationId, scope.teamBindingId);
 }
+function jobGenerationMode(
+  job: NonNullable<Awaited<ReturnType<typeof articleRepository.findJob>>>,
+): "standard" | "reference" | null {
+  try {
+    const ciphertext = job.requestPayload?.ciphertext;
+    if (typeof ciphertext !== "string") return null;
+    const payload = answerBitArticleCreatePayloadSchema.parse(
+      JSON.parse(getSecretCipher().decrypt(ciphertext, job.organizationId)),
+    );
+    return payload.high_ref ? "reference" : "standard";
+  } catch {
+    return null;
+  }
+}
 const publicJob = (
   job: Awaited<ReturnType<typeof articleRepository.findJob>>,
 ) =>
@@ -67,6 +82,7 @@ const publicJob = (
         articleBody: job.articleBody,
         articleStatus: job.articleStatus,
         templateType: job.templateType,
+        generationMode: jobGenerationMode(job),
         source: job.source,
         language: job.language,
         tags: job.tags,
@@ -251,12 +267,48 @@ export const articleService = {
     requestId: string,
     audit: AuditContext,
   ) {
-    await prepare(input, userId, "answerbit.resource.execute");
+    const { connection, apiKey } = await prepare(
+      input,
+      userId,
+      "answerbit.resource.execute",
+    );
     const existing = await articleRepository.findJobByIdempotency(
       input.organizationId,
       idempotencyKey,
     );
     if (existing) return { ...publicJob(existing), replayed: true };
+    await assertEnterpriseAccess(input.organizationId, true);
+    let templates;
+    try {
+      templates = await queryArticleTemplatesLogged(
+        apiKey,
+        input.language,
+        logContext(input, connection.id, requestId, userId),
+      );
+    } catch (error) {
+      return mapUpstreamError(error);
+    }
+    const template = templates.find(
+      (item) => item.template_id === input.templateType,
+    );
+    if (!template || ![0, 1].includes(template.is_high_ref))
+      throw new ApiError(
+        422,
+        "ARTICLE_TEMPLATE_UNAVAILABLE",
+        "所选模板不可用，请刷新后重新选择",
+      );
+    if (template.is_high_ref === 1 && !input.highReference)
+      throw new ApiError(
+        422,
+        "ARTICLE_REFERENCE_REQUIRED",
+        "参考文章生成必须提供参考文章链接",
+      );
+    if (template.is_high_ref === 0 && input.highReference)
+      throw new ApiError(
+        422,
+        "ARTICLE_REFERENCE_NOT_ALLOWED",
+        "普通文章生成不接受参考文章链接，请切换到参考文章生成",
+      );
     const pricingSnapshot = await assertPointBilledFeatureQuote(
       "ai_article_generation",
       userId,

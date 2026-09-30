@@ -817,8 +817,13 @@ export const adminUserPageQuerySchema = adminPageQuerySchema
   .strict();
 export const pricingTierSchema = z.enum(["retail", "bronze", "silver", "gold"]);
 export const adminUpdateOrganizationSchema = z
-  .object({ status: z.enum(["active", "suspended"]) })
-  .strict();
+  .object({
+    status: z.enum(["active", "suspended"]).optional(),
+    serviceExpiresAt: z.string().datetime({ offset: true }).optional(),
+    pointsExpiresAt: z.string().datetime({ offset: true }).optional(),
+  })
+  .strict()
+  .refine((value) => Object.keys(value).length > 0, "至少提供一个更新字段");
 const agentValidityDateSchema = z.string().datetime({ offset: true });
 type AgentValidityInput = {
   accountType?: "admin" | "agent" | "customer";
@@ -852,6 +857,7 @@ function validateAgentValidity(
 }
 export const adminUpdateUserSchema = z
   .object({
+    name: z.string().trim().min(1).max(120).optional(),
     status: z.enum(["active", "disabled"]).optional(),
     accountType: z.enum(["agent", "customer"]).optional(),
     pricingTier: pricingTierSchema.optional(),
@@ -960,7 +966,7 @@ export const adminSetFrogCredentialSchema = z
       .max(2000)
       .refine(
         isHttpOrigin,
-        "小青蛙 API 地址必须是无路径、查询参数、凭证或片段的 HTTP(S) Origin",
+        "媒体发布接口地址必须是无路径、查询参数、凭证或片段的 HTTP(S) Origin",
       ),
     apiKey: z.string().trim().min(1).max(2048),
   })
@@ -1129,13 +1135,22 @@ export const adminGrantBalanceSchema = z
     idempotencyKey: idempotencyKeySchema,
   })
   .strict();
+export const adminDeductBalanceSchema = adminGrantBalanceSchema.extend({
+  brandId: z.string().trim().min(1).max(128).optional(),
+});
+export type AdminDeductBalanceInput = z.infer<typeof adminDeductBalanceSchema>;
 export const allocateBrandBalanceSchema = z
   .object({
     organizationId: z.string().uuid(),
     brandId: z.string().trim().min(1).max(128),
     asset: balanceAssetSchema,
     amount: z.number().int().positive().max(1_000_000_000),
-    reason: z.string().trim().min(4).max(1000),
+    reason: z
+      .string()
+      .trim()
+      .max(1000)
+      .optional()
+      .transform((value) => value || "企业向品牌划拨"),
     idempotencyKey: idempotencyKeySchema,
   })
   .strict();

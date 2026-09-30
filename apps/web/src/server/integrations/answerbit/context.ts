@@ -1,3 +1,4 @@
+import { assertEnterpriseAccess } from "@geo/db";
 import { ApiError } from "@/server/http/errors";
 import { answerBitConnectionRepository } from "@/server/repositories/answerbit-connections";
 import { brandRepository } from "@/server/repositories/brands";
@@ -6,6 +7,7 @@ export async function loadAnswerBitTeamContext(
   organizationId: string,
   teamBindingId: string,
 ) {
+  await assertEnterpriseAccess(organizationId);
   const team = await brandRepository.findTeam(organizationId, teamBindingId);
   if (!team)
     throw new ApiError(404, "TEAM_BINDING_NOT_FOUND", "TeamID 不存在或已停用");

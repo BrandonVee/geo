@@ -133,7 +133,7 @@ describe("FrogPublicationClient", () => {
     ).resolves.toHaveLength(2);
   });
 
-  it("查询小青蛙账户的发布余额和接口算力", async () => {
+  it("查询媒体发布账户的发布余额和接口算力", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({

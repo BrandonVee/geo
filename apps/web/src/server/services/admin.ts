@@ -72,20 +72,32 @@ export const adminService = {
   },
   async updateOrganization(
     id: string,
-    status: "active" | "suspended",
+    input: {
+      status?: "active" | "suspended";
+      serviceExpiresAt?: string;
+      pointsExpiresAt?: string;
+    },
     userId: string,
     audit: AuditContext,
   ) {
     await allowed(userId, "platform.tenant.manage");
-    const row = await adminRepository.updateOrganization(id, status);
+    const row = await adminRepository.updateOrganization(id, {
+      status: input.status,
+      serviceExpiresAt: input.serviceExpiresAt
+        ? new Date(input.serviceExpiresAt)
+        : undefined,
+      pointsExpiresAt: input.pointsExpiresAt
+        ? new Date(input.pointsExpiresAt)
+        : undefined,
+    });
     if (!row) throw new ApiError(404, "ORGANIZATION_NOT_FOUND", "企业不存在");
     await writeAudit(
       { ...audit, organizationId: id },
       {
-        operation: `platform.organization.${status}`,
+        operation: "platform.organization.update",
         resourceType: "organization",
         resourceId: id,
-        summary: `平台管理员将企业状态设为 ${status}`,
+        summary: `企业设置：${input.status ?? "状态不变"}；服务到期 ${input.serviceExpiresAt ?? "不变"}；积分到期 ${input.pointsExpiresAt ?? "不变"}`,
       },
     );
     return row;
@@ -246,6 +258,7 @@ export const adminService = {
     const row = await adminRepository.updateUser(
       id,
       {
+        name: input.name,
         status: input.status,
         accountType: accountTypeChanged ? input.accountType : undefined,
         pricingTier:
@@ -298,6 +311,7 @@ export const adminService = {
     );
     if (!row) throw new ApiError(404, "USER_NOT_FOUND", "用户不存在");
     const changes = [
+      input.name !== undefined ? `名称 ${current.name} → ${input.name}` : null,
       input.status ? `状态 ${input.status}` : null,
       accountTypeChanged
         ? `类型 ${current.accountType} → ${nextAccountType}`

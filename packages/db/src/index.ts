@@ -9,3 +9,5 @@ export * from "./publications";
 export * from "./pricing";
 export * from "./tencent-enterprise-sync";
 export * from "./release";
+
+export * from "./enterprise-access";

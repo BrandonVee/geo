@@ -73,3 +73,29 @@ describe("品牌范围授权", () => {
     ).resolves.toMatchObject({ unrestricted: true });
   });
 });
+
+describe("代理与客户的文章范围", () => {
+  it("代理商不能访问没有成员关系的企业", async () => {
+    m.member.mockResolvedValue(undefined);
+    await expect(
+      authorizeBrand("other-org", "team", "brand", "agent", "resource.read"),
+    ).rejects.toMatchObject({ code: "ORGANIZATION_NOT_FOUND" });
+  });
+  it("客户只能查看被授权品牌，查看者不可编辑", async () => {
+    m.role.mockResolvedValue({
+      role: null,
+      status: "active",
+      organizationStatus: "active",
+    });
+    m.access.mockResolvedValue([{ brandId: "brand", role: "brand_viewer" }]);
+    await expect(
+      authorizeBrand("org", "team", "brand", "customer", "resource.read"),
+    ).resolves.toMatchObject({ unrestricted: false });
+    await expect(
+      authorizeBrand("org", "team", "other", "customer", "resource.read"),
+    ).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+    await expect(
+      authorizeBrand("org", "team", "brand", "customer", "resource.update"),
+    ).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+  });
+});

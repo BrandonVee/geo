@@ -99,7 +99,7 @@ export const platformFrogService = {
         throw new ApiError(
           422,
           "FROG_CONFIGURATION_INVALID",
-          "小青蛙余额、媒体目录、分类或订单查询接口校验未通过",
+          "媒体发布余额、媒体目录、分类或订单查询接口校验未通过",
         );
       throw error;
     }
@@ -121,7 +121,7 @@ export const platformFrogService = {
       operation: "platform.frog.configuration.update",
       resourceType: "platform_frog_credential",
       resourceId: String(configuration.id),
-      summary: `保存并验证小青蛙平台 Key（版本 ${configuration.keyVersion}）`,
+      summary: `保存并验证媒体发布平台 Key（版本 ${configuration.keyVersion}）`,
     });
     return { ...(await publicConfiguration()), verification };
   },

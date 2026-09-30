@@ -107,8 +107,8 @@ else
   APP_ENCRYPTION_KEY="$(random_base64 32)"
   BETTER_AUTH_SECRET="$(random_base64 48)"
   prompt ANSWERBIT_BASE_URL "AnswerBit API 地址" "https://answerbit.qq.com"
-  prompt FROG_PUBLICATION_BASE_URL "小青蛙聚合发布 API 地址" "http://8.138.187.158:8082"
-  read -r -s -p "小青蛙 API Key（兼容回退，可留空并在发布履约网页保存）: " FROG_PUBLICATION_API_KEY
+  prompt FROG_PUBLICATION_BASE_URL "媒体发布接口地址" "http://8.138.187.158:8082"
+  read -r -s -p "媒体发布 API Key（兼容回退，可留空并在媒体发布页面保存）: " FROG_PUBLICATION_API_KEY
   printf '\n'
 
   cat >"$ENV_FILE" <<EOF

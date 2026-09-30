@@ -39,7 +39,7 @@ describe("database release readiness", () => {
         "utf8",
       ),
     ) as { entries: Array<{ idx: number; tag: string }> };
-    expect(journal.entries).toHaveLength(7);
+    expect(journal.entries).toHaveLength(8);
     expect(journal.entries[0]?.idx).toBe(0);
     expect(journal.entries[0]?.tag).toBe("v1");
     expect(journal.entries.at(-1)?.tag).toBe(CURRENT_SCHEMA_VERSION);
@@ -49,7 +49,8 @@ describe("database release readiness", () => {
       "utf8",
     );
     expect(migration).toContain(`('schema', '${CURRENT_SCHEMA_VERSION}')`);
-    expect(migration).toContain("pricing_snapshot");
+    expect(migration).toContain("service_expires_at");
+    expect(migration).toContain("points_expires_at");
 
     const pointMarkupMigration = await readFile(
       new URL("../drizzle/v6.sql", import.meta.url),

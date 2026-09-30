@@ -1,13 +1,15 @@
+import { EnterpriseAccessError } from "@geo/core";
+import { assertEnterpriseAccess } from "@geo/db";
 import {
   FrogPublicationClient,
   loadFrogPublicationChannels,
   reconcilePublicationOrders,
 } from "@geo/publication";
 import { createHash, randomUUID } from "node:crypto";
-import { setTimeout as delay } from "node:timers/promises";
 import { workerEnvSchema } from "@geo/config";
 import {
   answerBitArticleContentSchema,
+  answerBitArticleProgressSchema,
   answerBitArticleRankSchema,
   answerBitDashboardMetricsSchema,
   answerBitDomainRankSchema,
@@ -564,6 +566,39 @@ async function callAnswerBit<T>(
 }
 
 // @project-doc docs/domains/geo_operations.md#article_jobs
+const articlePollIntervalMs = 30_000;
+const articleGenerationDeadlineMs = 20 * 60_000;
+
+async function scheduleArticleContentPoll(input: {
+  organizationId: string;
+  jobId: string;
+  executionId: string;
+}) {
+  try {
+    const queueJobId = await boss.send(
+      "article-generation",
+      { organizationId: input.organizationId, jobId: input.jobId },
+      {
+        startAfter: new Date(Date.now() + articlePollIntervalMs),
+        retryLimit: 0,
+        expireInSeconds: 240,
+      },
+    );
+    if (!queueJobId) throw new Error("QUEUE_SEND_EMPTY");
+    await db
+      .update(articleGenerationJobs)
+      .set({ queueJobId, executionId: null, updatedAt: new Date() })
+      .where(
+        and(
+          eq(articleGenerationJobs.id, input.jobId),
+          eq(articleGenerationJobs.executionId, input.executionId),
+        ),
+      );
+  } catch {
+    throw new Error("ARTICLE_POLL_SCHEDULE_FAILED");
+  }
+}
+
 async function processArticleGeneration(data: {
   organizationId: string;
   jobId: string;
@@ -574,7 +609,7 @@ async function processArticleGeneration(data: {
     .set({
       status: "running",
       executionId,
-      startedAt: new Date(),
+      startedAt: sql`coalesce(${articleGenerationJobs.startedAt}, now())`,
       attemptCount: sql`${articleGenerationJobs.attemptCount} + 1`,
       errorCode: null,
       updatedAt: new Date(),
@@ -583,7 +618,14 @@ async function processArticleGeneration(data: {
       and(
         eq(articleGenerationJobs.id, data.jobId),
         eq(articleGenerationJobs.organizationId, data.organizationId),
-        eq(articleGenerationJobs.status, "queued"),
+        or(
+          eq(articleGenerationJobs.status, "queued"),
+          and(
+            eq(articleGenerationJobs.status, "running"),
+            isNull(articleGenerationJobs.executionId),
+            sql`${articleGenerationJobs.answerbitArticleId} is not null`,
+          ),
+        ),
       ),
     )
     .returning();
@@ -599,6 +641,7 @@ async function processArticleGeneration(data: {
     pricingSnapshot: context.job.pricingSnapshot,
   };
   try {
+    if (!articleId) await assertEnterpriseAccess(data.organizationId, true);
     const requestPayload = parseArticleJobPayload(
       context.job.requestPayload,
       (ciphertext) => cipher.decrypt(ciphertext, data.organizationId),
@@ -640,31 +683,49 @@ async function processArticleGeneration(data: {
         .returning({ id: articleGenerationJobs.id });
       if (!storedArticleId) throw new Error("ARTICLE_JOB_SUPERSEDED");
     }
-    let content:
-      | ReturnType<typeof answerBitArticleContentSchema.parse>
+    const deadline =
+      (claimed[0].startedAt?.getTime() ?? Date.now()) +
+      articleGenerationDeadlineMs;
+    let progress:
+      | ReturnType<typeof answerBitArticleProgressSchema.parse>
       | undefined;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      try {
-        content = await callAnswerBit(
-          "/geo/article/get",
-          { brand_id: context.job.brandId, article_id: articleId },
-          {
-            organizationId: data.organizationId,
-            teamBindingId: context.team.id,
-            requestId: randomUUID(),
-            brandId: context.job.brandId,
-            actorUserId: context.job.requestedBy,
-          },
-          10_000,
-          answerBitArticleContentSchema,
-        );
-        break;
-      } catch (error) {
-        if (attempt === 2) throw error;
-        await delay(500 * 2 ** attempt);
+    try {
+      progress = await callAnswerBit(
+        "/geo/article/get",
+        { brand_id: context.job.brandId, article_id: articleId },
+        {
+          organizationId: data.organizationId,
+          teamBindingId: context.team.id,
+          requestId: randomUUID(),
+          brandId: context.job.brandId,
+          actorUserId: context.job.requestedBy,
+        },
+        10_000,
+        answerBitArticleProgressSchema,
+      );
+    } catch (error) {
+      if (
+        Date.now() < deadline &&
+        !(error instanceof InvalidAnswerBitDataError) &&
+        !(error instanceof InvalidAnswerBitEnvelopeError) &&
+        !(error instanceof BoundedJsonResponseError)
+      ) {
+        await scheduleArticleContentPoll({ ...data, executionId });
+        return;
       }
+      throw error;
     }
-    if (!content) throw new Error("INVALID_CONTENT_RESPONSE");
+    if (progress.status === 0) {
+      if (Date.now() >= deadline) throw new Error("ARTICLE_GENERATION_TIMEOUT");
+      await scheduleArticleContentPoll({ ...data, executionId });
+      return;
+    }
+    const content = answerBitArticleContentSchema.parse(progress);
+    if (!content.main_body.trim()) {
+      if (Date.now() >= deadline) throw new Error("ARTICLE_GENERATION_TIMEOUT");
+      await scheduleArticleContentPoll({ ...data, executionId });
+      return;
+    }
     const upstreamTags = content.tags.map((tag) => ({
       tagId: tag.tag_id,
       tagName: tag.tag_name,
@@ -803,6 +864,18 @@ async function processArticleGeneration(data: {
       }
     }
   } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message === "ARTICLE_POLL_SCHEDULE_FAILED"
+    ) {
+      console.error(
+        JSON.stringify({
+          event: "article-generation.poll-schedule-failed",
+          jobId: data.jobId,
+        }),
+      );
+      return;
+    }
     const transportUncertain =
       error instanceof TypeError ||
       (error instanceof DOMException && error.name === "TimeoutError");
@@ -812,13 +885,18 @@ async function processArticleGeneration(data: {
       .set({
         status: "failed",
         errorCode:
-          error instanceof InvalidArticleJobPayloadError
-            ? "INVALID_ARTICLE_JOB_PAYLOAD"
-            : uncertain
-              ? "ANSWERBIT_CREATE_UNCERTAIN"
-              : articleId
-                ? "ARTICLE_CONTENT_FETCH_FAILED"
-                : "ARTICLE_CREATE_FAILED",
+          error instanceof EnterpriseAccessError
+            ? error.code
+            : error instanceof InvalidArticleJobPayloadError
+              ? "INVALID_ARTICLE_JOB_PAYLOAD"
+              : error instanceof Error &&
+                  error.message === "ARTICLE_GENERATION_TIMEOUT"
+                ? "ARTICLE_GENERATION_TIMEOUT"
+                : uncertain
+                  ? "ANSWERBIT_CREATE_UNCERTAIN"
+                  : articleId
+                    ? "ARTICLE_CONTENT_FETCH_FAILED"
+                    : "ARTICLE_CREATE_FAILED",
         completedAt: new Date(),
         executionId: null,
         updatedAt: new Date(),
@@ -914,6 +992,7 @@ async function processReportExport(data: {
     .returning();
   if (!claimed) return;
   try {
+    await assertEnterpriseAccess(data.organizationId);
     const [membership] = await db
       .select({
         status: organizationMembers.status,
@@ -1349,7 +1428,7 @@ async function processAsyncJobReconciliation() {
           .set({
             status: "queued",
             executionId: null,
-            startedAt: null,
+            ...(candidate.answerbitArticleId ? {} : { startedAt: null }),
             completedAt: null,
             errorCode: null,
             updatedAt: now,
@@ -1514,6 +1593,7 @@ async function processNotificationEvaluation() {
       and(
         eq(organizations.id, notificationRules.organizationId),
         eq(organizations.status, "active"),
+        sql`(${organizations.serviceExpiresAt} is null or ${organizations.serviceExpiresAt} > now())`,
       ),
     )
     .innerJoin(

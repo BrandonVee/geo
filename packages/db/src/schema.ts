@@ -254,6 +254,12 @@ export const verifications = pgTable(
   (t) => [index("verifications_identifier_idx").on(t.identifier)],
 );
 export const organizations = pgTable("organizations", {
+  serviceExpiresAt: timestamp("service_expires_at", {
+    withTimezone: true,
+  }).default(sql`now() + interval '1 month'`),
+  pointsExpiresAt: timestamp("points_expires_at", {
+    withTimezone: true,
+  }).default(sql`now() + interval '1 year'`),
   id: uuid("id").defaultRandom().primaryKey(),
   name: varchar("name", { length: 100 }).notNull(),
   slug: varchar("slug", { length: 64 }).notNull().unique(),

@@ -2061,7 +2061,7 @@ paths:
         "404":
           description: 企业不存在
     patch:
-      summary: 冻结或恢复企业
+      summary: 更新企业状态、服务有效期和积分有效期
       tags:
         - Platform Admin
       security:
@@ -2080,9 +2080,16 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required:
-                - status
+              minProperties: 1
               properties:
+                serviceExpiresAt:
+                  type: string
+                  format: date-time
+                  description: 企业到期时间，到期冻结企业业务
+                pointsExpiresAt:
+                  type: string
+                  format: date-time
+                  description: 企业积分到期时间，到期停止积分消费
                 status:
                   type: string
                   enum:
@@ -2094,7 +2101,7 @@ paths:
         "415":
           $ref: "#/components/responses/UnsupportedMediaType"
         "200":
-          description: 企业状态已更新并审计
+          description: 企业状态或有效期已更新并审计
         "404":
           description: 企业不存在
   /v1/admin/organizations/{organizationId}/answerbit-brand:
@@ -2383,6 +2390,11 @@ paths:
               additionalProperties: false
               minProperties: 1
               properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 120
+                  description: 用户显示名称，去除首尾空白；不修改登录用户名
                 status:
                   type: string
                   enum:
@@ -3483,6 +3495,33 @@ paths:
           description: 幂等重放
         "403":
           $ref: "#/components/responses/Forbidden"
+  /v1/admin/balance-deductions:
+    post:
+      summary: 平台管理员给企业手动扣减
+      tags:
+        - Platform Balances
+      security: *id001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminDeductBalance"
+      responses:
+        "409":
+          description: 幂等键对应的扣减参数不一致
+        "422":
+          description: 账户余额不足
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "201":
+          description: 扣减成功
+        "200":
+          description: 幂等重放
+        "403":
+          $ref: "#/components/responses/Forbidden"
   /v1/admin/feature-point-costs:
     get:
       summary: 查询业务功能积分单价
@@ -3648,7 +3687,7 @@ paths:
         "422":
           description: 品牌发布余额不足、正文缺失或来源任务尚未完成
         "503":
-          description: 小青蛙平台发布余额明确不足，未创建订单且未扣品牌余额
+          description: 媒体发布平台发布余额明确不足，未创建订单且未扣品牌余额
         "502":
           description: 聚合发布上游明确拒绝或请求结果不确定
         "504":
@@ -3714,16 +3753,16 @@ paths:
           description: 当前订单不支持聚合发布申诉
   /v1/admin/publication-provider-configuration:
     get:
-      summary: 查询小青蛙平台统一接入配置
+      summary: 查询媒体发布平台统一接入配置
       description: 只返回 Key 掩码和配置状态，不返回明文或密文。
       tags:
         - Platform Publications
       security: *id001
       responses:
         "200":
-          description: 小青蛙平台配置状态
+          description: 媒体发布平台配置状态
     put:
-      summary: 验证并保存小青蛙平台 API Key
+      summary: 验证并保存媒体发布平台 API Key
       description: 保存前调用上游余额，以及网站媒体、自媒体的目录、分类和订单查询接口校验；全部成功后使用 APP_ENCRYPTION_KEY 加密存储并供 Web 与 Worker 共用。
       tags:
         - Platform Publications
@@ -3745,14 +3784,14 @@ paths:
           description: API 地址或 Key 的上游校验未通过
   /v1/admin/publication-provider-balance:
     get:
-      summary: 查询小青蛙平台账户余额与接口算力
+      summary: 查询媒体发布平台账户余额与接口算力
       description: 仅平台发布管理员可见；上游查询异常以 available=false 返回，不影响本地账本和履约数据。
       tags:
         - Platform Publications
       security: *id001
       responses:
         "200":
-          description: 小青蛙平台账户状态
+          description: 媒体发布平台账户状态
           content:
             application/json:
               schema:
@@ -3954,7 +3993,7 @@ paths:
           $ref: "#/components/responses/Forbidden"
   /v1/admin/publication-channels/{channelId}:
     patch:
-      summary: 平台管理员调整人工或小青蛙渠道的分级售价及平台上下架
+      summary: 平台管理员调整人工或媒体发布渠道的分级售价及平台上下架
       tags:
         - Platform Publications
       security:
@@ -4820,6 +4859,7 @@ components:
           minLength: 1
           maxLength: 80
     CreateArticleJob:
+      description: 服务端验证当前语言模板。普通模板不接受 highReference，高引用模板必须提供 highReference；不匹配返回 422。任务响应 generationMode 为 standard、reference 或 null（历史请求无法解析）。
       type: object
       additionalProperties: false
       required:
@@ -4993,6 +5033,14 @@ components:
             - active
             - suspended
             - closed
+        serviceExpiresAt:
+          type: [string, "null"]
+          format: date-time
+          description: 企业服务到期，存量未配置时为空
+        pointsExpiresAt:
+          type: [string, "null"]
+          format: date-time
+          description: 企业积分统一到期，存量未配置时为空
         planCode:
           type:
             - string
@@ -5043,6 +5091,38 @@ components:
         requestId:
           type: string
           format: uuid
+    AdminDeductBalance:
+      type: object
+      additionalProperties: false
+      required:
+        - organizationId
+        - asset
+        - amount
+        - reason
+        - idempotencyKey
+      properties:
+        brandId:
+          type: string
+          maxLength: 128
+        organizationId:
+          type: string
+          format: uuid
+        asset:
+          type: string
+          enum:
+            - answerbit_points
+            - publication_cny
+        amount:
+          type: integer
+          minimum: 1
+        reason:
+          type: string
+          minLength: 4
+          maxLength: 1000
+        idempotencyKey:
+          type: string
+          minLength: 8
+          maxLength: 160
     AdminGrantBalance:
       type: object
       additionalProperties: false
@@ -5080,7 +5160,6 @@ components:
         - brandId
         - asset
         - amount
-        - reason
         - idempotencyKey
       properties:
         organizationId:
@@ -5094,8 +5173,9 @@ components:
           type: integer
           minimum: 1
         reason:
+          description: 可省略或留空，系统自动记录“企业向品牌划拨”
+          default: 企业向品牌划拨
           type: string
-          minLength: 4
           maxLength: 1000
         idempotencyKey: *id006
     FeaturePointCost:
@@ -5127,7 +5207,7 @@ components:
           type: string
           format: uri
           maxLength: 2000
-          description: 使用 HTTP 或 HTTPS 的小青蛙 API 基础地址
+          description: 使用 HTTP 或 HTTPS 的媒体发布 API 基础地址
         apiKey:
           type: string
           minLength: 1
@@ -5153,13 +5233,13 @@ components:
             - integer
             - "null"
           minimum: 0
-          description: 小青蛙平台账户发布余额，单位人民币分
+          description: 媒体发布平台账户发布余额，单位人民币分
         powerCount:
           type:
             - integer
             - "null"
           minimum: 0
-          description: 小青蛙平台账户剩余接口算力
+          description: 媒体发布平台账户剩余接口算力
         checkedAt:
           type:
             - string

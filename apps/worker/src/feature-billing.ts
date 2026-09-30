@@ -34,7 +34,7 @@ export async function consumeFeaturePoints(
     actorUserId: context.actorUserId,
   });
   if (!consumed.ok) throw new Error("ANSWERBIT_POINTS_INSUFFICIENT");
-  return "transaction" in consumed ? consumed.transaction.amount : 0;
+  return consumed.transaction?.amount ?? 0;
 }
 
 export async function restoreFeaturePoints(

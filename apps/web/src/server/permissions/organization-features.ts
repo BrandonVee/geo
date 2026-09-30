@@ -1,3 +1,4 @@
+import { assertEnterpriseAccess } from "@geo/db";
 import { featureScopeAllowsPermission, type Permission } from "@geo/core";
 import { ApiError } from "@/server/http/errors";
 import { organizationFeatureScopeRepository } from "@/server/repositories/organization-feature-scopes";
@@ -10,6 +11,7 @@ export async function assertOrganizationFeatureEnabled(
   userId: string,
   permission: Permission,
 ) {
+  await assertEnterpriseAccess(organizationId);
   const scope = await organizationFeatureScopeRepository.find(
     organizationId,
     userId,

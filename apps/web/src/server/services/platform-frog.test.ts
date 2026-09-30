@@ -98,7 +98,7 @@ beforeEach(() => {
   });
 });
 
-describe("小青蛙网页配置", () => {
+describe("媒体发布网页配置", () => {
   it("先验证 Key，再加密保存且只返回掩码", async () => {
     const result = await platformFrogService.configure(
       { baseUrl: "https://frog.example", apiKey: "frog-secret-1234" },

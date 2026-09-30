@@ -28,10 +28,10 @@
 | Redis          | Better Auth secondary storage            | 分布式登录限流与会话缓存；持久 Session 仍保存在 PostgreSQL      |
 | 契约包         | Zod，`packages/contracts`                | Web 与 API 共用的输入输出约束                                   |
 | 核心包         | `packages/core`                          | 权限判断、密钥加解密、请求 ID、CSV、通知与周期任务健康判定工具  |
-| 发布集成包     | `packages/publication`                   | Web 与 Worker 共用的小青蛙客户端、批量履约同步与状态映射        |
+| 发布集成包     | `packages/publication`                   | Web 与 Worker 共用的媒体发布客户端、批量履约同步与状态映射        |
 | 配置包         | `packages/config`                        | 运行环境变量校验                                                |
 | 腾讯 AnswerBit | 外部 HTTPS 服务                          | GEO 品牌、监测、分析、文章与上游计量能力                        |
-| 小青蛙聚合发布 | 外部 HTTP 服务                           | 网站媒体与自媒体渠道、投稿、履约状态、取消和申诉                |
+| 媒体发布服务 | 外部 HTTP 服务                           | 网站媒体与自媒体渠道、投稿、履约状态、取消和申诉                |
 
 ## 同步请求链路
 
@@ -65,7 +65,7 @@ HTTP Route 仅处理协议、认证上下文、输入校验和响应状态；业
 
 ## 部署关系
 
-最小生产拓扑由一个或多个 Web 实例、至少一个 Worker 实例、PostgreSQL 和 Redis 组成，每次发布前另运行一次数据库发布任务。根目录 `Dockerfile` 提供 `release`、`web` 与 `worker` 三个目标：`release` 使用独立 `MIGRATION_DATABASE_URL` 依次执行迁移、记录 schema 版本、种子和 RLS 检查；Web 使用 Next.js standalone 产物并通过 Redis 共享登录限流和会话缓存；Worker 使用单文件 Node.js bundle且继续以 PostgreSQL/pg-boss 协调任务。三个镜像均以非 root 用户启动，Web 与 Worker 运行镜像不包含构建工具。Web 与 Worker 使用同一 `DATABASE_URL`、`APP_ENCRYPTION_KEY` 和 AnswerBit 基础地址；小青蛙 Key 由平台网页加密保存到 PostgreSQL 后供二者共用，环境变量只作旧部署回退；浏览器只访问 Web，不直接访问数据库、Redis 或上游 API Key。
+最小生产拓扑由一个或多个 Web 实例、至少一个 Worker 实例、PostgreSQL 和 Redis 组成，每次发布前另运行一次数据库发布任务。根目录 `Dockerfile` 提供 `release`、`web` 与 `worker` 三个目标：`release` 使用独立 `MIGRATION_DATABASE_URL` 依次执行迁移、记录 schema 版本、种子和 RLS 检查；Web 使用 Next.js standalone 产物并通过 Redis 共享登录限流和会话缓存；Worker 使用单文件 Node.js bundle且继续以 PostgreSQL/pg-boss 协调任务。三个镜像均以非 root 用户启动，Web 与 Worker 运行镜像不包含构建工具。Web 与 Worker 使用同一 `DATABASE_URL`、`APP_ENCRYPTION_KEY` 和 AnswerBit 基础地址；媒体发布 Key 由平台网页加密保存到 PostgreSQL 后供二者共用，环境变量只作旧部署回退；浏览器只访问 Web，不直接访问数据库、Redis 或上游 API Key。
 
 数据库以 `system_release_state` 保存当前 schema 与 seed 的 `vN` 修订并按数字比较。Web readiness 在配置和连接检查后确认这两个修订不低于应用要求的最低版本，防止新应用在迁移或种子缺失时提前接流；更高修订仍兼容旧应用的 readiness，支持先执行向后兼容迁移再滚动部署。发布任务全部成功后才允许部署 Web 与 Worker。
 
@@ -82,7 +82,7 @@ Web 与 Worker 分别限制业务数据库连接池和 pg-boss 连接池，设�
 - 异步任务的状态写入必须匹配当前 `execution_id`；恢复任务不得重复创建结果不确定的上游文章。
 - 平台管理员执行全局操作；企业角色不能越过所属企业和授权品牌。
 - 当前接口契约由 [OpenAPI 定义](../interfaces/openapi.yaml) 与实现共同约束。
-- 小青蛙 API Key 只在平台管理端提交并在服务端解密使用；读取接口只返回掩码。本地发布订单和人民币账本仍是权限、扣款、退款与审计边界。
+- 媒体发布 API Key 只在平台管理端提交并在服务端解密使用；读取接口只返回掩码。本地发布订单和人民币账本仍是权限、扣款、退款与审计边界。
 
 ## 相关文档
 
