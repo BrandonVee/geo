@@ -11,3 +11,5 @@ export * from "./tencent-enterprise-sync";
 export * from "./release";
 
 export * from "./enterprise-access";
+
+export * from "./report-exports";

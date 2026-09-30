@@ -390,15 +390,25 @@ test.describe("真实运营操作闭环", () => {
     page,
   }) => {
     const keys: string[] = [];
+    const queuedJob = {
+      id: randomUUID(),
+      status: "queued",
+      articleTitle: "网络重试后的生成任务",
+      templateType: 1,
+      generationMode: "standard",
+      createdAt: new Date().toISOString(),
+    };
     await mockBusinessApis(page, async (route) => {
       keys.push(route.request().headers()["idempotency-key"]);
       if (keys.length === 1) return route.abort("failed");
       return fulfill(route, {
-        id: randomUUID(),
-        status: "queued",
+        ...queuedJob,
         replayed: true,
       });
     });
+    await page.route("**/api/v1/answerbit/article-jobs?**", (route) =>
+      fulfill(route, keys.length >= 2 ? [queuedJob] : []),
+    );
     await page.goto(
       `${scopedPath("/dashboard/content")}&stage=generate&promptId=prompt-1&promptText=${encodeURIComponent("如何选择品牌？")}`,
     );
@@ -408,11 +418,18 @@ test.describe("真实运营操作闭环", () => {
     const generate = page.getByRole("button", { name: /提交.*文章生成/ });
     await expect(generate).toBeEnabled();
     await generate.click();
+    await expect(
+      page.getByText("Failed to fetch", { exact: true }),
+    ).toBeVisible();
     await expect(generate).toBeEnabled();
     await generate.click();
     await expect(
       page.getByText("已返回相同幂等任务", { exact: true }),
     ).toBeVisible();
+    await expect(
+      page.getByText(queuedJob.articleTitle, { exact: true }),
+    ).toBeVisible();
+    await expect(page.getByText("等待生成", { exact: true })).toBeVisible();
     expect(keys).toHaveLength(2);
     expect(keys[0]).toBe(keys[1]);
   });

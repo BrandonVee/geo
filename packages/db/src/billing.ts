@@ -1,5 +1,6 @@
-import { and, eq, gt, gte, isNull, or, sql } from "drizzle-orm";
+import { and, eq, gt, gte, inArray, isNull, or, sql } from "drizzle-orm";
 import { db } from "./client";
+import type { DatabaseTransaction } from "./context";
 import {
   platformSubscriptions,
   quotaLedgers,
@@ -37,107 +38,133 @@ const availableAfter = (row: {
     ? null
     : row.limitAmount - row.usedAmount - row.reservedAmount;
 
-export async function reserveQuota(input: ReserveQuotaInput) {
-  if (!Number.isInteger(input.amount) || input.amount <= 0)
-    return { ok: false as const, code: "INVALID_QUOTA_AMOUNT" };
-  try {
-    return await db.transaction(async (tx) => {
-      const [replay] = await tx
-        .select()
-        .from(quotaLedgers)
-        .where(
-          and(
-            eq(quotaLedgers.organizationId, input.organizationId),
-            eq(quotaLedgers.idempotencyKey, input.idempotencyKey),
-          ),
-        )
-        .limit(1);
-      if (replay) return { ok: true as const, replayed: true, ledger: replay };
-      const [current] = await tx
-        .select({
-          id: subscriptionEntitlements.id,
-          subscriptionId: subscriptionEntitlements.subscriptionId,
-          limitAmount: subscriptionEntitlements.limitAmount,
-          usedAmount: subscriptionEntitlements.usedAmount,
-          reservedAmount: subscriptionEntitlements.reservedAmount,
-        })
-        .from(subscriptionEntitlements)
-        .innerJoin(
-          platformSubscriptions,
-          eq(platformSubscriptions.id, subscriptionEntitlements.subscriptionId),
-        )
-        .where(
-          and(
-            eq(subscriptionEntitlements.organizationId, input.organizationId),
-            eq(subscriptionEntitlements.entitlementKey, input.entitlementKey),
-            eq(platformSubscriptions.status, "active"),
-            gt(platformSubscriptions.currentPeriodEnd, new Date()),
-          ),
-        )
-        .limit(1);
-      if (!current)
-        return { ok: false as const, code: "ENTITLEMENT_NOT_FOUND" };
-      const [updated] = await tx
-        .update(subscriptionEntitlements)
-        .set({
-          reservedAmount: sql`${subscriptionEntitlements.reservedAmount} + ${input.amount}`,
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(subscriptionEntitlements.id, current.id),
-            or(
-              isNull(subscriptionEntitlements.limitAmount),
-              gte(
-                sql`${subscriptionEntitlements.limitAmount} - ${subscriptionEntitlements.usedAmount} - ${subscriptionEntitlements.reservedAmount}`,
-                input.amount,
-              ),
-            ),
-          ),
-        )
-        .returning();
-      if (!updated)
-        return {
-          ok: false as const,
-          code: "QUOTA_EXHAUSTED",
-          available: availableAfter(current),
-        };
-      const [ledger] = await tx
-        .insert(quotaLedgers)
-        .values({
-          organizationId: input.organizationId,
-          subscriptionId: current.subscriptionId,
-          entitlementId: current.id,
-          entitlementKey: input.entitlementKey,
-          operation: "reserve",
-          amount: input.amount,
-          balanceAfter: availableAfter(updated),
-          referenceType: input.reference.type,
-          referenceId: input.reference.id,
-          idempotencyKey: input.idempotencyKey,
-          actorUserId: input.actorUserId,
-        })
-        .returning();
-      return { ok: true as const, replayed: false, ledger };
-    });
-  } catch (error) {
-    if (errorCode(error) === "23505") {
-      const [replay] = await db
-        .select()
-        .from(quotaLedgers)
-        .where(
-          and(
-            eq(quotaLedgers.organizationId, input.organizationId),
-            eq(quotaLedgers.idempotencyKey, input.idempotencyKey),
-          ),
-        )
-        .limit(1);
-      if (replay) return { ok: true as const, replayed: true, ledger: replay };
-    }
-    throw error;
-  }
+async function lockReservation(
+  tx: DatabaseTransaction,
+  organizationId: string,
+  key: string,
+) {
+  await tx.execute(
+    sql`select pg_advisory_xact_lock(hashtext(${organizationId}), hashtext(${key}))`,
+  );
 }
 
+// @project-doc docs/domains/geo_operations.md#quota_reservations
+export async function reserveQuotaInTransaction(
+  tx: DatabaseTransaction,
+  input: ReserveQuotaInput,
+) {
+  if (!Number.isInteger(input.amount) || input.amount <= 0)
+    return { ok: false as const, code: "INVALID_QUOTA_AMOUNT" };
+  await lockReservation(tx, input.organizationId, input.idempotencyKey);
+  const [replay] = await tx
+    .select()
+    .from(quotaLedgers)
+    .where(
+      and(
+        eq(quotaLedgers.organizationId, input.organizationId),
+        eq(quotaLedgers.idempotencyKey, input.idempotencyKey),
+      ),
+    )
+    .limit(1);
+  if (replay) {
+    if (
+      replay.operation !== "reserve" ||
+      replay.entitlementKey !== input.entitlementKey ||
+      replay.amount !== input.amount ||
+      replay.referenceType !== input.reference.type ||
+      replay.referenceId !== input.reference.id ||
+      (replay.actorUserId && replay.actorUserId !== (input.actorUserId ?? null))
+    )
+      return { ok: false as const, code: "QUOTA_IDEMPOTENCY_CONFLICT" };
+    const [settlement] = await tx
+      .select()
+      .from(quotaLedgers)
+      .where(
+        and(
+          eq(quotaLedgers.organizationId, input.organizationId),
+          inArray(quotaLedgers.idempotencyKey, [
+            `${input.idempotencyKey}:commit`,
+            `${input.idempotencyKey}:release`,
+          ]),
+        ),
+      )
+      .limit(1);
+    if (settlement)
+      return { ok: false as const, code: "RESERVATION_ALREADY_SETTLED" };
+    return { ok: true as const, replayed: true, ledger: replay };
+  }
+  const [current] = await tx
+    .select({
+      id: subscriptionEntitlements.id,
+      subscriptionId: subscriptionEntitlements.subscriptionId,
+      limitAmount: subscriptionEntitlements.limitAmount,
+      usedAmount: subscriptionEntitlements.usedAmount,
+      reservedAmount: subscriptionEntitlements.reservedAmount,
+    })
+    .from(subscriptionEntitlements)
+    .innerJoin(
+      platformSubscriptions,
+      eq(platformSubscriptions.id, subscriptionEntitlements.subscriptionId),
+    )
+    .where(
+      and(
+        eq(subscriptionEntitlements.organizationId, input.organizationId),
+        eq(subscriptionEntitlements.entitlementKey, input.entitlementKey),
+        eq(platformSubscriptions.status, "active"),
+        gt(platformSubscriptions.currentPeriodEnd, new Date()),
+      ),
+    )
+    .limit(1);
+  if (!current) return { ok: false as const, code: "ENTITLEMENT_NOT_FOUND" };
+  const [updated] = await tx
+    .update(subscriptionEntitlements)
+    .set({
+      reservedAmount: sql`${subscriptionEntitlements.reservedAmount} + ${input.amount}`,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(subscriptionEntitlements.id, current.id),
+        or(
+          isNull(subscriptionEntitlements.limitAmount),
+          gte(
+            sql`${subscriptionEntitlements.limitAmount} - ${subscriptionEntitlements.usedAmount} - ${subscriptionEntitlements.reservedAmount}`,
+            input.amount,
+          ),
+        ),
+      ),
+    )
+    .returning();
+  if (!updated)
+    return {
+      ok: false as const,
+      code: "QUOTA_EXHAUSTED",
+      available: availableAfter(current),
+    };
+  const [ledger] = await tx
+    .insert(quotaLedgers)
+    .values({
+      organizationId: input.organizationId,
+      subscriptionId: current.subscriptionId,
+      entitlementId: current.id,
+      entitlementKey: input.entitlementKey,
+      operation: "reserve",
+      amount: input.amount,
+      balanceAfter: availableAfter(updated),
+      referenceType: input.reference.type,
+      referenceId: input.reference.id,
+      idempotencyKey: input.idempotencyKey,
+      actorUserId: input.actorUserId,
+    })
+    .returning();
+  return { ok: true as const, replayed: false, ledger };
+}
+
+export async function reserveQuota(input: ReserveQuotaInput) {
+  return db.transaction((tx) => reserveQuotaInTransaction(tx, input));
+}
+
+// @project-doc docs/domains/geo_operations.md#quota_reservations
 async function settleQuota(
   organizationId: string,
   reservationKey: string,
@@ -146,6 +173,7 @@ async function settleQuota(
   const settlementKey = `${reservationKey}:${operation}`;
   try {
     return await db.transaction(async (tx) => {
+      await lockReservation(tx, organizationId, reservationKey);
       const [replay] = await tx
         .select()
         .from(quotaLedgers)
@@ -157,6 +185,21 @@ async function settleQuota(
         )
         .limit(1);
       if (replay) return { ok: true as const, replayed: true, ledger: replay };
+      const [opposite] = await tx
+        .select()
+        .from(quotaLedgers)
+        .where(
+          and(
+            eq(quotaLedgers.organizationId, organizationId),
+            eq(
+              quotaLedgers.idempotencyKey,
+              `${reservationKey}:${operation === "commit" ? "release" : "commit"}`,
+            ),
+          ),
+        )
+        .limit(1);
+      if (opposite)
+        return { ok: false as const, code: "RESERVATION_ALREADY_SETTLED" };
       const [reservation] = await tx
         .select()
         .from(quotaLedgers)

@@ -30,6 +30,8 @@ const origin = `http://localhost:${port}`;
 const env = {
   ...process.env,
   DATABASE_URL: databaseUrl.href,
+  DB_POOL_MAX: "5",
+  JOB_DB_POOL_MAX: "2",
   MIGRATION_DATABASE_URL: databaseUrl.href,
   APP_URL: origin,
   BETTER_AUTH_URL: origin,
@@ -90,6 +92,18 @@ try {
       "src/point-usage.integration.test.ts",
     ],
     { POINT_USAGE_DB_TESTS: "1" },
+  );
+  await run(
+    pnpm,
+    [
+      "--filter",
+      "@geo/web",
+      "exec",
+      "vitest",
+      "run",
+      "src/server/services/report-exports.integration.test.ts",
+    ],
+    { REPORT_EXPORT_DB_TESTS: "1" },
   );
   const seed = new Client({ connectionString: databaseUrl.href });
   await seed.connect();

@@ -1,5 +1,7 @@
 import { sql } from "drizzle-orm";
-import { db } from "./client";
+import { db, pool } from "./client";
+import { drizzle } from "drizzle-orm/node-postgres";
+import * as schema from "./schema";
 
 export type DatabaseTransaction = Parameters<
   Parameters<typeof db.transaction>[0]
@@ -35,4 +37,25 @@ export function withPlatformDbContext<T>(
     );
     return run(tx);
   });
+}
+
+export type SqlExecutor = {
+  executeSql(
+    text: string,
+    values?: unknown[],
+  ): Promise<{ rows: Record<string, unknown>[] }>;
+};
+
+// @project-doc docs/architecture/backend_layers.md#async_transactions
+export async function withDatabaseTransaction<T>(
+  run: (tx: DatabaseTransaction, sqlExecutor: SqlExecutor) => Promise<T>,
+) {
+  const connection = await pool.connect();
+  try {
+    return await drizzle(connection, { schema }).transaction((tx) =>
+      run(tx, { executeSql: (text, values) => connection.query(text, values) }),
+    );
+  } finally {
+    connection.release();
+  }
 }

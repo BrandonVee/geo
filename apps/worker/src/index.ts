@@ -1,5 +1,9 @@
 import { EnterpriseAccessError } from "@geo/core";
-import { assertEnterpriseAccess } from "@geo/db";
+import {
+  assertEnterpriseAccess,
+  claimReportExport,
+  redeliverReportExport,
+} from "@geo/db";
 import {
   FrogPublicationClient,
   loadFrogPublicationChannels,
@@ -983,23 +987,7 @@ async function processReportExport(data: {
   exportId: string;
 }) {
   const executionId = randomUUID();
-  const [claimed] = await db
-    .update(reportExports)
-    .set({
-      status: "running",
-      executionId,
-      startedAt: new Date(),
-      errorCode: null,
-      updatedAt: new Date(),
-    })
-    .where(
-      and(
-        eq(reportExports.id, data.exportId),
-        eq(reportExports.organizationId, data.organizationId),
-        eq(reportExports.status, "queued"),
-      ),
-    )
-    .returning();
+  const claimed = await claimReportExport(data, executionId);
   if (!claimed) return;
   try {
     await assertEnterpriseAccess(data.organizationId);
@@ -1207,23 +1195,25 @@ async function enqueueRecoveredArticle(input: {
 async function enqueueRecoveredReport(input: {
   id: string;
   organizationId: string;
+  queueJobId: string | null;
 }) {
-  const queueJobId = await boss.send(
-    "report-export",
-    { organizationId: input.organizationId, exportId: input.id },
-    { retryLimit: 0, expireInSeconds: 600 },
+  return redeliverReportExport(
+    {
+      organizationId: input.organizationId,
+      exportId: input.id,
+      expectedQueueJobId: input.queueJobId,
+    },
+    async (data, executor) => {
+      const queueJobId = await boss.send("report-export", data, {
+        db: executor,
+        singletonKey: data.exportId,
+        retryLimit: 0,
+        expireInSeconds: 600,
+      });
+      if (!queueJobId) throw new Error("REPORT_JOB_REDELIVERY_FAILED");
+      return queueJobId;
+    },
   );
-  if (!queueJobId) throw new Error("REPORT_JOB_REDELIVERY_FAILED");
-  await db
-    .update(reportExports)
-    .set({ queueJobId, errorCode: null, updatedAt: new Date() })
-    .where(
-      and(
-        eq(reportExports.id, input.id),
-        eq(reportExports.status, "queued"),
-        isNull(reportExports.executionId),
-      ),
-    );
 }
 
 async function processAsyncJobReconciliation() {
@@ -1467,8 +1457,8 @@ async function processAsyncJobReconciliation() {
           result.races += 1;
           continue;
         }
-        await enqueueRecoveredReport(candidate);
-        result.requeuedReports += 1;
+        if (await enqueueRecoveredReport(candidate))
+          result.requeuedReports += 1;
       } catch (error) {
         result.errors += 1;
         console.error(

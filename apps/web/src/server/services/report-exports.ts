@@ -4,14 +4,16 @@ import {
   type CreateReportExportInput,
   type ReportExportListQuery,
 } from "@geo/contracts";
-import { reserveQuota, releaseQuota } from "@geo/db";
 import type { AuditContext } from "@/server/audit/write-audit";
-import { writeAudit } from "@/server/audit/write-audit";
-import { ApiError, databaseErrorCode } from "@/server/http/errors";
-import { enqueueReportExport } from "@/server/jobs/boss";
+import { ApiError } from "@/server/http/errors";
+import { prepareReportExportQueue } from "@/server/jobs/boss";
 import { authorizeBrand } from "@/server/permissions/brand-scope";
 import { reportExportRepository } from "@/server/repositories/report-exports";
 const reportErrors: Record<string, string> = {
+  QUOTA_EXHAUSTED: "本周期报表导出额度已用完，请联系管理员。",
+  ENTITLEMENT_NOT_FOUND: "当前企业未开通报表导出功能，请联系管理员。",
+  RESERVATION_ALREADY_SETTLED: "原任务额度已结算，请重新导出。",
+  QUOTA_IDEMPOTENCY_CONFLICT: "任务额度记录不一致，请联系管理员后重新导出。",
   REPORT_PERMISSION_REVOKED: "操作权限已变更，请联系企业管理员。",
   ORGANIZATION_FEATURE_DISABLED: "报告功能已关闭，请联系平台管理员。",
   ORGANIZATION_EXPIRED: "企业服务已到期，请续期后重新导出。",
@@ -106,69 +108,48 @@ export const reportExportService = {
     );
     if (existing) {
       assertReplay(existing, input, userId);
-      return { ...present(existing, input.organizationId), replayed: true };
+      if (
+        existing.status !== "queued" ||
+        (existing.quotaReservationKey && existing.queueJobId)
+      )
+        return { ...present(existing, input.organizationId), replayed: true };
     }
-    let job;
-    try {
-      job = await reportExportRepository.create(input, idempotencyKey, userId);
-    } catch (error) {
-      if (databaseErrorCode(error) === "23505") {
-        const duplicate = await reportExportRepository.findByIdempotency(
-          input.organizationId,
-          idempotencyKey,
-        );
-        if (duplicate) {
-          assertReplay(duplicate, input, userId);
-          return {
-            ...present(duplicate, input.organizationId),
-            replayed: true,
-          };
-        }
-      }
-      throw error;
-    }
-    const reservationKey = `report:${job.id}:reserve`;
-    const quota = await reserveQuota({
-      organizationId: input.organizationId,
-      entitlementKey: "report_exports",
-      amount: 1,
-      reference: { type: "report_export", id: job.id },
-      idempotencyKey: reservationKey,
-      actorUserId: userId,
-    });
-    if (!quota.ok) {
-      await reportExportRepository.remove(job.id);
+    const enqueue = await prepareReportExportQueue();
+    const result = await reportExportRepository.create(
+      input,
+      idempotencyKey,
+      userId,
+      {
+        validateReplay: (row) => assertReplay(row, input, userId),
+        enqueue,
+        audit: {
+          context: audit,
+          input: {
+            operation: "report-export.create",
+            resourceType: "report_export",
+            summary: `创建 ${input.reportType} 报表导出任务`,
+          },
+        },
+      },
+    );
+    if (!result.ok)
       throw new ApiError(
-        402,
-        quota.code,
-        quota.code === "QUOTA_EXHAUSTED"
+        result.code === "RESERVATION_ALREADY_SETTLED" ||
+        result.code === "QUOTA_IDEMPOTENCY_CONFLICT"
+          ? 409
+          : 402,
+        result.code,
+        result.code === "QUOTA_EXHAUSTED"
           ? "本周期报表导出额度已用完"
-          : "当前企业未开通报表导出功能",
+          : result.code === "RESERVATION_ALREADY_SETTLED" ||
+              result.code === "QUOTA_IDEMPOTENCY_CONFLICT"
+            ? "原任务额度已结算，请使用重新导出创建新任务"
+            : "当前企业未开通报表导出功能",
       );
-    }
-    await reportExportRepository.setReservation(job.id, reservationKey);
-    try {
-      const queueJobId = await enqueueReportExport({
-        organizationId: input.organizationId,
-        exportId: job.id,
-      });
-      await reportExportRepository.setQueueJobId(job.id, queueJobId);
-    } catch (error) {
-      await releaseQuota(input.organizationId, reservationKey);
-      await reportExportRepository.remove(job.id);
-      throw error;
-    }
-    const stored = (await reportExportRepository.find(
-      job.id,
-      input.organizationId,
-    ))!;
-    await writeAudit(audit, {
-      operation: "report-export.create",
-      resourceType: "report_export",
-      resourceId: job.id,
-      summary: `创建 ${input.reportType} 报表导出任务`,
-    });
-    return { ...present(stored, input.organizationId), replayed: false };
+    return {
+      ...present(result.job, input.organizationId),
+      replayed: result.replayed,
+    };
   },
   async list(input: ReportExportListQuery, userId: string) {
     await authorizeBrand(

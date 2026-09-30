@@ -3133,7 +3133,7 @@ paths:
           description: 导出任务分页列表；包含原始 filters、面向用户的 errorMessage、到期状态和有效 downloadUrl，不返回 CSV 内容
     post:
       summary: 创建异步 CSV 报表导出
-      description: 创建和 Worker 执行时均重新校验企业、TeamID、品牌和 report.export 权限；占用平台报表额度。同一幂等键仅允许原请求用户、范围、报表类型和筛选条件一致的重放。
+      description: 创建和 Worker 执行时均重新校验企业、TeamID、品牌和 report.export 权限；报告、平台报表额度预留、队列任务和审计原子提交，中途失败全部回滚。同一幂等键仅允许原请求用户、范围、报表类型和筛选条件一致的重放。
       tags:
         - Workspace Extensions
       parameters:
@@ -3158,9 +3158,9 @@ paths:
         "201":
           description: 导出任务已创建
         "200":
-          description: 幂等重放
+          description: 幂等重放；旧的不完整任务可恢复为已入队任务或明确失败的原任务，失败后支持新键重新导出。
         "402":
-          description: 导出额度不足
+          description: 报告权益未配置或导出额度不足；不留下新建半成品任务。
         "409":
           description: REPORT_EXPORT_IDEMPOTENCY_CONFLICT；同一幂等键对应的用户、范围或筛选条件不同
   /v1/report-exports/{exportId}:

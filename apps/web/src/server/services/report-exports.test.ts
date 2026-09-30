@@ -4,24 +4,16 @@ const m = vi.hoisted(() => ({
   authorize: vi.fn(),
   existing: vi.fn(),
   create: vi.fn(),
-  reserve: vi.fn(),
+  prepare: vi.fn(),
   enqueue: vi.fn(),
   find: vi.fn(),
   list: vi.fn(),
   count: vi.fn(),
-  audit: vi.fn(),
-  remove: vi.fn(),
-  release: vi.fn(),
-}));
-vi.mock("@geo/db", () => ({
-  reserveQuota: m.reserve,
-  releaseQuota: m.release,
 }));
 vi.mock("@/server/permissions/brand-scope", () => ({
   authorizeBrand: m.authorize,
 }));
-vi.mock("@/server/jobs/boss", () => ({ enqueueReportExport: m.enqueue }));
-vi.mock("@/server/audit/write-audit", () => ({ writeAudit: m.audit }));
+vi.mock("@/server/jobs/boss", () => ({ prepareReportExportQueue: m.prepare }));
 vi.mock("@/server/repositories/report-exports", () => ({
   reportExportRepository: {
     findByIdempotency: m.existing,
@@ -29,9 +21,6 @@ vi.mock("@/server/repositories/report-exports", () => ({
     find: m.find,
     list: m.list,
     count: m.count,
-    setReservation: vi.fn(),
-    setQueueJobId: vi.fn(),
-    remove: m.remove,
   },
 }));
 import { reportExportService } from "./report-exports";
@@ -64,6 +53,8 @@ const row = {
   filters,
   requestedBy: "user",
   status: "queued",
+  quotaReservationKey: "report:export:reserve",
+  queueJobId: "queue",
   expiresAt: null,
   errorCode: null,
   fileContent: "private CSV",
@@ -77,8 +68,8 @@ beforeEach(() => {
   vi.resetAllMocks();
   m.existing.mockResolvedValue(row);
   m.find.mockResolvedValue(row);
-  m.reserve.mockResolvedValue({ ok: true });
-  m.create.mockResolvedValue(row);
+  m.create.mockResolvedValue({ ok: true, job: row, replayed: false });
+  m.prepare.mockResolvedValue(m.enqueue);
   m.enqueue.mockResolvedValue("queue");
   m.list.mockResolvedValue([row]);
   m.count.mockResolvedValue(1);
@@ -93,7 +84,7 @@ describe("报告提交与重试", () => {
     );
     expect(replay).toMatchObject({ id: "export", replayed: true });
     expect(replay).not.toHaveProperty("fileContent");
-    expect(m.reserve).not.toHaveBeenCalled();
+    expect(m.create).not.toHaveBeenCalled();
     expect(m.enqueue).not.toHaveBeenCalled();
   });
   it.each([
@@ -123,22 +114,57 @@ describe("报告提交与重试", () => {
       reportExportService.create(input, "key", "other", audit),
     ).rejects.toMatchObject({ code: "REPORT_EXPORT_IDEMPOTENCY_CONFLICT" });
   });
-  it("并发唯一键冲突仍校验请求再返回原任务", async () => {
-    m.existing.mockResolvedValueOnce(undefined);
-    m.create.mockRejectedValue({ code: "23505" });
+  it("并发提交由事务返回原任务，仍校验请求身份", async () => {
+    m.existing.mockResolvedValue(undefined);
+    m.create.mockImplementation(async (_input, _key, _user, options) => {
+      options.validateReplay(row);
+      return { ok: true, job: row, replayed: true };
+    });
     await expect(
       reportExportService.create(input, "key", "user", audit),
     ).resolves.toMatchObject({ replayed: true });
-    expect(m.reserve).not.toHaveBeenCalled();
+    await expect(
+      reportExportService.create(input, "key", "other", audit),
+    ).rejects.toMatchObject({ code: "REPORT_EXPORT_IDEMPOTENCY_CONFLICT" });
   });
-  it("额度不足删除未完成任务，允许之后用原键重试", async () => {
+  it("额度不足不返回成功任务，之后允许用原键重试", async () => {
     m.existing.mockResolvedValue(undefined);
-    m.reserve.mockResolvedValue({ ok: false, code: "QUOTA_EXHAUSTED" });
+    m.create.mockResolvedValueOnce({ ok: false, code: "QUOTA_EXHAUSTED" });
     await expect(
       reportExportService.create(input, "key", "user", audit),
-    ).rejects.toMatchObject({ code: "QUOTA_EXHAUSTED" });
-    expect(m.remove).toHaveBeenCalledWith("export");
-    expect(m.enqueue).not.toHaveBeenCalled();
+    ).rejects.toMatchObject({ status: 402, code: "QUOTA_EXHAUSTED" });
+    await expect(
+      reportExportService.create(input, "key", "user", audit),
+    ).resolves.toMatchObject({ id: "export", replayed: false });
+  });
+  it("旧的半成品任务进入事务恢复，不直接当作重放成功", async () => {
+    m.existing.mockResolvedValue({ ...row, queueJobId: null });
+    await reportExportService.create(input, "key", "user", audit);
+    expect(m.prepare).toHaveBeenCalledOnce();
+    expect(m.create).toHaveBeenCalledWith(
+      input,
+      "key",
+      "user",
+      expect.objectContaining({
+        enqueue: m.enqueue,
+        audit: expect.objectContaining({ context: audit }),
+      }),
+    );
+  });
+  it("完成的原任务不依赖队列再次启动；失去权限不返回任务", async () => {
+    m.existing.mockResolvedValue({
+      ...row,
+      status: "succeeded",
+      queueJobId: null,
+    });
+    await expect(
+      reportExportService.create(input, "key", "user", audit),
+    ).resolves.toMatchObject({ replayed: true });
+    expect(m.prepare).not.toHaveBeenCalled();
+    m.authorize.mockRejectedValueOnce(new Error("forbidden"));
+    await expect(
+      reportExportService.create(input, "key", "user", audit),
+    ).rejects.toThrow("forbidden");
   });
   it("文件即使尚未被周期任务清理，已超过期限也立即显示过期", async () => {
     m.list.mockResolvedValue([

@@ -3,7 +3,7 @@ import { Alert, Button, Flex, Select, Typography } from "antd";
 import { useSearchParams } from "next/navigation";
 import type { Permission, OrganizationFeature } from "@geo/core";
 import { useWorkspaceAccess, workspacePermission } from "./workspace-access";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   readStoredBrandId,
   readStoredOrganizationId,
@@ -42,12 +42,15 @@ export function useAnswerBitScope(organizations: ScopeOrganization[]) {
   const [organizationId, setOrganizationIdState] = useState(
     organizations[0]?.id ?? "",
   );
+  const organizationIdRef = useRef(organizationId);
   const [brandId, setBrandId] = useState("");
   const [brands, setBrands] = useState<ScopeBrand[]>([]);
   const [error, setError] = useState("");
   const [scopeRestored, setScopeRestored] = useState(false);
   const [brandLoadVersion, setBrandLoadVersion] = useState(0);
   const setOrganizationId = useCallback((nextOrganizationId: string) => {
+    if (organizationIdRef.current === nextOrganizationId) return;
+    organizationIdRef.current = nextOrganizationId;
     setBrands([]);
     setBrandId("");
     setError("");

@@ -1,3 +1,4 @@
+import type { SqlExecutor } from "@geo/db";
 import { PgBoss } from "pg-boss";
 import { getServerEnv } from "../env";
 const globalBoss = globalThis as typeof globalThis & {
@@ -38,7 +39,13 @@ async function startBoss() {
       await boss.createQueue("report-export");
       return boss;
     })();
-  return globalBoss.geoBossStart;
+  const pending = globalBoss.geoBossStart;
+  try {
+    return await pending;
+  } catch (error) {
+    if (globalBoss.geoBossStart === pending) delete globalBoss.geoBossStart;
+    throw error;
+  }
 }
 export async function enqueueArticleGeneration(data: {
   organizationId: string;
@@ -57,16 +64,19 @@ export async function cancelArticleGeneration(queueJobId: string) {
   const boss = await startBoss();
   await boss.cancel("article-generation", queueJobId);
 }
-export async function enqueueReportExport(data: {
-  organizationId: string;
-  exportId: string;
-}) {
+export async function prepareReportExportQueue() {
   const boss = await startBoss();
-  const id = await boss.send("report-export", data, {
-    singletonKey: data.exportId,
-    retryLimit: 0,
-    expireInSeconds: 600,
-  });
-  if (!id) throw new Error("REPORT_EXPORT_ENQUEUE_FAILED");
-  return id;
+  return async (
+    data: { organizationId: string; exportId: string },
+    db: SqlExecutor,
+  ) => {
+    const id = await boss.send("report-export", data, {
+      db,
+      singletonKey: data.exportId,
+      retryLimit: 0,
+      expireInSeconds: 600,
+    });
+    if (!id) throw new Error("REPORT_EXPORT_ENQUEUE_FAILED");
+    return id;
+  };
 }
