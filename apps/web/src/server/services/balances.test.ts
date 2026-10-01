@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   pointUsage: vi.fn(),
   deduct: vi.fn(),
   confirmation: vi.fn(),
+  organizationBalances: vi.fn(),
   brandExists: vi.fn(),
   setPointCost: vi.fn(),
   writeAudit: vi.fn(),
@@ -38,6 +39,7 @@ vi.mock("@/server/repositories/balances", () => ({
     pointUsage: mocks.pointUsage,
     deduct: mocks.deduct,
     confirmation: mocks.confirmation,
+    organizationBalances: mocks.organizationBalances,
     brandExists: mocks.brandExists,
     setPointCost: mocks.setPointCost,
   },
@@ -52,6 +54,19 @@ vi.mock("@/server/repositories/organizations", () => ({
 import { balanceService } from "./balances";
 
 describe("管理员资产调整结果核对", () => {
+  it("只有企业读取权限也不能读取企业资产目录", async () => {
+    mocks.requirePlatformPermission.mockRejectedValueOnce(
+      new Error("forbidden"),
+    );
+    await expect(
+      balanceService.organizationBalances({ page: 1, pageSize: 20 }, "actor"),
+    ).rejects.toThrow("forbidden");
+    expect(mocks.organizationBalances).not.toHaveBeenCalled();
+    expect(mocks.requirePlatformPermission).toHaveBeenLastCalledWith(
+      "actor",
+      "platform.balance.manage",
+    );
+  });
   it("没有余额管理权限时不读取原流水", async () => {
     mocks.requirePlatformPermission.mockRejectedValueOnce(
       new Error("forbidden"),

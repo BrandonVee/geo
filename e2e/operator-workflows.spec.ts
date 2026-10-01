@@ -11,6 +11,7 @@ let database: typeof import("../packages/db/src/index");
 let operators: typeof import("../apps/web/node_modules/drizzle-orm");
 let fixture: {
   publicationChannelIds?: string[];
+  extraUserIds?: string[];
   userId: string;
   username: string;
   password: string;
@@ -399,7 +400,11 @@ test.describe("真实运营操作闭环", () => {
       .delete(database.platformSubscriptions)
       .where(inArray(database.platformSubscriptions.organizationId, ids));
     await db.delete(organizations).where(inArray(organizations.id, ids));
-    await db.delete(users).where(eq(users.id, fixture.userId));
+    await db
+      .delete(users)
+      .where(
+        inArray(users.id, [fixture.userId, ...(fixture.extraUserIds ?? [])]),
+      );
   });
   test.afterAll(async () => {
     await database?.pool.end();
@@ -2164,6 +2169,387 @@ test.describe("真实运营操作闭环", () => {
     expect(runtimeErrors).toEqual([]);
   });
 
+  test("资产目录超过百家仍可定位，企业和品牌余额分开，查看流水恢复范围并远程搜索用户", async ({
+    page,
+  }) => {
+    await makePlatformAdministrator();
+    await mockAdminReads(page);
+    const marker = `资金-${randomUUID().slice(0, 8)}`,
+      past = new Date("2020-01-01"),
+      future = new Date("2038-01-01");
+    const batch = Array.from({ length: 105 }, (_, index) => ({
+      organizationId: randomUUID(),
+      connectionId: randomUUID(),
+      teamBindingId: randomUUID(),
+      brandId: `${marker}-brand-${index}-${randomUUID().slice(0, 8)}`,
+      name: `${marker}企业${index}`,
+    }));
+    await database.db.insert(database.organizations).values(
+      batch.map((row) => ({
+        id: row.organizationId,
+        name: row.name,
+        slug: row.organizationId,
+        createdAt: past,
+        serviceExpiresAt: future,
+        pointsExpiresAt: future,
+      })),
+    );
+    await database.db.insert(database.answerbitConnections).values(
+      batch.map((row) => ({
+        id: row.connectionId,
+        organizationId: row.organizationId,
+        encryptedApiKey: "qa-unused",
+        apiKeyFingerprint: randomUUID(),
+        apiKeyHint: "qa",
+        managedByPlatform: true,
+        createdBy: fixture.userId,
+      })),
+    );
+    await database.db.insert(database.answerbitTeamBindings).values(
+      batch.map((row) => ({
+        id: row.teamBindingId,
+        organizationId: row.organizationId,
+        connectionId: row.connectionId,
+        teamId: "qa-team",
+        status: "active" as const,
+      })),
+    );
+    await database.db.insert(database.answerbitBrandMappings).values(
+      batch.map((row) => ({
+        organizationId: row.organizationId,
+        teamBindingId: row.teamBindingId,
+        brandId: row.brandId,
+        brandName: row.name,
+      })),
+    );
+    fixture.scopes.push(...batch);
+    const target = [...batch].sort((a, b) =>
+      a.organizationId.localeCompare(b.organizationId),
+    )[0];
+    const accounts = await database.db
+      .insert(database.balanceAccounts)
+      .values([
+        {
+          organizationId: target.organizationId,
+          asset: "answerbit_points",
+          balance: 117,
+        },
+        {
+          organizationId: target.organizationId,
+          brandId: target.brandId,
+          asset: "answerbit_points",
+          balance: 700,
+        },
+        {
+          organizationId: target.organizationId,
+          asset: "publication_cny",
+          balance: 299,
+        },
+        {
+          organizationId: target.organizationId,
+          brandId: target.brandId,
+          asset: "publication_cny",
+          balance: 502,
+        },
+      ])
+      .returning();
+    const actorId = randomUUID(),
+      actorName = `流水操作员-${randomUUID().slice(0, 8)}`,
+      actorUsername = `ledger-${randomUUID().slice(0, 12)}`;
+    const actors = Array.from({ length: 100 }, (_, i) => ({
+      id: randomUUID(),
+      name: `${marker}操作员${i}`,
+      email: `${randomUUID()}@test.invalid`,
+      createdAt: new Date("2025-01-01"),
+    }));
+    actors.push({
+      id: actorId,
+      name: actorName,
+      email: `${actorId}@test.invalid`,
+      createdAt: past,
+    });
+    await database.db.insert(database.users).values(actors);
+    await database.db
+      .update(database.users)
+      .set({ username: actorUsername })
+      .where(operators.eq(database.users.id, actorId));
+    fixture.extraUserIds = actors.map((row) => row.id);
+    await database.db.insert(database.balanceTransactions).values(
+      Array.from({ length: 23 }, (_, i) => ({
+        organizationId: target.organizationId,
+        asset: "answerbit_points" as const,
+        operation: "allocate" as const,
+        sourceAccountId: accounts[0].id,
+        targetAccountId: accounts[1].id,
+        amount: 7,
+        reason: `${marker}流水${i}`,
+        referenceType: "allocation",
+        referenceId: randomUUID(),
+        idempotencyKey: randomUUID(),
+        actorUserId: actorId,
+        createdAt: past,
+      })),
+    );
+    await page.goto(
+      `/admin?section=balances&fundKeyword=${encodeURIComponent(marker)}&fundPage=11&fundPageSize=10&ledgerOperation=restore&ledgerPageSize=10`,
+    );
+    const row = page
+      .getByRole("region", { name: "企业资产目录，可横向滚动", exact: true })
+      .locator("tr")
+      .filter({ hasText: target.brandId });
+    await expect(row).toBeVisible();
+    await expect(row.getByText("117 积分", { exact: true })).toBeVisible();
+    await expect(row.getByText("700 积分", { exact: true })).toBeVisible();
+    await expect(row.getByText("¥2.99", { exact: true })).toBeVisible();
+    await expect(row.getByText("¥5.02", { exact: true })).toBeVisible();
+    await expect(
+      page.getByText("共 105 家腾讯企业", { exact: true }),
+    ).toBeVisible();
+    await page.reload();
+    await expect(row).toBeVisible();
+    await expect(page).toHaveURL(/fundPage=11/);
+    await page
+      .getByLabel("搜索企业或品牌", { exact: true })
+      .fill(target.brandId);
+    await page.getByLabel("搜索企业或品牌", { exact: true }).press("Enter");
+    await expect(
+      page.getByText("共 1 家腾讯企业", { exact: true }),
+    ).toBeVisible();
+    await row.getByRole("button", { name: "查看流水", exact: true }).click();
+    await expect(page).toHaveURL(
+      new RegExp(`ledgerOrganizationId=${target.organizationId}`),
+    );
+    expect(new URL(page.url()).searchParams.has("ledgerOperation")).toBeFalsy();
+    const ledger = page.locator("#admin-balance-ledger");
+    await expect(
+      ledger.getByText("共 23 条资产流水", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      ledger
+        .getByText(`企业资金池 → 品牌 ${target.brandId}`, { exact: true })
+        .first(),
+    ).toBeVisible();
+    await ledger.locator(".ant-pagination-item-2").click();
+    await expect(page).toHaveURL(/ledgerPage=2/);
+    await page.reload();
+    await expect(
+      ledger.getByText("共 23 条资产流水", { exact: true }),
+    ).toBeVisible();
+    await expect(ledger.locator(".ant-pagination-item-active")).toHaveAttribute(
+      "title",
+      "2",
+    );
+    await page.getByRole("menuitem", { name: /企业与品牌/ }).click();
+    await page.getByRole("menuitem", { name: /资产与计费/ }).click();
+    await expect(row).toBeVisible();
+    await expect(ledger.locator(".ant-pagination-item-active")).toHaveAttribute(
+      "title",
+      "2",
+    );
+    const organizationFilter = ledger.getByRole("combobox", {
+      name: "按企业筛选平台余额流水",
+      exact: true,
+    });
+    await organizationFilter.press("ArrowDown");
+    await organizationFilter.fill(target.brandId);
+    await page
+      .locator(".ant-select-item-option")
+      .filter({ hasText: target.brandId })
+      .click();
+    const userFilter = ledger.getByRole("combobox", {
+      name: "按操作用户筛选平台余额流水",
+      exact: true,
+    });
+    await userFilter.press("ArrowDown");
+    await userFilter.fill(actorUsername);
+    await page
+      .locator(".ant-select-item-option")
+      .filter({ hasText: actorUsername })
+      .click();
+    await expect(page).toHaveURL(new RegExp(`ledgerUserId=${actorId}`));
+    await expect(
+      ledger.getByText("共 23 条资产流水", { exact: true }),
+    ).toBeVisible();
+    await page.reload();
+    await expect(
+      ledger.getByText(`${actorName} (@${actorUsername})`, { exact: true }),
+    ).toBeVisible();
+    const directoryResponse = await page.request.get(
+      `/api/v1/admin/organization-balances?page=1&pageSize=20&q=${target.brandId}`,
+    );
+    expect(directoryResponse.ok()).toBeTruthy();
+    const invalid = await page.request.get(
+      "/api/v1/admin/organization-balances?accessState=invalid",
+    );
+    expect(invalid.status()).toBe(400);
+  });
+
+  test("资产目录与流水读取独立，迟到范围不覆盖，明暗主题与多尺寸错误可重试", async ({
+    page,
+  }) => {
+    await makePlatformAdministrator();
+    await mockAdminReads(page);
+    const [first, second] = fixture.scopes;
+    const reasons = [`资产甲-${randomUUID()}`, `资产乙-${randomUUID()}`];
+    await database.db.insert(database.balanceTransactions).values(
+      [first, second].map((scope, i) => ({
+        organizationId: scope.organizationId,
+        asset: "answerbit_points" as const,
+        operation: "grant" as const,
+        amount: 3,
+        referenceType: "manual_grant",
+        referenceId: randomUUID(),
+        idempotencyKey: randomUUID(),
+        reason: reasons[i],
+        actorUserId: fixture.userId,
+      })),
+    );
+    let directoryFails = false,
+      ledgerFails = false;
+    let releaseDirectory!: () => void,
+      directoryArrived!: () => void,
+      directoryDone!: () => void;
+    const directoryGate = new Promise<void>((resolve) => {
+        releaseDirectory = resolve;
+      }),
+      arrived = new Promise<void>((resolve) => {
+        directoryArrived = resolve;
+      }),
+      completed = new Promise<void>((resolve) => {
+        directoryDone = resolve;
+      });
+    let held = false;
+    await page.route(
+      "**/api/v1/admin/organization-balances?**",
+      async (route) => {
+        const query = new URL(route.request().url()).searchParams.get("q");
+        if (directoryFails)
+          return route.fulfill({
+            status: 503,
+            json: {
+              error: {
+                code: "QA_UNAVAILABLE",
+                message: "资产目录暂时无法读取",
+              },
+            },
+          });
+        if (!held && query === first.brandId) {
+          held = true;
+          const response = await route.fetch();
+          directoryArrived();
+          await directoryGate;
+          await route.fulfill({ response }).catch(() => {});
+          directoryDone();
+          return;
+        }
+        return route.continue();
+      },
+    );
+    await page.route("**/api/v1/admin/balance-transactions?**", (route) =>
+      ledgerFails
+        ? route.fulfill({
+            status: 503,
+            json: {
+              error: {
+                code: "QA_UNAVAILABLE",
+                message: "资产流水暂时无法读取",
+              },
+            },
+          })
+        : route.continue(),
+    );
+    await page.goto("/admin?section=balances");
+    await page
+      .getByLabel("搜索企业或品牌", { exact: true })
+      .fill(first.brandId);
+    await page.getByLabel("搜索企业或品牌", { exact: true }).press("Enter");
+    await arrived;
+    await page
+      .getByLabel("搜索企业或品牌", { exact: true })
+      .fill(second.brandId);
+    await page.getByLabel("搜索企业或品牌", { exact: true }).press("Enter");
+    const secondRow = page
+      .getByRole("region", { name: "企业资产目录，可横向滚动", exact: true })
+      .locator("tr")
+      .filter({ hasText: second.brandId });
+    await expect(secondRow).toBeVisible();
+    releaseDirectory();
+    await completed;
+    await expect(
+      page.locator("tr").filter({ hasText: first.brandId }),
+    ).not.toBeVisible();
+    await secondRow
+      .getByRole("button", { name: "查看流水", exact: true })
+      .click();
+    const ledger = page.locator("#admin-balance-ledger");
+    await expect(ledger.getByText(reasons[1], { exact: true })).toBeVisible();
+    directoryFails = true;
+    await page
+      .getByRole("button", { name: "刷新当前模块", exact: true })
+      .click();
+    await expect(
+      page.getByText("资产目录暂时无法读取", { exact: true }),
+    ).toBeVisible();
+    await expect(ledger.getByText(reasons[1], { exact: true })).toBeVisible();
+    directoryFails = false;
+    await page
+      .getByRole("button", { name: "重试读取企业目录", exact: true })
+      .click();
+    await expect(secondRow).toBeVisible();
+    ledgerFails = true;
+    await page
+      .getByRole("button", { name: "刷新当前模块", exact: true })
+      .click();
+    await expect(
+      page.getByText("资产流水暂时无法读取", { exact: true }),
+    ).toBeVisible();
+    await expect(secondRow).toBeVisible();
+    await expect(
+      ledger.getByText(reasons[1], { exact: true }),
+    ).not.toBeVisible();
+    for (const theme of ["light", "dark"]) {
+      if ((await page.locator("html").getAttribute("data-theme")) !== theme)
+        await page.getByRole("button", { name: "切换亮暗色模式" }).click();
+      for (const width of [390, 768, 1440]) {
+        await page.setViewportSize({ width, height: 1000 });
+        expect(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth,
+          ),
+        ).toBeTruthy();
+        await page.evaluate(async () => {
+          await Promise.all(
+            document
+              .getAnimations()
+              .filter(
+                (a) => a.effect?.getComputedTiming().iterations !== Infinity,
+              )
+              .map((a) => a.finished.catch(() => {})),
+          );
+        });
+        await page.evaluate(axe.source);
+        const scan = await page.evaluate(() =>
+          (window as unknown as { axe: typeof axe }).axe.run(document, {
+            runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa"] },
+          }),
+        );
+        expect(scan.violations.map(({ id }) => id)).toEqual([]);
+        if (width === 390)
+          await page.screenshot({
+            path: test.info().outputPath(`asset-directory-${theme}.png`),
+          });
+      }
+    }
+    ledgerFails = false;
+    await page
+      .getByRole("button", { name: "重试读取平台流水", exact: true })
+      .click();
+    await expect(ledger.getByText(reasons[1], { exact: true })).toBeVisible();
+    expect(new URL(page.url()).searchParams.get("fundKeyword")).toBe(
+      second.brandId,
+    );
+  });
+
   test("资产入账校验整数与金额，失败保留输入，成功响应丢失刷新恢复并只读核对", async ({
     page,
   }) => {
@@ -2207,16 +2593,22 @@ test.describe("真实运营操作闭环", () => {
         return route.continue();
       },
     );
-    await page.route("**/api/v1/admin/balances", async (route) => {
-      if (failRefresh)
-        return route.fulfill({
-          status: 503,
-          json: {
-            error: { code: "QA_UNAVAILABLE", message: "余额目录暂时无法刷新" },
-          },
-        });
-      return route.continue();
-    });
+    await page.route(
+      "**/api/v1/admin/organization-balances?**",
+      async (route) => {
+        if (failRefresh)
+          return route.fulfill({
+            status: 503,
+            json: {
+              error: {
+                code: "QA_UNAVAILABLE",
+                message: "余额目录暂时无法刷新",
+              },
+            },
+          });
+        return route.continue();
+      },
+    );
     await page.goto("/admin?section=balances");
     const row = page.locator("tr").filter({ hasText: name });
     await row.getByRole("button", { name: "入账 / 扣减", exact: true }).click();
@@ -2343,9 +2735,10 @@ test.describe("真实运营操作闭环", () => {
       .click();
     await expect(dialog).not.toBeVisible();
     await expect(
-      page.getByText(
-        /余额已入账，已记录资产流水与审计；管理数据刷新失败：余额目录暂时无法刷新/,
-      ),
+      page.getByText("余额已入账，已记录资产流水与审计"),
+    ).toBeVisible();
+    await expect(
+      page.getByText("余额目录暂时无法刷新", { exact: true }),
     ).toBeVisible();
     expect(commands).toHaveLength(2);
     const transactions = await database.db

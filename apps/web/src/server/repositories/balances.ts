@@ -16,8 +16,12 @@ import {
   withPlatformDbContext,
 } from "@geo/db";
 import { and, eq, sql } from "drizzle-orm";
+import { listPlatformOrganizations } from "./organization-directory";
+import type { AdminOrganizationPageQuery } from "@geo/contracts";
 
 export const balanceRepository = {
+  organizationBalances: (input: AdminOrganizationPageQuery, userId: string) =>
+    listPlatformOrganizations(input, userId, true),
   list: listBalances,
   all: listAllBalances,
   transactions: listBalanceTransactions,

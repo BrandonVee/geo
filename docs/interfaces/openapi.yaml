@@ -4310,6 +4310,139 @@ paths:
           description: 状态流转冲突，或聚合订单须由上游驱动履约
         "422":
           description: 发布完成缺少结果链接
+  /v1/admin/organization-balances:
+    get:
+      summary: 分页查询企业资金池与品牌余额
+      description: 要求 platform.balance.manage。只返回存在 Tencent BrandID 映射且未关闭的企业投影及双余额；账户、目录和总数使用同一快照，未建立账户显示零。支持企业/品牌名称、BrandID、企业编号与内部标识搜索；列表和总数使用平台角色的同一只读快照，按接入时间和企业 ID 倒序排列，越界页码回退有效末页。
+      tags:
+        - Platform Balances
+      security:
+        - cookieSession: []
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+        - in: query
+          name: q
+          description: 企业/品牌名称、BrandID、企业 UUID 或内部标识；按原文匹配，最长 200 字符
+          schema:
+            type: string
+            maxLength: 200
+        - in: query
+          name: status
+          description: 原始手动状态；active 包含服务已到期但未手动冻结的企业
+          schema:
+            type: string
+            enum:
+              - active
+              - suspended
+        - in: query
+          name: accessState
+          description: 实际服务状态；active 为服务有效或无期限，suspended 为手动冻结，expired 为未手动冻结且服务到期
+          schema:
+            type: string
+            enum: [active, suspended, expired]
+      responses:
+        "200":
+          description: 腾讯企业分页列表；accessState 与 pointsExpired 按服务端快照时间计算，积分到期不改变企业服务状态
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  requestId:
+                    type: string
+                  data:
+                    type: object
+                    required: [list, pagination]
+                    properties:
+                      list:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id:
+                              type: string
+                              format: uuid
+                            name:
+                              type: string
+                            answerbitBrandId:
+                              type: string
+                            answerbitBrandName:
+                              type: string
+                            status:
+                              type: string
+                              enum: [active, suspended]
+                            accessState:
+                              type: string
+                              enum: [active, suspended, expired]
+                            pointsExpired:
+                              type: boolean
+                            serviceExpiresAt:
+                              type: string
+                              format: date-time
+                              nullable: true
+                            pointsExpiresAt:
+                              type: string
+                              format: date-time
+                              nullable: true
+                            memberCount:
+                              type: integer
+                              minimum: 0
+                            balances:
+                              type: object
+                              required:
+                                [
+                                  enterprisePoints,
+                                  enterprisePublicationCny,
+                                  brandPoints,
+                                  brandPublicationCny,
+                                ]
+                              properties:
+                                enterprisePoints:
+                                  {
+                                    type: integer,
+                                    minimum: 0,
+                                    description: 企业资金池积分,
+                                  }
+                                enterprisePublicationCny:
+                                  {
+                                    type: integer,
+                                    minimum: 0,
+                                    description: 企业资金池人民币分,
+                                  }
+                                brandPoints:
+                                  {
+                                    type: integer,
+                                    minimum: 0,
+                                    description: 当前映射品牌积分,
+                                  }
+                                brandPublicationCny:
+                                  {
+                                    type: integer,
+                                    minimum: 0,
+                                    description: 当前映射品牌人民币分,
+                                  }
+                      pagination:
+                        type: object
+                        properties:
+                          page:
+                            type: integer
+                            minimum: 1
+                            description: 实际页码；超界回退有效末页，空结果为 1
+                          pageSize:
+                            type: integer
+                            minimum: 1
+                            maximum: 100
+                          total:
+                            type: integer
+                            minimum: 0
+                          pages:
+                            type: integer
+                            minimum: 0
+        "400":
+          description: VALIDATION_ERROR；分页、文字长度或筛选值无效
+        "403":
+          $ref: "#/components/responses/Forbidden"
   /v1/admin/balances:
     get:
       summary: 平台管理员查询全部企业与品牌余额账户
@@ -4325,7 +4458,7 @@ paths:
   /v1/admin/balance-transactions:
     get:
       summary: 平台管理员分页查询用户积分与余额流水
-      description: 可跨企业按企业、操作用户、资产和流水操作筛选；结果包含企业名称及用户名称和账号。
+      description: 可跨企业按企业、操作用户、资产和流水操作筛选；结果包含企业名称、用户名称和账号及 sourceBrandId/targetBrandId（null 为企业资金池）。列表和总数使用平台角色同一只读快照，按创建时间和流水 ID 倒序排序，超界页码回退有效末页；已关闭企业的历史仍可查询。
       tags:
         - Platform Balances
       security:

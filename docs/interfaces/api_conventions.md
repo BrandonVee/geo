@@ -34,6 +34,10 @@ JSON 请求使用 `Content-Type: application/json`；允许标准的 `applicatio
 
 企业 `GET /v1/admin/organizations` 支持企业/品牌名称、BrandID、企业 UUID 与内部标识的文字搜索，文字中的 `%`、`_` 与反斜杠按原文匹配。`status` 保留手动状态 active/suspended 的原义；`accessState` 区分服务正常 active、手动冻结 suspended、到期冻结 expired，手动冻结优先，空服务期限沿用原规则。行记录同时返回 `accessState` 与 `pointsExpired`，积分到期不改变服务状态。列表和总数从平台角色的同一只读快照读取，按接入时间与企业 ID 倒序排列，越界页码回退有效末页，空结果页码为 1。
 
+`GET /v1/admin/organization-balances` 要求 `platform.balance.manage`，沿用企业目录的查询、状态和分页规则，并在同一快照返回 `balances`：`enterprisePoints`、`enterprisePublicationCny`、`brandPoints`、`brandPublicationCny`。积分为整数，人民币为分；品牌余额只取当前映射 BrandID，缺少账户返回零。普通企业目录不包含该字段。
+
+`GET /v1/admin/balance-transactions` 要求同一余额管理权限，返回 `{ list, pagination }`，行记录增加可空 `sourceBrandId`、`targetBrandId` 标注账户流向。按企业、操作者、资产和操作类型取交集，列表与总数从同一只读快照读取，按创建时间与 ID 倒序排列，越界页码回退有效末页；关闭企业保留历史流水。
+
 企业 `PATCH /v1/admin/organizations/{organizationId}` 只保存提交字段；可选 `expected` 提供原状态和原期限（历史空期限用 `null`），包含所有修改字段的原值，也可增加未修改字段校验。平台客户端始终传原值；行锁内不一致返回 `409 ORGANIZATION_SETTINGS_CONFLICT` 和 `details.current`，不变更也不审计。恢复仍到期的企业返回 `422 ORGANIZATION_SERVICE_EXPIRED`，可同时提交未来服务期限与 `status=active` 完成续期恢复；更新与审计在同一事务内提交。
 
 ## 响应格式

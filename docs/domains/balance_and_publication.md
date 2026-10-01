@@ -38,6 +38,8 @@
 
 企业到品牌的划拨属于资产管理能力，不属于媒体发布流程。租户端在独立 `/dashboard/balances` 工作区展示企业资金池、品牌账户、划拨表单与企业资产流水；只有至少在一家企业拥有 `balance.allocate` 角色能力的用户显示该导航。媒体渠道、发布提交和发布订单分别使用 `/dashboard/publication/channels`、`/dashboard/publication/new` 与 `/dashboard/publication/orders`，这些页面不提供企业资金划拨入口。
 
+平台资产目录分别展示企业资金池和当前映射品牌的积分、人民币余额，未建账户按零显示；关闭企业退出入账目录，但历史流水仍可查询。目录与跨企业流水要求 `platform.balance.manage`，企业管理查询不返回财务字段。划拨流水标注来源与目标账户；余额与分页查询规则见[企业资产目录](../architecture/platform_administration.md#asset_directory)。
+
 <a id="point_usage"></a>
 
 ## 企业与品牌积分统计

@@ -13,7 +13,8 @@ import {
   sql,
 } from "drizzle-orm";
 import { db } from "./client";
-import type { DatabaseTransaction } from "./context";
+import { withPlatformDbContext, type DatabaseTransaction } from "./context";
+import { alias } from "drizzle-orm/pg-core";
 import {
   answerbitBrandMappings,
   featurePointCosts,
@@ -493,38 +494,64 @@ export function listBalanceTransactions(
     .limit(input.limit ?? 100);
 }
 
+// @project-doc docs/architecture/platform_administration.md#asset_directory
 export async function listAllBalanceTransactions(
   input: BalanceTransactionFilters & { page: number; pageSize: number },
+  userId: string,
 ) {
   const where = balanceTransactionWhere(input);
-  const [list, [count]] = await Promise.all([
-    db
-      .select(balanceTransactionSelection)
-      .from(balanceTransactions)
-      .innerJoin(
-        organizations,
-        eq(organizations.id, balanceTransactions.organizationId),
-      )
-      .leftJoin(users, eq(users.id, balanceTransactions.actorUserId))
-      .where(where)
-      .orderBy(desc(balanceTransactions.createdAt))
-      .limit(input.pageSize)
-      .offset((input.page - 1) * input.pageSize),
-    db
-      .select({ value: sql<number>`count(*)::int` })
-      .from(balanceTransactions)
-      .where(where),
-  ]);
-  const total = count?.value ?? 0;
-  return {
-    list,
-    pagination: {
-      page: input.page,
-      pageSize: input.pageSize,
-      total,
-      pages: Math.ceil(total / input.pageSize),
+  const source = alias(balanceAccounts, "ledger_source"),
+    target = alias(balanceAccounts, "ledger_target");
+  return withPlatformDbContext(
+    { userId },
+    async (tx) => {
+      const [count] = await tx
+        .select({ value: sql<number>`count(*)::int` })
+        .from(balanceTransactions)
+        .where(where);
+      const total = count?.value ?? 0,
+        pages = Math.ceil(total / input.pageSize),
+        page = Math.min(input.page, Math.max(1, pages));
+      const list = await tx
+        .select({
+          ...balanceTransactionSelection,
+          sourceBrandId: source.brandId,
+          targetBrandId: target.brandId,
+        })
+        .from(balanceTransactions)
+        .innerJoin(
+          organizations,
+          eq(organizations.id, balanceTransactions.organizationId),
+        )
+        .leftJoin(users, eq(users.id, balanceTransactions.actorUserId))
+        .leftJoin(
+          source,
+          and(
+            eq(source.id, balanceTransactions.sourceAccountId),
+            eq(source.organizationId, balanceTransactions.organizationId),
+          ),
+        )
+        .leftJoin(
+          target,
+          and(
+            eq(target.id, balanceTransactions.targetAccountId),
+            eq(target.organizationId, balanceTransactions.organizationId),
+          ),
+        )
+        .where(where)
+        .orderBy(
+          desc(balanceTransactions.createdAt),
+          desc(balanceTransactions.id),
+        )
+        .limit(input.pageSize)
+        .offset((page - 1) * input.pageSize);
+      return {
+        list,
+        pagination: { page, pageSize: input.pageSize, total, pages },
+      };
     },
-  };
+    { isolationLevel: "repeatable read", accessMode: "read only" },
+  );
 }
 
 // @project-doc docs/domains/balance_and_publication.md#point_usage

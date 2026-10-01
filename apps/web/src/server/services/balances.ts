@@ -6,6 +6,7 @@ import type {
   FeaturePointCostInput,
   BalanceTransactionQuery,
   PointUsageQuery,
+  AdminOrganizationPageQuery,
 } from "@geo/contracts";
 import { isBillableFeature } from "@geo/core";
 import type { AuditContext } from "@/server/audit/write-audit";
@@ -18,13 +19,20 @@ import { organizationRepository } from "@/server/repositories/organizations";
 import { organizationService } from "./organizations";
 
 export const balanceService = {
+  async organizationBalances(
+    input: AdminOrganizationPageQuery,
+    userId: string,
+  ) {
+    await requirePlatformPermission(userId, "platform.balance.manage");
+    return balanceRepository.organizationBalances(input, userId);
+  },
   async adminList(userId: string) {
     await requirePlatformPermission(userId, "platform.balance.manage");
     return balanceRepository.all();
   },
   async adminTransactions(input: AdminBalanceTransactionQuery, userId: string) {
     await requirePlatformPermission(userId, "platform.balance.manage");
-    return balanceRepository.allTransactions(input);
+    return balanceRepository.allTransactions(input, userId);
   },
   async list(
     organizationId: string,

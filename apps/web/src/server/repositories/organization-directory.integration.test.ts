@@ -10,8 +10,10 @@ import {
   answerbitBrandMappings,
   organizationMembers,
   pool,
+  balanceAccounts,
 } from "@geo/db";
 import { adminRepository } from "./admin";
+import { balanceRepository } from "./balances";
 
 describe.skipIf(process.env.ORGANIZATION_DIRECTORY_DB_TESTS !== "1")(
   "企业目录 PostgreSQL 回归",
@@ -110,7 +112,7 @@ describe.skipIf(process.env.ORGANIZATION_DIRECTORY_DB_TESTS !== "1")(
       extra: {
         page?: number;
         pageSize?: number;
-        status?: string;
+        status?: "active" | "suspended";
         accessState?: "active" | "suspended" | "expired";
       } = {},
     ) =>
@@ -120,6 +122,9 @@ describe.skipIf(process.env.ORGANIZATION_DIRECTORY_DB_TESTS !== "1")(
       );
     afterAll(async () => {
       if (cleanupAllowed && orgIds.length) {
+        await db
+          .delete(balanceAccounts)
+          .where(inArray(balanceAccounts.organizationId, orgIds));
         await db
           .delete(organizationMembers)
           .where(inArray(organizationMembers.organizationId, orgIds));
@@ -275,5 +280,119 @@ describe.skipIf(process.env.ORGANIZATION_DIRECTORY_DB_TESTS !== "1")(
       expect(result.pagination.total).toBe(1);
       expect(result.list).toMatchObject([{ id: row.id, memberCount: 2 }]);
     });
+    it("企业资产分别返回资金池与当前映射品牌的双余额，旧品牌账户不混入，普通企业集合不返回财务字段", async () => {
+      const row = await create(`${prefix}-funds`, {
+        status: "suspended",
+        pointsExpiresAt: past,
+      });
+      const other = await create(`${prefix}-other-funds`);
+      await db.insert(balanceAccounts).values([
+        { organizationId: row.id, asset: "answerbit_points", balance: 117 },
+        { organizationId: row.id, asset: "publication_cny", balance: 299 },
+        {
+          organizationId: row.id,
+          brandId: row.brandId,
+          asset: "answerbit_points",
+          balance: 700,
+        },
+        {
+          organizationId: row.id,
+          brandId: row.brandId,
+          asset: "publication_cny",
+          balance: 502,
+        },
+        {
+          organizationId: row.id,
+          brandId: "old-unmapped-brand",
+          asset: "answerbit_points",
+          balance: 9999,
+        },
+        { organizationId: other.id, asset: "answerbit_points", balance: 999 },
+      ]);
+      const result = await balanceRepository.organizationBalances(
+        { page: 1, pageSize: 20, q: row.id },
+        userId,
+      );
+      expect(result.list).toMatchObject([
+        {
+          id: row.id,
+          accessState: "suspended",
+          pointsExpired: true,
+          balances: {
+            enterprisePoints: 117,
+            enterprisePublicationCny: 299,
+            brandPoints: 700,
+            brandPublicationCny: 502,
+          },
+        },
+      ]);
+      expect((await list(row.id)).list[0]).not.toHaveProperty("balances");
+      expect(
+        (
+          await balanceRepository.organizationBalances(
+            { page: 1, pageSize: 20, q: other.id },
+            userId,
+          )
+        ).list,
+      ).toMatchObject([
+        {
+          balances: {
+            enterprisePoints: 999,
+            enterprisePublicationCny: 0,
+            brandPoints: 0,
+            brandPublicationCny: 0,
+          },
+        },
+      ]);
+    });
+    it("超过 100 家企业仍可分页、按 BrandID 定位并显示零账户，目录缩小回退有效末页", async () => {
+      const marker = `${prefix}-large-funds`,
+        rows = [];
+      for (let i = 0; i < 105; i++)
+        rows.push(await create(`${marker}-${i}`, { createdAt: past }));
+      const last = await balanceRepository.organizationBalances(
+        { page: 2, pageSize: 100, q: marker },
+        userId,
+      );
+      expect(last.pagination).toMatchObject({ page: 2, total: 105 });
+      expect(last.list).toHaveLength(5);
+      const target = last.list[0],
+        original = rows.find((r) => r.id === target.id)!;
+      expect(
+        (
+          await balanceRepository.organizationBalances(
+            { page: 1, pageSize: 20, q: original.brandId },
+            userId,
+          )
+        ).list,
+      ).toMatchObject([
+        {
+          id: target.id,
+          balances: {
+            enterprisePoints: 0,
+            enterprisePublicationCny: 0,
+            brandPoints: 0,
+            brandPublicationCny: 0,
+          },
+        },
+      ]);
+      await db
+        .update(organizations)
+        .set({ status: "closed" })
+        .where(
+          inArray(
+            organizations.id,
+            last.list.map((r) => r.id),
+          ),
+        );
+      expect(
+        (
+          await balanceRepository.organizationBalances(
+            { page: 999, pageSize: 100, q: marker },
+            userId,
+          )
+        ).pagination,
+      ).toMatchObject({ page: 1, total: 100, pages: 1 });
+    }, 20_000);
   },
 );

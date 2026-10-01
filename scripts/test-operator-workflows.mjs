@@ -189,6 +189,18 @@ try {
     ],
     { BALANCE_ADJUSTMENT_DB_TESTS: "1" },
   );
+  await run(
+    pnpm,
+    [
+      "--filter",
+      "@geo/db",
+      "exec",
+      "vitest",
+      "run",
+      "src/admin-balance-history.integration.test.ts",
+    ],
+    { ADMIN_BALANCE_HISTORY_DB_TESTS: "1" },
+  );
   const seed = new Client({ connectionString: databaseUrl.href });
   await seed.connect();
   try {

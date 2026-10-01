@@ -40,33 +40,43 @@ export type AdminOrganization = {
   answerbitBrandName: string | null;
   createdAt: string;
 };
-type DirectoryPage = {
-  list: AdminOrganization[];
+type DirectoryPage<T> = {
+  list: T[];
   pagination: { page: number; pageSize: number; total: number; pages: number };
 };
-const queryKeys = {
-  page: "orgPage",
-  pageSize: "orgPageSize",
-  q: "orgKeyword",
-  accessState: "orgAccessState",
-} as const;
-
 // @project-doc docs/architecture/platform_administration.md#enterprise_directory
-export function AdminOrganizationDirectory({
+export function AdminOrganizationDirectory<
+  T extends AdminOrganization = AdminOrganization,
+>({
   columns,
   refreshVersion,
   compact,
   mobile,
+  endpoint = "/api/v1/admin/organizations",
+  queryPrefix = "org",
+  scrollWidth,
 }: {
-  columns: TableColumnsType<AdminOrganization>;
+  columns: TableColumnsType<T>;
   refreshVersion: number;
   compact: boolean;
   mobile: boolean;
+  endpoint?: string;
+  queryPrefix?: "org" | "fund";
+  scrollWidth?: number;
 }) {
   const router = useRouter(),
     pathname = usePathname(),
     search = useSearchParams();
   const serialized = search.toString();
+  const queryKeys = useMemo(
+    () => ({
+      page: `${queryPrefix}Page`,
+      pageSize: `${queryPrefix}PageSize`,
+      q: `${queryPrefix}Keyword`,
+      accessState: `${queryPrefix}AccessState`,
+    }),
+    [queryPrefix],
+  );
   const [navigating, startTransition] = useTransition();
   const query = useMemo(() => {
     const params = new URLSearchParams(serialized);
@@ -80,8 +90,8 @@ export function AdminOrganizationDirectory({
     return parsed.success
       ? parsed.data
       : adminOrganizationPageQuerySchema.parse({});
-  }, [serialized]);
-  const url = `/api/v1/admin/organizations?${new URLSearchParams(
+  }, [serialized, queryKeys]);
+  const url = `${endpoint}?${new URLSearchParams(
     Object.entries(query)
       .filter(([, value]) => value !== undefined && value !== "")
       .map(([key, value]) => [key, String(value)]),
@@ -89,7 +99,7 @@ export function AdminOrganizationDirectory({
   const requestKey = `${url}:${refreshVersion}`;
   const [snapshot, setSnapshot] = useState<{
     key: string;
-    value: DirectoryPage;
+    value: DirectoryPage<T>;
   }>();
   const [failure, setFailure] = useState<{ key: string; message: string }>();
   const [reading, setReading] = useState(false);
@@ -113,7 +123,7 @@ export function AdminOrganizationDirectory({
         router.replace(`${pathname}?${params}`, { scroll: false }),
       );
     },
-    [pathname, query, router, serialized],
+    [pathname, query, queryKeys, router, serialized],
   );
   const refresh = useCallback(async () => {
     controllerRef.current?.abort();
@@ -129,7 +139,7 @@ export function AdminOrganizationDirectory({
       const body = await response.json();
       if (!response.ok)
         throw new Error(body.error?.message ?? "企业目录读取失败");
-      const value = body.data as DirectoryPage;
+      const value = body.data as DirectoryPage<T>;
       if (controller.signal.aborted || controllerRef.current !== controller)
         return;
       setSnapshot({ key: requestKey, value });
@@ -230,13 +240,17 @@ export function AdminOrganizationDirectory({
           }
         />
       ) : null}
-      <AccessibleTable<AdminOrganization>
+      <AccessibleTable<T>
         columns={columns}
         dataSource={active?.list ?? []}
         rowKey="id"
         loading={navigating || reading || (!active && !readFailure)}
-        scrollRegionLabel="腾讯企业目录，可横向滚动"
-        scroll={{ x: compact ? 900 : 1060 }}
+        scrollRegionLabel={
+          queryPrefix === "fund"
+            ? "企业资产目录，可横向滚动"
+            : "腾讯企业目录，可横向滚动"
+        }
+        scroll={{ x: scrollWidth ?? (compact ? 900 : 1060) }}
         onChange={(pagination) =>
           update({
             page:

@@ -65,6 +65,7 @@ import {
 import dayjs, { type Dayjs } from "dayjs";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { AdminBalanceManagement } from "./admin-balance-management";
 import { AdminAssetAdjustment } from "./admin-asset-adjustment";
 import { EnterpriseValidity } from "./enterprise-validity";
 import { EnterpriseStatus } from "./enterprise-status";
@@ -249,26 +250,6 @@ type PointCost = {
   featureCode: string;
   points: number;
   description: string;
-};
-type BalanceAccount = {
-  organizationId: string;
-  brandId: string | null;
-  asset: "answerbit_points" | "publication_cny";
-  balance: number;
-};
-type BalanceTransaction = {
-  id: string;
-  organizationId: string;
-  organizationName: string;
-  actorUserId: string | null;
-  actorName: string | null;
-  actorUsername: string | null;
-  asset: BalanceAccount["asset"];
-  operation: "grant" | "allocate" | "consume" | "restore" | "adjust";
-  amount: number;
-  reason: string;
-  referenceType: string;
-  createdAt: string;
 };
 type Channel = {
   id: string;
@@ -686,31 +667,12 @@ export function AdminClient({
     useState<MemberForm["role"]>("tenant_admin");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [overview, setOverview] = useState<Overview | null>(null);
-  const [organizations, setOrganizations] = useState<Organization[]>([]);
   const [users, setUsers] = useState<User[]>([]);
   const [directoryUsers, setDirectoryUsers] = useState<User[]>([]);
   const [platformConfiguration, setPlatformConfiguration] =
     useState<PlatformAnswerBitConfiguration | null>(null);
   const [costs, setCosts] = useState<PointCost[]>([]);
-  const [balances, setBalances] = useState<BalanceAccount[]>([]);
-  const [balanceTransactions, setBalanceTransactions] = useState<
-    BalanceTransaction[]
-  >([]);
-  const [balanceTransactionUserId, setBalanceTransactionUserId] =
-    useState<string>();
-  const [
-    balanceTransactionOrganizationId,
-    setBalanceTransactionOrganizationId,
-  ] = useState<string>();
-  const [balanceTransactionAsset, setBalanceTransactionAsset] = useState<
-    "all" | BalanceAccount["asset"]
-  >("all");
-  const [balanceTransactionOperation, setBalanceTransactionOperation] =
-    useState<"all" | BalanceTransaction["operation"]>("all");
-  const [balanceTransactionPage, setBalanceTransactionPage] = useState(1);
-  const [balanceTransactionPageSize, setBalanceTransactionPageSize] =
-    useState(20);
-  const [balanceTransactionTotal, setBalanceTransactionTotal] = useState(0);
+  const [balanceRefresh, setBalanceRefresh] = useState(0);
   const [channels, setChannels] = useState<Channel[]>([]);
   const [pricingTierRules, setPricingTierRules] = useState<PricingTierRule[]>(
     [],
@@ -1074,45 +1036,12 @@ export function AdminClient({
         setPricingTierRules(nextPricingTierRules);
       }
       if (tab === "balances") {
-        const transactionQuery = new URLSearchParams({
-          page: String(balanceTransactionPage),
-          pageSize: String(balanceTransactionPageSize),
-        });
-        if (balanceTransactionOrganizationId)
-          transactionQuery.set(
-            "organizationId",
-            balanceTransactionOrganizationId,
-          );
-        if (balanceTransactionUserId)
-          transactionQuery.set("userId", balanceTransactionUserId);
-        if (balanceTransactionAsset !== "all")
-          transactionQuery.set("asset", balanceTransactionAsset);
-        if (balanceTransactionOperation !== "all")
-          transactionQuery.set("operation", balanceTransactionOperation);
-        const [
-          nextOrganizations,
-          nextUsers,
-          nextCosts,
-          nextBalances,
-          nextTransactions,
-        ] = await Promise.all([
-          api<PageData<Organization>>(
-            "/api/v1/admin/organizations?page=1&pageSize=100",
-          ),
-          api<PageData<User>>("/api/v1/admin/users?page=1&pageSize=100"),
-          api<PointCost[]>("/api/v1/admin/feature-point-costs"),
-          api<BalanceAccount[]>("/api/v1/admin/balances"),
-          api<PageData<BalanceTransaction>>(
-            `/api/v1/admin/balance-transactions?${transactionQuery.toString()}`,
-          ),
-        ]);
+        setBalanceRefresh((version) => version + 1);
+        const nextCosts = await api<PointCost[]>(
+          "/api/v1/admin/feature-point-costs",
+        );
         if (runId !== loadRunRef.current) return;
-        setOrganizations(nextOrganizations.list);
-        setDirectoryUsers(nextUsers.list);
         setCosts(nextCosts);
-        setBalances(nextBalances);
-        setBalanceTransactions(nextTransactions.list);
-        setBalanceTransactionTotal(nextTransactions.pagination.total);
       }
       if (tab === "publications") {
         const [nextProviderBalance, nextProviderConfiguration] =
@@ -1180,12 +1109,6 @@ export function AdminClient({
     auditPageSize,
     auditQuery,
     auditStatus,
-    balanceTransactionAsset,
-    balanceTransactionOperation,
-    balanceTransactionOrganizationId,
-    balanceTransactionPage,
-    balanceTransactionPageSize,
-    balanceTransactionUserId,
     callPage,
     callPageSize,
     callQuery,
@@ -2225,12 +2148,6 @@ export function AdminClient({
     },
   ];
 
-  const balanceTransactionUsers = [
-    ...new Map(directoryUsers.map((item) => [item.id, item])).values(),
-  ].map((item) => ({
-    label: `${item.name}${item.username ? ` (@${item.username})` : ""}`,
-    value: item.id,
-  }));
   const navigation = (
     <Menu
       className="admin-platform-navigation"
@@ -3389,297 +3306,63 @@ export function AdminClient({
 
               {tab === "balances" ? (
                 <Row gutter={[16, 16]}>
-                  <Col xl={14} xs={24}>
-                    <Card title="管理员入账">
-                      <Table<Organization>
-                        columns={[
-                          {
-                            title: "企业",
-                            dataIndex: "name",
-                            render: (value: string, item) => (
-                              <Space direction="vertical" size={0}>
-                                <Typography.Text strong>
-                                  {value}
-                                </Typography.Text>
-                                <Typography.Text type="secondary">
-                                  积分池{" "}
-                                  {balances.find(
-                                    (account) =>
-                                      account.organizationId === item.id &&
-                                      account.brandId === null &&
-                                      account.asset === "answerbit_points",
-                                  )?.balance ?? 0}
-                                  {" · 发布余额 "}
-                                  {money(
-                                    balances.find(
-                                      (account) =>
-                                        account.organizationId === item.id &&
-                                        account.brandId === null &&
-                                        account.asset === "publication_cny",
-                                    )?.balance ?? 0,
-                                  )}
-                                </Typography.Text>
-                              </Space>
-                            ),
-                          },
-                          {
-                            title: "操作",
-                            key: "action",
-                            width: 100,
-                            render: (_, item) => (
-                              <Button
-                                onClick={() => {
-                                  setGrantOrganization(item);
-                                }}
-                                type="primary"
-                              >
-                                入账 / 扣减
-                              </Button>
-                            ),
-                          },
-                        ]}
-                        dataSource={organizations}
-                        pagination={false}
-                        rowKey="id"
-                      />
-                    </Card>
-                  </Col>
-                  <Col xl={10} xs={24}>
-                    <Card title="业务功能积分规则">
-                      <Table<PointCost>
-                        columns={[
-                          {
-                            title: "功能",
-                            dataIndex: "featureCode",
-                            render: (value: string) =>
-                              billableFeatures.find(
-                                (feature) => feature.code === value,
-                              )?.name ?? value,
-                          },
-                          { title: "积分/次", dataIndex: "points", width: 90 },
-                          {
-                            title: "说明",
-                            dataIndex: "description",
-                            responsive: ["md"],
-                          },
-                          {
-                            title: "操作",
-                            key: "action",
-                            width: 76,
-                            render: (_, item) => (
-                              <Button
-                                onClick={() => {
-                                  costForm.setFieldsValue(item);
-                                  document
-                                    .getElementById("admin-cost-editor")
-                                    ?.scrollIntoView({ block: "start" });
-                                }}
-                                size="small"
-                                type="link"
-                              >
-                                编辑
-                              </Button>
-                            ),
-                          },
-                        ]}
-                        dataSource={costs}
-                        pagination={false}
-                        rowKey="featureCode"
-                        size="small"
-                        style={{ marginTop: 20 }}
-                      />
-                    </Card>
-                  </Col>
                   <Col span={24}>
-                    <Card
-                      extra={
-                        <Space wrap>
-                          <Select
-                            allowClear
-                            aria-label="按企业筛选平台余额流水"
-                            onChange={(value) => {
-                              setBalanceTransactionOrganizationId(value);
-                              setBalanceTransactionPage(1);
-                            }}
-                            options={organizations.map((item) => ({
-                              label: item.name,
-                              value: item.id,
-                            }))}
-                            placeholder="全部企业"
-                            showSearch
-                            style={{ minWidth: 190 }}
-                            value={balanceTransactionOrganizationId}
-                          />
-                          <Select
-                            allowClear
-                            aria-label="按操作用户筛选平台余额流水"
-                            onChange={(value) => {
-                              setBalanceTransactionUserId(value);
-                              setBalanceTransactionPage(1);
-                            }}
-                            options={balanceTransactionUsers}
-                            placeholder="全部用户"
-                            showSearch
-                            style={{ minWidth: 210 }}
-                            value={balanceTransactionUserId}
-                          />
-                          <Select
-                            aria-label="按资产筛选平台余额流水"
-                            onChange={(value) => {
-                              setBalanceTransactionAsset(value);
-                              setBalanceTransactionPage(1);
-                            }}
-                            options={[
-                              { label: "全部资产", value: "all" },
+                    <AdminBalanceManagement
+                      refreshVersion={balanceRefresh}
+                      compact={compactTable}
+                      mobile={mobile}
+                      onAdjust={setGrantOrganization}
+                      rules={
+                        <Card title="业务功能积分规则">
+                          <Table<PointCost>
+                            columns={[
                               {
-                                label: "腾讯能力积分",
-                                value: "answerbit_points",
+                                title: "功能",
+                                dataIndex: "featureCode",
+                                render: (value: string) =>
+                                  billableFeatures.find(
+                                    (feature) => feature.code === value,
+                                  )?.name ?? value,
                               },
-                              { label: "发布人民币", value: "publication_cny" },
+                              {
+                                title: "积分/次",
+                                dataIndex: "points",
+                                width: 90,
+                              },
+                              {
+                                title: "说明",
+                                dataIndex: "description",
+                                responsive: ["md"],
+                              },
+                              {
+                                title: "操作",
+                                key: "action",
+                                width: 76,
+                                render: (_, item) => (
+                                  <Button
+                                    onClick={() => {
+                                      costForm.setFieldsValue(item);
+                                      document
+                                        .getElementById("admin-cost-editor")
+                                        ?.scrollIntoView({ block: "start" });
+                                    }}
+                                    size="small"
+                                    type="link"
+                                  >
+                                    编辑
+                                  </Button>
+                                ),
+                              },
                             ]}
-                            style={{ width: 160 }}
-                            value={balanceTransactionAsset}
+                            dataSource={costs}
+                            pagination={false}
+                            rowKey="featureCode"
+                            size="small"
+                            style={{ marginTop: 20 }}
                           />
-                          <Select
-                            aria-label="按操作类型筛选平台余额流水"
-                            onChange={(value) => {
-                              setBalanceTransactionOperation(value);
-                              setBalanceTransactionPage(1);
-                            }}
-                            options={[
-                              { label: "全部操作", value: "all" },
-                              { label: "平台入账", value: "grant" },
-                              { label: "品牌划拨", value: "allocate" },
-                              { label: "能力扣减", value: "consume" },
-                              { label: "失败返还", value: "restore" },
-                              { label: "人工调整", value: "adjust" },
-                            ]}
-                            style={{ width: 140 }}
-                            value={balanceTransactionOperation}
-                          />
-                          <Typography.Text type="secondary">
-                            共 {balanceTransactionTotal} 条
-                          </Typography.Text>
-                        </Space>
+                        </Card>
                       }
-                      title="用户积分与余额流水"
-                    >
-                      <Table<BalanceTransaction>
-                        columns={[
-                          {
-                            title: "发生时间",
-                            dataIndex: "createdAt",
-                            width: 180,
-                            render: (value: string) =>
-                              new Date(value).toLocaleString(),
-                          },
-                          {
-                            title: "企业",
-                            dataIndex: "organizationName",
-                            width: 180,
-                          },
-                          {
-                            title: "操作用户",
-                            key: "actor",
-                            width: 190,
-                            render: (_, item) =>
-                              item.actorUserId ? (
-                                <Space direction="vertical" size={0}>
-                                  <Typography.Text>
-                                    {item.actorName ?? "未知用户"}
-                                  </Typography.Text>
-                                  {item.actorUsername ? (
-                                    <Typography.Text type="secondary">
-                                      @{item.actorUsername}
-                                    </Typography.Text>
-                                  ) : null}
-                                </Space>
-                              ) : (
-                                <Typography.Text type="secondary">
-                                  系统任务 / 历史记录
-                                </Typography.Text>
-                              ),
-                          },
-                          {
-                            title: "类型",
-                            dataIndex: "operation",
-                            width: 110,
-                            render: (value: BalanceTransaction["operation"]) =>
-                              ({
-                                grant: "平台入账",
-                                allocate: "品牌划拨",
-                                consume: "能力扣减",
-                                restore: "失败返还",
-                                adjust: "人工调整",
-                              })[value],
-                          },
-                          {
-                            title: "资产",
-                            dataIndex: "asset",
-                            width: 130,
-                            render: (value: BalanceAccount["asset"]) =>
-                              value === "answerbit_points"
-                                ? "腾讯能力积分"
-                                : "发布人民币",
-                          },
-                          { title: "说明", dataIndex: "reason" },
-                          {
-                            title: "数量",
-                            dataIndex: "amount",
-                            align: "right",
-                            width: 130,
-                            render: (value: number, item) => (
-                              <Typography.Text
-                                type={
-                                  item.operation === "consume" ||
-                                  item.referenceType === "admin_deduction"
-                                    ? "danger"
-                                    : item.operation === "grant" ||
-                                        item.operation === "restore"
-                                      ? "success"
-                                      : undefined
-                                }
-                              >
-                                {item.operation === "consume" ||
-                                item.referenceType === "admin_deduction"
-                                  ? "−"
-                                  : item.operation === "grant" ||
-                                      item.operation === "restore"
-                                    ? "+"
-                                    : ""}
-                                {item.asset === "answerbit_points"
-                                  ? value.toLocaleString()
-                                  : money(value)}
-                              </Typography.Text>
-                            ),
-                          },
-                        ]}
-                        dataSource={balanceTransactions}
-                        locale={{
-                          emptyText: (
-                            <Empty
-                              description="暂无用户积分与余额流水"
-                              image={Empty.PRESENTED_IMAGE_SIMPLE}
-                            />
-                          ),
-                        }}
-                        onChange={(pagination) => {
-                          setBalanceTransactionPage(pagination.current ?? 1);
-                          setBalanceTransactionPageSize(
-                            pagination.pageSize ?? 20,
-                          );
-                        }}
-                        pagination={{
-                          current: balanceTransactionPage,
-                          pageSize: balanceTransactionPageSize,
-                          showSizeChanger: true,
-                          total: balanceTransactionTotal,
-                        }}
-                        rowKey="id"
-                        onHeaderRow={focusableTableHeaderRow}
-                        scroll={{ x: 1080 }}
-                      />
-                    </Card>
+                    />
                   </Col>
                   <Col xs={24}>
                     <Card title="新增或编辑积分规则" id="admin-cost-editor">
