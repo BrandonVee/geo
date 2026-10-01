@@ -63,6 +63,28 @@ try {
     !platformRows.rows.some((row) => row.id === second.id)
   )
     throw new Error("PLATFORM_RLS_ACCESS_FAILED");
+  const tenantHistoricalActors = await withTenantDbContext(
+    { organizationId: first.id, userId: randomUUID() },
+    (tx) =>
+      tx.execute(sql`select * from public.tenant_balance_actors(null, null)`),
+  );
+  if (tenantHistoricalActors.rows.length)
+    throw new Error("TENANT_HISTORY_ACTOR_UNAUTHORIZED_READ_ALLOWED");
+  const actorProjection = await withPlatformDbContext(
+    { userId: randomUUID() },
+    (tx) =>
+      tx.execute<{ restricted: boolean }>(sql`
+      select p.prosecdef
+        and p.proconfig @> array['search_path=pg_catalog, public']::text[]
+        and has_function_privilege('geo_tenant_app', p.oid, 'EXECUTE')
+        and not has_function_privilege('geo_platform_app', p.oid, 'EXECUTE')
+        and not exists (select 1 from aclexplode(p.proacl) acl where acl.grantee = 0 and acl.privilege_type = 'EXECUTE')
+        as restricted
+      from pg_proc p where p.oid = 'public.tenant_balance_actors(text,uuid)'::regprocedure
+    `),
+  );
+  if (!actorProjection.rows[0]?.restricted)
+    throw new Error("TENANT_HISTORY_ACTOR_PROJECTION_NOT_RESTRICTED");
   let tenantRuntimeAccessDenied = false;
   try {
     await withTenantDbContext(
@@ -158,6 +180,7 @@ try {
       crossTenantVisible: crossTenant.rows.length,
       crossTenantWrites: crossWrite.rows.length,
       platformVisible: platformRows.rows.length,
+      tenantHistoryActorRestricted: actorProjection.rows[0].restricted,
       tenantRuntimeAccessDenied,
       tenantRuntimeTaskAccessDenied,
       tenantReleaseStateAccessDenied,

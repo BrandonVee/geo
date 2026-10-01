@@ -101,8 +101,20 @@ export function BrandAllocation({
   useEffect(() => {
     recover();
   }, [recover]);
+  const previousScope = useRef({ organizationId, brandId });
   useEffect(() => {
-    form.resetFields();
+    const previous = previousScope.current;
+    if (
+      previous.organizationId !== organizationId ||
+      (brandId && previous.brandId !== brandId)
+    )
+      form.resetFields();
+    previousScope.current = {
+      organizationId,
+      brandId:
+        brandId ||
+        (previous.organizationId === organizationId ? previous.brandId : ""),
+    };
   }, [form, organizationId, brandId]);
   function clearPending() {
     sessionStorage.removeItem(storageKey);

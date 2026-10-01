@@ -13,7 +13,11 @@ import {
   sql,
 } from "drizzle-orm";
 import { db } from "./client";
-import { withPlatformDbContext, type DatabaseTransaction } from "./context";
+import {
+  withPlatformDbContext,
+  withTenantDbContext,
+  type DatabaseTransaction,
+} from "./context";
 import { alias } from "drizzle-orm/pg-core";
 import {
   answerbitBrandMappings,
@@ -508,20 +512,124 @@ const balanceTransactionSelection = {
   actorUsername: users.username,
 };
 
-export function listBalanceTransactions(
-  input: BalanceTransactionFilters & { limit?: number },
+// @project-doc docs/domains/balance_and_publication.md#balance_invariants
+export async function listBalanceTransactions(
+  input: BalanceTransactionFilters & {
+    organizationId: string;
+    beginAt?: Date;
+    endAtExclusive?: Date;
+    page: number;
+    pageSize: number;
+  },
+  userId: string,
 ) {
-  return db
-    .select(balanceTransactionSelection)
-    .from(balanceTransactions)
-    .innerJoin(
-      organizations,
-      eq(organizations.id, balanceTransactions.organizationId),
-    )
-    .leftJoin(users, eq(users.id, balanceTransactions.actorUserId))
-    .where(balanceTransactionWhere(input))
-    .orderBy(desc(balanceTransactions.createdAt))
-    .limit(input.limit ?? 100);
+  const where = and(
+    balanceTransactionWhere(input),
+    input.beginAt
+      ? gte(balanceTransactions.createdAt, input.beginAt)
+      : undefined,
+    input.endAtExclusive
+      ? lt(balanceTransactions.createdAt, input.endAtExclusive)
+      : undefined,
+  );
+  const source = alias(balanceAccounts, "tenant_ledger_source"),
+    target = alias(balanceAccounts, "tenant_ledger_target"),
+    sourceBrand = alias(answerbitBrandMappings, "tenant_ledger_source_brand"),
+    targetBrand = alias(answerbitBrandMappings, "tenant_ledger_target_brand");
+  return withTenantDbContext(
+    { organizationId: input.organizationId, userId },
+    async (tx) => {
+      const [count] = await tx
+        .select({ value: sql<number>`count(*)::int` })
+        .from(balanceTransactions)
+        .where(where);
+      const total = count?.value ?? 0,
+        pages = Math.ceil(total / input.pageSize),
+        page = Math.min(input.page, Math.max(1, pages));
+      const list = await tx
+        .select({
+          ...balanceTransactionSelection,
+          actorName: sql<string | null>`tenant_ledger_actor.name`,
+          actorUsername: sql<string | null>`tenant_ledger_actor.username`,
+          sourceBrandId: source.brandId,
+          targetBrandId: target.brandId,
+          sourceBrandName: sourceBrand.brandName,
+          targetBrandName: targetBrand.brandName,
+        })
+        .from(balanceTransactions)
+        .innerJoin(
+          organizations,
+          eq(organizations.id, balanceTransactions.organizationId),
+        )
+        .leftJoin(
+          sql`public.tenant_balance_actors(null, null) as tenant_ledger_actor`,
+          sql`tenant_ledger_actor.id = ${balanceTransactions.actorUserId}`,
+        )
+        .leftJoin(
+          source,
+          and(
+            eq(source.id, balanceTransactions.sourceAccountId),
+            eq(source.organizationId, input.organizationId),
+          ),
+        )
+        .leftJoin(
+          target,
+          and(
+            eq(target.id, balanceTransactions.targetAccountId),
+            eq(target.organizationId, input.organizationId),
+          ),
+        )
+        .leftJoin(
+          sourceBrand,
+          and(
+            eq(sourceBrand.organizationId, input.organizationId),
+            eq(sourceBrand.brandId, source.brandId),
+          ),
+        )
+        .leftJoin(
+          targetBrand,
+          and(
+            eq(targetBrand.organizationId, input.organizationId),
+            eq(targetBrand.brandId, target.brandId),
+          ),
+        )
+        .where(where)
+        .orderBy(
+          desc(balanceTransactions.createdAt),
+          desc(balanceTransactions.id),
+        )
+        .limit(input.pageSize)
+        .offset((page - 1) * input.pageSize);
+      return {
+        list,
+        pagination: { page, pageSize: input.pageSize, total, pages },
+      };
+    },
+    { isolationLevel: "repeatable read", accessMode: "read only" },
+  );
+}
+
+// @project-doc docs/architecture/data_and_security.md#tenant_isolation
+export async function listBalanceTransactionActors(
+  input: { organizationId: string; q?: string; userId?: string },
+  userId: string,
+) {
+  const pattern = `%${(input.q ?? "").replace(/[\\%_]/g, "\\$&")}%`;
+  return withTenantDbContext(
+    { organizationId: input.organizationId, userId },
+    async (tx) => {
+      const result = await tx.execute<{
+        id: string;
+        name: string;
+        username: string | null;
+      }>(sql`
+        select id, name, username from public.tenant_balance_actors(${input.q ? pattern : null}, ${input.userId ?? null}::uuid)
+        order by name, id limit 20
+      `);
+      return result.rows;
+    },
+    { accessMode: "read only" },
+  );
 }
 
 // @project-doc docs/architecture/platform_administration.md#asset_directory

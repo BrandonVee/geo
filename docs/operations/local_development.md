@@ -60,7 +60,7 @@ pnpm db:release
 pnpm dev
 ```
 
-全新数据库先由 `packages/db/drizzle/v1.sql` 建立基线，再依次执行 `v2.sql` 媒体发布平台凭证、`v3.sql` 分级定价结构、`v4.sql` 本地文档库结构及历史生成内容回填、`v5.sql` AnswerBit 读取缓存、`v6.sql` 积分加价规则与 `v7.sql` 异步文章价格快照，随后执行 `v8.sql` 企业服务与积分到期日及 `v9.sql` 文档创建幂等键和原请求指纹，再执行 `v10.sql` 效果追踪幂等提交与结果状态，记录 schema `v10`、执行 seed `v2` 的幂等种子并完成 RLS 检查。升级到 v6 时，未修改的旧等级规则转为当前发布加价率；已由管理员修改的规则保留原实际扣费，旧折扣显示为负加价率。v7 为新文章任务保存提交时的价格快照，旧任务仍按执行时规则计价。后续 schema 变化继续通过 `pnpm db:generate` 生成增量迁移并递增 `vN`，不直接修改已发布迁移。Drizzle 快照使用四位序号文件名（如 `0008_snapshot.json`）并以 `prevId` 串联，避免混用版本名导致生成器误读旧快照或产生分叉。
+全新数据库先由 `packages/db/drizzle/v1.sql` 建立基线，再依次执行 `v2.sql` 媒体发布平台凭证、`v3.sql` 分级定价结构、`v4.sql` 本地文档库结构及历史生成内容回填、`v5.sql` AnswerBit 读取缓存、`v6.sql` 积分加价规则与 `v7.sql` 异步文章价格快照，随后执行 `v8.sql` 企业服务与积分到期日及 `v9.sql` 文档创建幂等键和原请求指纹，再执行 `v10.sql` 效果追踪幂等提交与结果状态、`v11.sql` 企业历史流水操作者受限显示查询，记录 schema `v11`、执行 seed `v2` 的幂等种子并完成 RLS 检查。升级到 v6 时，未修改的旧等级规则转为当前发布加价率；已由管理员修改的规则保留原实际扣费，旧折扣显示为负加价率。v7 为新文章任务保存提交时的价格快照，旧任务仍按执行时规则计价。后续 schema 变化继续通过 `pnpm db:generate` 生成增量迁移并递增 `vN`，不直接修改已发布迁移。Drizzle 快照使用四位序号文件名（如 `0008_snapshot.json`）并以 `prevId` 串联，避免混用版本名导致生成器误读旧快照或产生分叉。
 
 访问：
 
@@ -154,3 +154,5 @@ Worker 等待任务的权限复核回归在已迁移数据库执行 `WORKER_ACCE
 平台资产流水由同一一次性数据库脚本以 `ADMIN_BALANCE_HISTORY_DB_TESTS=1` 运行 `packages/db/src/admin-balance-history.integration.test.ts`，验证真实平台角色下相同时间稳定分页、来源与目标品牌、筛选条件交集、关闭企业历史、末页回退及并发写入时总数与明细快照一致；要求 `WORKFLOW_DISPOSABLE_DB=1` 且数据库名为 `geo_workflow_qa_*`，不对日常库执行。
 
 企业品牌划拨由同一一次性数据库脚本以 `BALANCE_ALLOCATION_DB_TESTS=1` 运行 `src/server/services/balance-allocations.integration.test.ts`，保留真实余额事务、审计和租户核对查询，只替换企业授权边界；覆盖两类资产并发重放、同键内容冲突、审计失败整体回滚、原操作者及品牌核对隔离、核对等待事务、代理商跨企业额度竞争与到期限制。测试要求一次性库；不可变审计由脚本删除整个测试库清理。
+
+企业资产流水由同一一次性数据库脚本以 `TENANT_BALANCE_HISTORY_DB_TESTS=1` 运行 `packages/db/src/tenant-balance-history.integration.test.ts`，使用真实租户角色，覆盖超过 100 条历史的稳定分页、来源/目标账户、操作者与资产/类型交集、北京时间边界、历史停用成员搜索、文字通配符转义和并发读取快照。浏览器验证完整历史查找、远程操作者筛选、URL 刷新恢复、流水独立错误重试、企业和筛选条件的迟到响应隔离及查账时保留待划拨输入；品牌角色不能读取企业整体余额和流水。

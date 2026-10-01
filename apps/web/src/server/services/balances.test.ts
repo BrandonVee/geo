@@ -5,7 +5,10 @@ const mocks = vi.hoisted(() => ({
   authorizeBrand: vi.fn(),
   authorizeOrganization: vi.fn(),
   membershipRole: vi.fn(),
+  list: vi.fn(),
   pointUsage: vi.fn(),
+  transactions: vi.fn(),
+  transactionActors: vi.fn(),
   deduct: vi.fn(),
   confirmation: vi.fn(),
   organizationBalances: vi.fn(),
@@ -38,7 +41,10 @@ vi.mock("@/server/audit/write-audit", () => ({
 }));
 vi.mock("@/server/repositories/balances", () => ({
   balanceRepository: {
+    list: mocks.list,
     pointUsage: mocks.pointUsage,
+    transactions: mocks.transactions,
+    transactionActors: mocks.transactionActors,
     deduct: mocks.deduct,
     confirmation: mocks.confirmation,
     organizationBalances: mocks.organizationBalances,
@@ -387,5 +393,75 @@ describe("企业品牌划拨授权与结果核对", () => {
     await balanceService.allocationConfirmation(input, userId);
     expect(mocks.allocationConfirmation).toHaveBeenCalledWith(input, userId);
     expect(mocks.writeAudit).not.toHaveBeenCalled();
+  });
+});
+
+describe("企业完整资产流水权限", () => {
+  const input = {
+    organizationId: "enterprise",
+    page: 6,
+    pageSize: 20,
+    beginDate: "2026-01-01",
+    endDate: "2026-01-31",
+  };
+  beforeEach(() => vi.clearAllMocks());
+  it("企业管理员分页读取，日期转为北京时间闭合范围", async () => {
+    mocks.authorizeOrganization.mockResolvedValue({ role: "tenant_admin" });
+    await balanceService.transactions(input, userId);
+    expect(mocks.transactions).toHaveBeenCalledWith(
+      {
+        organizationId: input.organizationId,
+        page: 6,
+        pageSize: 20,
+        beginAt: new Date("2025-12-31T16:00:00Z"),
+        endAtExclusive: new Date("2026-01-31T16:00:00Z"),
+      },
+      userId,
+    );
+    await balanceService.transactionActors(
+      { organizationId: input.organizationId, q: "历史" },
+      userId,
+    );
+    expect(mocks.transactionActors).toHaveBeenCalledWith(
+      { organizationId: input.organizationId, q: "历史" },
+      userId,
+    );
+  });
+  it.each(["brand_admin", "brand_editor", "brand_viewer"])(
+    "%s 不能读取企业流水或历史操作者",
+    async (role) => {
+      mocks.authorizeOrganization.mockResolvedValue({ role });
+      await expect(
+        balanceService.transactions(input, userId),
+      ).rejects.toMatchObject({ status: 403, code: "PERMISSION_DENIED" });
+      await expect(
+        balanceService.transactionActors(
+          { organizationId: input.organizationId },
+          userId,
+        ),
+      ).rejects.toMatchObject({ status: 403, code: "PERMISSION_DENIED" });
+      await expect(
+        balanceService.list(input.organizationId, undefined, undefined, userId),
+      ).rejects.toMatchObject({ status: 403, code: "PERMISSION_DENIED" });
+      expect(mocks.list).not.toHaveBeenCalled();
+      expect(mocks.transactions).not.toHaveBeenCalled();
+      expect(mocks.transactionActors).not.toHaveBeenCalled();
+    },
+  );
+  it("企业授权失败时不读取任何流水或用户资料", async () => {
+    mocks.authorizeOrganization
+      .mockRejectedValueOnce(new Error("scope denied"))
+      .mockRejectedValueOnce(new Error("scope denied"));
+    await expect(balanceService.transactions(input, userId)).rejects.toThrow(
+      "scope denied",
+    );
+    await expect(
+      balanceService.transactionActors(
+        { organizationId: input.organizationId },
+        userId,
+      ),
+    ).rejects.toThrow("scope denied");
+    expect(mocks.transactions).not.toHaveBeenCalled();
+    expect(mocks.transactionActors).not.toHaveBeenCalled();
   });
 });

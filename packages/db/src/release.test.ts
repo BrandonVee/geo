@@ -71,9 +71,18 @@ describe("database release readiness", () => {
       "utf8",
     );
     expect(migration).toContain(`('schema', '${CURRENT_SCHEMA_VERSION}')`);
-    expect(migration).toContain("article_tracking_submissions");
-    expect(migration).toContain("article_tracking_submissions_org_key_ux");
-    expect(migration).toContain("ENABLE ROW LEVEL SECURITY");
+    expect(migration).toContain("tenant_balance_actors");
+    expect(migration).toContain("SECURITY DEFINER");
+    expect(migration).toContain("FROM PUBLIC");
+    const trackingMigration = await readFile(
+      new URL("../drizzle/v10.sql", import.meta.url),
+      "utf8",
+    );
+    expect(trackingMigration).toContain("article_tracking_submissions");
+    expect(trackingMigration).toContain(
+      "article_tracking_submissions_org_key_ux",
+    );
+    expect(trackingMigration).toContain("ENABLE ROW LEVEL SECURITY");
     const documentCreationMigration = await readFile(
       new URL("../drizzle/v9.sql", import.meta.url),
       "utf8",

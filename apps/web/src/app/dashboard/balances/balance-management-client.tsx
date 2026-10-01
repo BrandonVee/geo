@@ -1,23 +1,10 @@
 "use client";
 
-import { ReloadOutlined, SwapOutlined } from "@ant-design/icons";
-import {
-  Alert,
-  Button,
-  Card,
-  Col,
-  Empty,
-  Flex,
-  Row,
-  Select,
-  Space,
-  Statistic,
-  Typography,
-  type TableColumnsType,
-} from "antd";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { SwapOutlined } from "@ant-design/icons";
+import { Alert, Button, Card, Col, Row, Space, Statistic } from "antd";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { BrandAllocation } from "./brand-allocation";
-import { AccessibleTable } from "../../accessible-table";
+import { EnterpriseLedger } from "./enterprise-ledger";
 import {
   ScopeFields,
   scopeQuery,
@@ -32,20 +19,6 @@ type Account = {
   asset: Asset;
   balance: number;
 };
-type Transaction = {
-  id: string;
-  actorUserId: string | null;
-  actorName: string | null;
-  actorUsername: string | null;
-  asset: Asset;
-  operation: string;
-  amount: number;
-  reason: string;
-  createdAt: string;
-};
-
-const emptyTransactions: Transaction[] = [];
-
 const money = (amount: number) =>
   new Intl.NumberFormat("zh-CN", {
     style: "currency",
@@ -72,10 +45,9 @@ export function BalanceManagementClient({
     key: string;
     organization: Account[];
     brand: Account[];
-    transactions: Transaction[];
   }>();
   const [failure, setFailure] = useState<{ key: string; message: string }>();
-  const [transactionUserId, setTransactionUserId] = useState<string>();
+  const [ledgerRefresh, setLedgerRefresh] = useState(0);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const controllerRef = useRef<AbortController | undefined>(undefined);
@@ -92,7 +64,7 @@ export function BalanceManagementClient({
         teamBindingId: scope.teamBindingId,
         brandId: scope.brandId,
       });
-      const [accounts, brand, transactions] = await Promise.all([
+      const [accounts, brand] = await Promise.all([
         request<Account[]>(
           `/api/v1/balances?organizationId=${scope.organizationId}`,
           { signal: controller.signal },
@@ -100,10 +72,6 @@ export function BalanceManagementClient({
         request<Account[]>(`/api/v1/balances?${brandQuery}`, {
           signal: controller.signal,
         }),
-        request<Transaction[]>(
-          `/api/v1/balance-transactions?organizationId=${scope.organizationId}`,
-          { signal: controller.signal },
-        ),
       ]);
       if (controller.signal.aborted || controllerRef.current !== controller)
         return;
@@ -111,7 +79,6 @@ export function BalanceManagementClient({
         key,
         organization: accounts.filter((a) => a.brandId === null),
         brand,
-        transactions,
       });
     } catch (reason) {
       if (!controller.signal.aborted && controllerRef.current === controller)
@@ -143,98 +110,19 @@ export function BalanceManagementClient({
       window.removeEventListener("online", poll);
     };
   }, [load]);
-  useEffect(() => setTransactionUserId(undefined), [scope.organizationId]);
   const readError = failure?.key === key ? failure.message : undefined;
   const data = !readError && snapshot?.key === key ? snapshot : undefined;
   const organizationAccounts = data?.organization ?? [],
-    brandAccounts = data?.brand ?? [],
-    transactions = data?.transactions ?? emptyTransactions;
+    brandAccounts = data?.brand ?? [];
   const reading = loading || (!data && !readError && !scope.error);
   const onAllocated = useCallback(
     async (success: string) => {
       setMessage(success);
+      setLedgerRefresh((n) => n + 1);
       await load();
     },
     [load],
   );
-
-  const transactionUsers = useMemo(
-    () =>
-      [
-        ...new Map(
-          transactions
-            .filter((item) => item.actorUserId)
-            .map((item) => [item.actorUserId!, item]),
-        ).values(),
-      ].map((item) => ({
-        label: `${item.actorName ?? "未知用户"}${item.actorUsername ? ` (@${item.actorUsername})` : ""}`,
-        value: item.actorUserId!,
-      })),
-    [transactions],
-  );
-  const visibleTransactions = transactionUserId
-    ? transactions.filter((item) => item.actorUserId === transactionUserId)
-    : transactions;
-
-  const columns: TableColumnsType<Transaction> = [
-    {
-      title: "发生时间",
-      dataIndex: "createdAt",
-      width: 180,
-      render: (value: string) => new Date(value).toLocaleString("zh-CN"),
-    },
-    {
-      title: "操作",
-      dataIndex: "operation",
-      width: 140,
-      render: (value: string) =>
-        ({
-          grant: "平台入账",
-          allocate: "企业向品牌划拨",
-          consume: "业务消耗",
-          restore: "失败返还",
-          adjust: "人工调整",
-        })[value] ?? value,
-    },
-    {
-      title: "操作用户",
-      key: "actor",
-      width: 180,
-      render: (_, item) =>
-        item.actorUserId ? (
-          <Space direction="vertical" size={0}>
-            <Typography.Text>{item.actorName ?? "未知用户"}</Typography.Text>
-            {item.actorUsername ? (
-              <Typography.Text type="secondary">
-                @{item.actorUsername}
-              </Typography.Text>
-            ) : null}
-          </Space>
-        ) : (
-          <Typography.Text type="secondary">
-            系统任务 / 历史记录
-          </Typography.Text>
-        ),
-    },
-    {
-      title: "资产",
-      dataIndex: "asset",
-      width: 150,
-      render: (value: Asset) =>
-        value === "answerbit_points" ? "腾讯能力积分" : "发布人民币余额",
-    },
-    { title: "说明", dataIndex: "reason" },
-    {
-      title: "数量",
-      dataIndex: "amount",
-      align: "right",
-      width: 140,
-      render: (value: number, item) =>
-        item.asset === "answerbit_points"
-          ? value.toLocaleString()
-          : money(value),
-    },
-  ];
 
   const pool = (targetAsset: Asset) =>
     organizationAccounts.find((item) => item.asset === targetAsset)?.balance ??
@@ -344,52 +232,13 @@ export function BalanceManagementClient({
           </Card>
         </Col>
         <Col lg={16} xs={24}>
-          <Card title="企业资产流水">
-            <Flex gap={12} wrap style={{ marginBottom: 20 }}>
-              <Select
-                allowClear
-                aria-label="按操作用户筛选资产流水"
-                onChange={setTransactionUserId}
-                options={transactionUsers}
-                placeholder="全部用户"
-                showSearch
-                optionFilterProp="label"
-                style={{ minWidth: 180, flex: "1 1 200px" }}
-                value={transactionUserId}
-              />
-              <Button
-                aria-label="刷新资产"
-                icon={<ReloadOutlined />}
-                loading={loading}
-                onClick={() => void load()}
-              >
-                刷新资产
-              </Button>
-            </Flex>
-            <AccessibleTable<Transaction>
-              loading={reading}
-              columns={columns}
-              dataSource={visibleTransactions}
-              locale={{
-                emptyText: (
-                  <Empty
-                    description={
-                      <Typography.Text type="secondary">
-                        {readError
-                          ? "资产流水暂不可用，请重试读取"
-                          : "暂无资产流水"}
-                      </Typography.Text>
-                    }
-                    image={Empty.PRESENTED_IMAGE_SIMPLE}
-                  />
-                ),
-              }}
-              pagination={{ pageSize: 10, hideOnSinglePage: true }}
-              rowKey="id"
-              scroll={{ x: 860 }}
-              scrollRegionLabel="企业资产流水，可横向滚动"
-            />
-          </Card>
+          <EnterpriseLedger
+            key={scope.organizationId}
+            organizationId={scope.organizationId}
+            brandId={scope.brandId}
+            refreshVersion={ledgerRefresh}
+            onRefreshAssets={() => void load()}
+          />
         </Col>
       </Row>
     </Space>

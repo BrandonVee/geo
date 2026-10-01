@@ -1140,15 +1140,42 @@ export const balanceOperationSchema = z.enum([
   "restore",
   "adjust",
 ]);
+const ledgerDateSchema = dateSchema.refine(
+  (value) =>
+    !Number.isNaN(Date.parse(`${value}T00:00:00Z`)) &&
+    new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value,
+  "日期无效",
+);
 export const balanceTransactionQuerySchema = z
   .object({
     organizationId: z.string().uuid(),
     userId: z.string().uuid().optional(),
     asset: balanceAssetSchema.optional(),
     operation: balanceOperationSchema.optional(),
-    limit: queryInteger(100, 1, 100),
+    beginDate: ledgerDateSchema.optional(),
+    endDate: ledgerDateSchema.optional(),
+    page: queryInteger(1, 1, 100_000),
+    pageSize: queryInteger(20, 1, 100),
+  })
+  .strict()
+  .refine(
+    (value) =>
+      !value.beginDate || !value.endDate || value.beginDate <= value.endDate,
+    {
+      message: "开始日期不能晚于结束日期",
+      path: ["beginDate"],
+    },
+  );
+export const balanceTransactionActorQuerySchema = z
+  .object({
+    organizationId: z.string().uuid(),
+    q: z.string().trim().max(200).optional(),
+    userId: z.string().uuid().optional(),
   })
   .strict();
+export type BalanceTransactionActorQuery = z.infer<
+  typeof balanceTransactionActorQuerySchema
+>;
 export const pointUsageQuerySchema = z
   .object({
     organizationId: z.string().uuid(),

@@ -5,6 +5,7 @@ import type {
   AllocateBrandBalanceInput,
   FeaturePointCostInput,
   BalanceTransactionQuery,
+  BalanceTransactionActorQuery,
   PointUsageQuery,
   AdminOrganizationPageQuery,
 } from "@geo/contracts";
@@ -51,16 +52,60 @@ export const balanceService = {
       const accounts = await balanceRepository.list(organizationId);
       return accounts.filter((item) => item.brandId === brandId);
     }
-    await organizationService.authorize(organizationId, userId, "balance.read");
+    const scope = await organizationService.authorize(
+      organizationId,
+      userId,
+      "balance.read",
+    );
+    if (scope.role !== "tenant_admin")
+      throw new ApiError(
+        403,
+        "PERMISSION_DENIED",
+        "只有企业管理员可以查看企业资金池",
+      );
     return balanceRepository.list(organizationId);
   },
   async transactions(input: BalanceTransactionQuery, userId: string) {
-    await organizationService.authorize(
+    const scope = await organizationService.authorize(
       input.organizationId,
       userId,
       "balance.read",
     );
-    return balanceRepository.transactions(input);
+    if (scope.role !== "tenant_admin")
+      throw new ApiError(
+        403,
+        "PERMISSION_DENIED",
+        "只有企业管理员可以查看企业资产流水",
+      );
+    const { beginDate, endDate, ...filters } = input;
+    return balanceRepository.transactions(
+      {
+        ...filters,
+        beginAt: beginDate
+          ? new Date(`${beginDate}T00:00:00+08:00`)
+          : undefined,
+        endAtExclusive: endDate
+          ? new Date(
+              new Date(`${endDate}T00:00:00+08:00`).getTime() + 86_400_000,
+            )
+          : undefined,
+      },
+      userId,
+    );
+  },
+  async transactionActors(input: BalanceTransactionActorQuery, userId: string) {
+    const scope = await organizationService.authorize(
+      input.organizationId,
+      userId,
+      "balance.read",
+    );
+    if (scope.role !== "tenant_admin")
+      throw new ApiError(
+        403,
+        "PERMISSION_DENIED",
+        "只有企业管理员可以查看企业流水操作者",
+      );
+    return balanceRepository.transactionActors(input, userId);
   },
   async pointUsage(input: PointUsageQuery, userId: string) {
     if (input.brandId) {

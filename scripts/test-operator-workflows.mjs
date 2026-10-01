@@ -89,6 +89,18 @@ try {
       "exec",
       "vitest",
       "run",
+      "src/tenant-balance-history.integration.test.ts",
+    ],
+    { TENANT_BALANCE_HISTORY_DB_TESTS: "1" },
+  );
+  await run(
+    pnpm,
+    [
+      "--filter",
+      "@geo/db",
+      "exec",
+      "vitest",
+      "run",
       "src/point-usage.integration.test.ts",
     ],
     { POINT_USAGE_DB_TESTS: "1" },

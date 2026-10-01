@@ -36,6 +36,8 @@ JSON 请求使用 `Content-Type: application/json`；允许标准的 `applicatio
 
 `GET /v1/admin/organization-balances` 要求 `platform.balance.manage`，沿用企业目录的查询、状态和分页规则，并在同一快照返回 `balances`：`enterprisePoints`、`enterprisePublicationCny`、`brandPoints`、`brandPublicationCny`。积分为整数，人民币为分；品牌余额只取当前映射 BrandID，缺少账户返回零。普通企业目录不包含该字段。
 
+`GET /v1/balance-transactions` 要求企业管理员的 `balance.read`，返回 `{ list, pagination }`，默认每页 20 条、上限 100 条；支持 `userId`、`asset`、`operation`、`beginDate` 和 `endDate` 取交集。日期按北京时间闭合范围，分页按创建时间与 ID 倒序；总数和明细使用同一租户只读快照，越界页码回退有效末页，行记录包括来源/目标 BrandID 和品牌名称。旧 `limit` 截断参数不再接受。`GET /v1/balance-transactions/actors` 要求相同权限，仅查询当前企业实际流水中的用户，可按 `q` 搜索姓名或账号、按 `userId` 核对已选用户，最多返回 20 位；文字通配符按原文匹配，历史停用或已移除成员保留可查。未指定品牌的 `GET /v1/balances` 同样只向企业管理员开放企业资金池；品牌角色必须传授权品牌及内部绑定。
+
 `GET /v1/admin/balance-transactions` 要求同一余额管理权限，返回 `{ list, pagination }`，行记录增加可空 `sourceBrandId`、`targetBrandId` 标注账户流向。按企业、操作者、资产和操作类型取交集，列表与总数从同一只读快照读取，按创建时间与 ID 倒序排列，越界页码回退有效末页；关闭企业保留历史流水。
 
 企业 `PATCH /v1/admin/organizations/{organizationId}` 只保存提交字段；可选 `expected` 提供原状态和原期限（历史空期限用 `null`），包含所有修改字段的原值，也可增加未修改字段校验。平台客户端始终传原值；行锁内不一致返回 `409 ORGANIZATION_SETTINGS_CONFLICT` 和 `details.current`，不变更也不审计。恢复仍到期的企业返回 `422 ORGANIZATION_SERVICE_EXPIRED`，可同时提交未来服务期限与 `status=active` 完成续期恢复；更新与审计在同一事务内提交。

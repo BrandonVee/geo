@@ -5920,4 +5920,421 @@ test.describe("真实运营操作闭环", () => {
     }
     expect(runtimeErrors).toEqual([]);
   });
+  test("企业资产流水查全百条历史，操作者与日期筛选刷新恢复，读取失败独立重试", async ({
+    page,
+  }) => {
+    const runtimeErrors: string[] = [];
+    page.on("pageerror", (error) => runtimeErrors.push(error.message));
+    page.on("console", (entry) => {
+      if (
+        entry.type() === "error" &&
+        /content security policy|hydration|validateDOMNesting|Warning:/i.test(
+          entry.text(),
+        )
+      )
+        runtimeErrors.push(entry.text());
+    });
+    await makeEnterpriseAdministrator();
+    const { db, balanceAccounts, balanceTransactions, users } = database;
+    const { eq, and, isNull } = operators;
+    const [first, second] = fixture.scopes;
+    const historicalUser = randomUUID();
+    fixture.extraUserIds = [historicalUser];
+    await db.insert(users).values({
+      id: historicalUser,
+      name: "已离职的流水操作者",
+      username: `old_${historicalUser.slice(0, 8)}`,
+      email: `${historicalUser}@test.invalid`,
+      status: "disabled",
+    });
+    const [fund] = await db
+      .select()
+      .from(balanceAccounts)
+      .where(
+        and(
+          eq(balanceAccounts.organizationId, first.organizationId),
+          eq(balanceAccounts.asset, "answerbit_points"),
+          isNull(balanceAccounts.brandId),
+        ),
+      );
+    const [brandCny] = await db
+      .select()
+      .from(balanceAccounts)
+      .where(
+        and(
+          eq(balanceAccounts.organizationId, first.organizationId),
+          eq(balanceAccounts.asset, "publication_cny"),
+          eq(balanceAccounts.brandId, first.brandId),
+        ),
+      );
+    const ledger = (
+      reason: string,
+      overrides: Partial<typeof balanceTransactions.$inferInsert> = {},
+    ) => ({
+      organizationId: first.organizationId,
+      asset: "answerbit_points" as const,
+      operation: "grant" as const,
+      amount: 1,
+      targetAccountId: fund.id,
+      actorUserId: fixture.userId,
+      referenceType: "manual_grant",
+      referenceId: randomUUID(),
+      idempotencyKey: randomUUID(),
+      reason,
+      createdAt: new Date("2026-02-20T00:00:00Z"),
+      ...overrides,
+    });
+    await db.insert(balanceTransactions).values([
+      ...Array.from({ length: 123 }, (_, index) =>
+        ledger(`近期积分入账 ${index + 1}`),
+      ),
+      ledger("一月历史人民币消耗", {
+        asset: "publication_cny",
+        operation: "consume",
+        amount: 125,
+        sourceAccountId: brandCny.id,
+        targetAccountId: null,
+        actorUserId: historicalUser,
+        createdAt: new Date("2026-01-01T00:00:00Z"),
+      }),
+      ledger("一月系统返还", {
+        operation: "restore",
+        actorUserId: null,
+        createdAt: new Date("2026-01-01T00:00:00Z"),
+      }),
+      ledger("另一企业独立流水", {
+        organizationId: second.organizationId,
+        targetAccountId: null,
+      }),
+    ]);
+    await mockBusinessApis(page);
+    let fails = false;
+    await page.route("**/api/v1/balance-transactions?**", (route) =>
+      fails
+        ? route.fulfill({
+            status: 503,
+            json: { error: { message: "仅流水读取暂时失败" } },
+          })
+        : route.continue(),
+    );
+    await page.route("**/api/v1/balance-transactions/actors?**", (route) =>
+      route.continue(),
+    );
+    await page.goto(scopedPath("/dashboard/balances"));
+    const card = page
+      .locator(".ant-card")
+      .filter({ has: page.getByText("企业资产流水", { exact: true }) });
+    await expect(
+      card.getByText("共 125 条资产流水", { exact: true }),
+    ).toBeVisible();
+    await card.locator(".ant-pagination-item-7").click();
+    await expect(
+      card.getByText("一月历史人民币消耗", { exact: true }),
+    ).toBeVisible();
+    await expect(card.getByText("−¥1.25", { exact: true })).toBeVisible();
+    await expect(card.getByText(first.brandId, { exact: true })).toBeVisible();
+    await expect(
+      card.getByText("另一企业独立流水", { exact: true }),
+    ).not.toBeVisible();
+    const actor = card.getByRole("combobox", {
+      name: "按操作用户筛选资产流水",
+    });
+    await actor.fill("已离职");
+    await page
+      .locator(".ant-select-dropdown:visible")
+      .getByText(new RegExp("已离职的流水操作者"))
+      .click();
+    await expect(
+      card.getByText("共 1 条资产流水", { exact: true }),
+    ).toBeVisible();
+    const asset = card.getByRole("combobox", { name: "按资产筛选企业流水" });
+    await asset.press("ArrowDown");
+    await page
+      .locator(".ant-select-dropdown:visible")
+      .getByText("发布人民币余额", { exact: true })
+      .click();
+    const operation = card.getByRole("combobox", {
+      name: "按操作类型筛选企业流水",
+    });
+    await operation.press("ArrowDown");
+    await page
+      .locator(".ant-select-dropdown:visible")
+      .getByText("业务消耗", { exact: true })
+      .click();
+    await card
+      .getByLabel("流水日期（北京时间）", { exact: true })
+      .fill("2026-01-01");
+    await card.getByLabel("流水日期（北京时间）", { exact: true }).press("Tab");
+    await card.getByLabel("流水结束日期", { exact: true }).fill("2026-01-01");
+    await card.getByLabel("流水结束日期", { exact: true }).press("Enter");
+    await expect
+      .poll(() => new URL(page.url()).searchParams.get("ledgerBeginDate"))
+      .toBe("2026-01-01");
+    await page.reload();
+    await expect(
+      card.getByText("一月历史人民币消耗", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      card.getByRole("combobox", { name: "按操作用户筛选资产流水" }),
+    ).toHaveValue("");
+    await expect(
+      card
+        .locator(".ant-select-selection-item")
+        .filter({ hasText: "已离职的流水操作者" }),
+    ).toBeVisible();
+    await expect(
+      card.getByLabel("流水日期（北京时间）", { exact: true }),
+    ).toHaveValue("2026-01-01");
+    fails = true;
+    await card.getByRole("button", { name: "刷新资产", exact: true }).click();
+    await expect(
+      card.getByText("仅流水读取暂时失败", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("资产读取失败", { exact: true }),
+    ).not.toBeVisible();
+    await expect(page.locator(".ant-statistic-content").first()).toHaveText(
+      "100",
+    );
+    await expect(
+      card.getByText("一月历史人民币消耗", { exact: true }),
+    ).not.toBeVisible();
+    fails = false;
+    await card
+      .getByRole("button", { name: "重试读取流水", exact: true })
+      .click();
+    await expect(
+      card.getByText("一月历史人民币消耗", { exact: true }),
+    ).toBeVisible();
+    for (const theme of ["light", "dark"]) {
+      if (theme === "dark")
+        await page.getByRole("button", { name: "切换亮暗色模式" }).click();
+      await expect
+        .poll(() => page.locator("html").getAttribute("data-theme"))
+        .toBe(theme);
+      for (const width of [390, 768, 1440]) {
+        await page.setViewportSize({ width, height: 1000 });
+        await card.scrollIntoViewIfNeeded();
+        await expect
+          .poll(() =>
+            page.evaluate(
+              () => document.documentElement.scrollWidth <= innerWidth,
+            ),
+          )
+          .toBeTruthy();
+        await page.evaluate(async () => {
+          await Promise.all(
+            document
+              .getAnimations()
+              .filter(
+                (animation) =>
+                  animation.effect?.getComputedTiming().iterations !== Infinity,
+              )
+              .map((animation) => animation.finished.catch(() => {})),
+          );
+        });
+        await page.evaluate(axe.source);
+        const result = await page.evaluate(async () =>
+          (window as unknown as { axe: typeof axe }).axe.run(document, {
+            runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa"] },
+          }),
+        );
+        expect(
+          result.violations.map(({ id, nodes }) => ({
+            id,
+            targets: nodes.map(({ target }) => target),
+          })),
+        ).toEqual([]);
+        await page.screenshot({
+          path: test.info().outputPath(`tenant-ledger-${theme}-${width}.png`),
+          fullPage: true,
+        });
+      }
+    }
+    expect(runtimeErrors).toEqual([]);
+    await card
+      .getByRole("button", { name: "清除流水筛选", exact: true })
+      .click();
+    await expect(
+      card.getByText("共 125 条资产流水", { exact: true }),
+    ).toBeVisible();
+    const enterprise = page.getByRole("combobox", {
+      name: "企业",
+      exact: true,
+    });
+    await enterprise.fill(second.name);
+    await page
+      .locator(".ant-select-dropdown:visible")
+      .getByText(second.name, { exact: true })
+      .click();
+    await expect(
+      card.getByText("共 1 条资产流水", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      card.getByText("另一企业独立流水", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      card.getByText("一月历史人民币消耗", { exact: true }),
+    ).not.toBeVisible();
+    const [role] = await db
+      .select()
+      .from(database.roles)
+      .where(eq(database.roles.code, "tenant_admin"));
+    const members = await db
+      .select()
+      .from(database.organizationMembers)
+      .where(eq(database.organizationMembers.userId, fixture.userId));
+    await db.delete(database.memberRoles).where(
+      operators.and(
+        operators.inArray(
+          database.memberRoles.memberId,
+          members.map((member) => member.id),
+        ),
+        eq(database.memberRoles.roleId, role.id),
+      ),
+    );
+    for (const path of [
+      "balance-transactions",
+      "balance-transactions/actors",
+      "balances",
+    ])
+      expect(
+        (
+          await page.request.get(
+            `/api/v1/${path}?organizationId=${first.organizationId}`,
+          )
+        ).status(),
+      ).toBe(403);
+    const brandStats = await page.request.get(
+      `/api/v1/point-usage?${new URLSearchParams({ organizationId: first.organizationId, teamBindingId: first.teamBindingId, brandId: first.brandId, beginDate: "2026-01-01", endDate: "2026-01-31" })}`,
+    );
+    expect(brandStats.status()).toBe(200);
+    expect((await brandStats.json()).data.organizationBalance).toBeNull();
+  });
+  test("流水迟到响应不能覆盖新企业或筛选，查账不清空待划拨金额", async ({
+    page,
+  }) => {
+    await makeEnterpriseAdministrator();
+    await mockBusinessApis(page);
+    const [first, second] = fixture.scopes;
+    await database.db.insert(database.balanceTransactions).values(
+      fixture.scopes.map((scope) => ({
+        organizationId: scope.organizationId,
+        asset: "answerbit_points" as const,
+        operation: "grant" as const,
+        amount: 1,
+        actorUserId: fixture.userId,
+        referenceType: "manual_grant",
+        referenceId: randomUUID(),
+        idempotencyKey: randomUUID(),
+        reason: `迟到流水 ${scope.name}`,
+      })),
+    );
+    let heldOrganization: string | undefined,
+      requested = false;
+    let release: () => void = () => {};
+    let held = Promise.resolve();
+    const hold = (organizationId: string) => {
+      heldOrganization = organizationId;
+      requested = false;
+      held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    };
+    await page.route("**/api/v1/balance-transactions?**", async (route) => {
+      const url = new URL(route.request().url());
+      if (
+        url.searchParams.get("organizationId") === heldOrganization &&
+        !url.searchParams.has("operation") &&
+        !requested
+      ) {
+        requested = true;
+        const response = await route.fetch();
+        await held;
+        await route.fulfill({ response }).catch(() => {});
+      } else await route.continue();
+    });
+    await page.route("**/api/v1/balance-transactions/actors?**", (route) =>
+      route.continue(),
+    );
+    // The ordinary menu entry has no explicit scope URL; newest enterprise is selected.
+    await page.goto("/dashboard/balances");
+    const ledger = page
+      .locator(".ant-card")
+      .filter({ has: page.getByText("企业资产流水", { exact: true }) });
+    const allocation = page
+      .locator(".ant-card")
+      .filter({ has: page.getByText("企业资产划拨", { exact: true }) });
+    await expect(
+      ledger.getByText(`迟到流水 ${second.name}`, { exact: true }),
+    ).toBeVisible();
+    await expect(
+      allocation.getByRole("button", { name: "确认划拨", exact: true }),
+    ).toBeEnabled();
+    const amount = allocation.getByLabel("划拨数量", { exact: true });
+    await amount.fill("29");
+    await ledger
+      .getByRole("combobox", { name: "按资产筛选企业流水" })
+      .press("ArrowDown");
+    await page
+      .locator(".ant-select-dropdown:visible")
+      .getByText("腾讯能力积分", { exact: true })
+      .click();
+    await expect
+      .poll(() => new URL(page.url()).searchParams.get("ledgerAsset"))
+      .toBe("answerbit_points");
+    await expect(
+      allocation.getByRole("button", { name: "确认划拨", exact: true }),
+    ).toBeEnabled();
+    await expect(amount).toHaveValue("29");
+    hold(second.organizationId);
+    await ledger.getByRole("button", { name: "刷新资产", exact: true }).click();
+    await expect.poll(() => requested).toBeTruthy();
+    const enterprise = page.getByRole("combobox", {
+      name: "企业",
+      exact: true,
+    });
+    await enterprise.fill(first.name);
+    await page
+      .locator(".ant-select-dropdown:visible")
+      .getByText(first.name, { exact: true })
+      .click();
+    await expect(
+      ledger.getByText(`迟到流水 ${first.name}`, { exact: true }),
+    ).toBeVisible();
+    release();
+    await expect(
+      ledger.getByText(`迟到流水 ${second.name}`, { exact: true }),
+    ).not.toBeVisible();
+    await expect(amount).toHaveValue("");
+    await expect(
+      allocation.getByRole("button", { name: "确认划拨", exact: true }),
+    ).toBeEnabled();
+    await amount.fill("37");
+    hold(first.organizationId);
+    await ledger.getByRole("button", { name: "刷新资产", exact: true }).click();
+    await expect.poll(() => requested).toBeTruthy();
+    await ledger
+      .getByRole("combobox", { name: "按操作类型筛选企业流水" })
+      .press("ArrowDown");
+    await page
+      .locator(".ant-select-dropdown:visible")
+      .getByText("业务消耗", { exact: true })
+      .click();
+    await expect(
+      ledger.getByText("暂无符合条件的资产流水", { exact: true }),
+    ).toBeVisible();
+    release();
+    await expect(
+      ledger.getByText(`迟到流水 ${first.name}`, { exact: true }),
+    ).not.toBeVisible();
+    await expect(amount).toHaveValue("37");
+    await ledger
+      .getByRole("button", { name: "清除流水筛选", exact: true })
+      .click();
+    await expect(
+      ledger.getByText(`迟到流水 ${first.name}`, { exact: true }),
+    ).toBeVisible();
+    await expect(amount).toHaveValue("37");
+  });
 });

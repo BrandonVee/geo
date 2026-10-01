@@ -3527,7 +3527,7 @@ paths:
   /v1/balance-transactions:
     get:
       summary: 查询企业余额划拨与消费流水
-      description: 返回操作用户名称与账号；系统任务和升级前历史记录的用户字段为空。支持按用户、资产和流水操作筛选。
+      description: 只允许企业管理员，返回完整历史分页及来源、目标账户品牌。系统任务和升级前历史记录的用户字段为空；日期按北京时间闭合范围，总数与明细使用同一租户只读快照，越界页码回退有效末页。
       tags:
         - Balances
       security: *id001
@@ -3559,16 +3559,81 @@ paths:
               - restore
               - adjust
         - in: query
-          name: limit
-          required: false
+          name: beginDate
+          schema:
+            type: string
+            format: date
+        - in: query
+          name: endDate
+          schema:
+            type: string
+            format: date
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100000
+            default: 1
+        - in: query
+          name: pageSize
           schema:
             type: integer
             minimum: 1
             maximum: 100
-            default: 100
+            default: 20
       responses:
         "200":
-          description: 符合筛选条件的最新余额流水，包含 actorUserId、actorName 与 actorUsername
+          description: 完整余额流水分页，包含 actorUserId、actorName、actorUsername、sourceBrandId、targetBrandId、sourceBrandName 和 targetBrandName
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      list:
+                        type: array
+                        items:
+                          type: object
+                      pagination:
+                        type: object
+                        properties:
+                          page:
+                            type: integer
+                          pageSize:
+                            type: integer
+                          total:
+                            type: integer
+                          pages:
+                            type: integer
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /v1/balance-transactions/actors:
+    get:
+      summary: 搜索企业历史流水操作者
+      description: 只允许企业管理员，仅返回本企业实际流水中的用户；停用或移除成员仍可核对，姓名和账号通配符按原文匹配。最多返回 20 位。
+      tags:
+        - Balances
+      security: *id001
+      parameters:
+        - *id002
+        - in: query
+          name: q
+          schema:
+            type: string
+            maxLength: 200
+        - in: query
+          name: userId
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: 流水操作者数组，包含 id、name、username
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "403":
           $ref: "#/components/responses/Forbidden"
   /v1/point-usage:

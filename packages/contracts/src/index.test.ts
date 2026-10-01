@@ -14,6 +14,7 @@ import {
   adminOrganizationPageQuerySchema,
   adminUserPageQuerySchema,
   balanceTransactionQuerySchema,
+  balanceTransactionActorQuerySchema,
   pointUsageQuerySchema,
   publicationOrderQuerySchema,
   adminPublicationOrderQuerySchema,
@@ -214,7 +215,8 @@ describe("平台资源管理契约", () => {
       userId,
       asset: "answerbit_points",
       operation: "consume",
-      limit: 100,
+      page: 1,
+      pageSize: 20,
     });
     expect(
       adminBalanceTransactionQuerySchema.parse({
@@ -227,6 +229,42 @@ describe("平台资源管理契约", () => {
       balanceTransactionQuerySchema.safeParse({
         organizationId,
         operation: "refund",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("企业流水支持完整分页和北京时间日期，拒绝错误范围及旧截断参数", () => {
+    expect(
+      balanceTransactionQuerySchema.parse({
+        organizationId,
+        page: "6",
+        pageSize: "20",
+        beginDate: "2026-01-01",
+        endDate: "2026-01-31",
+      }),
+    ).toMatchObject({ page: 6, pageSize: 20, beginDate: "2026-01-01" });
+    for (const invalid of [
+      { page: "0" },
+      { pageSize: "101" },
+      { beginDate: "2026-02-30" },
+      { beginDate: "2026-02-01", endDate: "2026-01-31" },
+      { limit: "100" },
+    ])
+      expect(
+        balanceTransactionQuerySchema.safeParse({ organizationId, ...invalid })
+          .success,
+      ).toBe(false);
+    expect(
+      balanceTransactionActorQuerySchema.parse({
+        organizationId,
+        q: "  历史用户  ",
+        userId,
+      }),
+    ).toEqual({ organizationId, q: "历史用户", userId });
+    expect(
+      balanceTransactionActorQuerySchema.safeParse({
+        organizationId,
+        q: "a".repeat(201),
       }).success,
     ).toBe(false);
   });
