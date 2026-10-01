@@ -1,4 +1,5 @@
 import { publicationBodyHtml } from "@geo/core";
+import { publicationTrackingSourceSchema } from "@geo/contracts";
 import type {
   AppealPublicationOrderInput,
   AdminPublicationChannelQuery,
@@ -93,6 +94,51 @@ async function syncFrogOrders(
 }
 
 export const publicationService = {
+  // @project-doc docs/domains/geo_operations.md#article_tracking
+  async trackingSource(
+    orderId: string,
+    scope: PublicationOrderActionInput,
+    userId: string,
+  ) {
+    await authorizeBrand(
+      scope.organizationId,
+      scope.teamBindingId,
+      scope.brandId,
+      userId,
+      "publication.read",
+    );
+    await authorizeBrand(
+      scope.organizationId,
+      scope.teamBindingId,
+      scope.brandId,
+      userId,
+      "resource.create",
+    );
+    const row = await publicationRepository.findOrder(
+      orderId,
+      scope.organizationId,
+    );
+    if (!row || row.order.brandId !== scope.brandId)
+      throw new ApiError(404, "PUBLICATION_ORDER_NOT_FOUND", "发布订单不存在");
+    if (row.order.status !== "published")
+      throw new ApiError(
+        409,
+        "PUBLICATION_ORDER_NOT_PUBLISHED",
+        "订单尚未发布或已退稿，请刷新发布订单后再加入追踪",
+      );
+    const source = publicationTrackingSourceSchema.safeParse({
+      orderId: row.order.id,
+      title: row.order.title,
+      url: row.order.resultUrl,
+    });
+    if (!source.success)
+      throw new ApiError(
+        422,
+        "PUBLICATION_RESULT_URL_UNAVAILABLE",
+        "订单缺少有效的公开发布链接，请先核对发布结果",
+      );
+    return source.data;
+  },
   async providerBalance(userId: string) {
     await requirePlatformPermission(userId, "platform.publication.manage");
     const client = await resolveFrogPublicationClient();

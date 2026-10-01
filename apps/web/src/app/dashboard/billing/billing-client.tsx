@@ -94,6 +94,13 @@ const money = (amount: number) =>
   new Intl.NumberFormat("zh-CN", { style: "currency", currency: "CNY" }).format(
     amount / 100,
   );
+const publicationStatusLabels: Record<string, string> = {
+  submitted: "投稿确认中",
+  processing: "发布处理中",
+  published: "已发布",
+  failed: "发布失败",
+  cancelled: "已取消",
+};
 async function api<T>(url: string, init?: RequestInit) {
   const response = await fetch(url, init);
   const body = await response.json();
@@ -631,7 +638,7 @@ function BillingWorkspace({
                   : "processing"
             }
           >
-            {item.order.status}
+            {publicationStatusLabels[item.order.status] ?? "状态待核对"}
           </Tag>
           {item.order.providerMessage ? (
             <Typography.Text ellipsis type="secondary">
@@ -657,9 +664,25 @@ function BillingWorkspace({
     {
       title: "操作",
       key: "action",
-      width: 110,
+      width: 180,
       render: (_, item) => (
-        <Space>
+        <Space wrap>
+          {scope.canWrite &&
+          scope.can("publication.read") &&
+          item.order.status === "published" &&
+          item.order.resultUrl ? (
+            <Button
+              href={`/dashboard/content?${new URLSearchParams({
+                organizationId: scope.organizationId,
+                brandId: scope.brandId,
+                stage: "trace",
+                publicationOrderId: item.order.id,
+              })}`}
+              size="small"
+            >
+              加入效果追踪
+            </Button>
+          ) : null}
           {scope.can("publication.create") &&
           (item.order.status === "submitted" ||
             item.order.status === "processing") ? (

@@ -18,6 +18,7 @@ const m = vi.hoisted(() => ({
   findDocument: vi.fn(),
   resolveFrogClient: vi.fn(),
   writeAudit: vi.fn(),
+  authorizeBrand: vi.fn(),
 }));
 vi.mock("@/server/repositories/publications", () => ({
   publicationRepository: m,
@@ -32,7 +33,7 @@ vi.mock("@/server/repositories/pricing", () => ({
   pricingRepository: { userTier: vi.fn().mockResolvedValue("retail") },
 }));
 vi.mock("@/server/permissions/brand-scope", () => ({
-  authorizeBrand: vi.fn(),
+  authorizeBrand: m.authorizeBrand,
 }));
 vi.mock("@/server/permissions/platform", () => ({
   requirePlatformPermission: vi.fn(),
@@ -130,6 +131,85 @@ beforeEach(() => {
   });
 });
 describe("发布业务闭环", () => {
+  it("已发布来源仅返回标题与公开链接，读取不投稿或扣款", async () => {
+    const id = "11111111-1111-4111-8111-111111111111";
+    m.findOrder.mockResolvedValue({
+      order: {
+        ...order,
+        id,
+        status: "published",
+        resultUrl: "https://example.com/published",
+      },
+      channel,
+    });
+    await expect(
+      publicationService.trackingSource(id, input, "user"),
+    ).resolves.toEqual({
+      orderId: id,
+      title: "标题",
+      url: "https://example.com/published",
+    });
+    expect(m.authorizeBrand.mock.calls.map((call) => call[4])).toEqual([
+      "publication.read",
+      "resource.create",
+    ]);
+    expect(m.findOrder).toHaveBeenCalledWith(id, "org");
+    expect(m.submit).not.toHaveBeenCalled();
+    expect(m.createOrder).not.toHaveBeenCalled();
+    expect(m.writeAudit).not.toHaveBeenCalled();
+  });
+  it.each([1, 2])("缺少第 %s 项模块权限时不读取发布来源", async (position) => {
+    if (position === 2) m.authorizeBrand.mockResolvedValueOnce(undefined);
+    m.authorizeBrand.mockRejectedValueOnce(new Error("ACCESS_DENIED"));
+    await expect(
+      publicationService.trackingSource("order", input, "user"),
+    ).rejects.toThrow("ACCESS_DENIED");
+    expect(m.findOrder).not.toHaveBeenCalled();
+  });
+  it("其他品牌的发布来源不可见", async () => {
+    m.findOrder.mockResolvedValue({
+      order: { ...order, brandId: "other" },
+      channel,
+    });
+    await expect(
+      publicationService.trackingSource("order", input, "user"),
+    ).rejects.toMatchObject({ status: 404 });
+  });
+  it.each(["submitted", "processing", "failed", "cancelled"])(
+    "%s 订单不能作为已发布追踪来源",
+    async (status) => {
+      m.findOrder.mockResolvedValue({
+        order: { ...order, status, resultUrl: "https://example.com/published" },
+        channel,
+      });
+      await expect(
+        publicationService.trackingSource("order", input, "user"),
+      ).rejects.toMatchObject({
+        code: "PUBLICATION_ORDER_NOT_PUBLISHED",
+        status: 409,
+      });
+    },
+  );
+  it.each([null, "javascript:alert(1)", "ftp://example.com/file"])(
+    "不可用的公开结果链接 %s 被拒绝",
+    async (resultUrl) => {
+      m.findOrder.mockResolvedValue({
+        order: {
+          ...order,
+          id: "11111111-1111-4111-8111-111111111111",
+          status: "published",
+          resultUrl,
+        },
+        channel,
+      });
+      await expect(
+        publicationService.trackingSource("order", input, "user"),
+      ).rejects.toMatchObject({
+        code: "PUBLICATION_RESULT_URL_UNAVAILABLE",
+        status: 422,
+      });
+    },
+  );
   it("渠道页面立即读取分页缓存，不等待完整上游目录", async () => {
     const page = {
       list: [channel],

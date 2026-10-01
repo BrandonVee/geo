@@ -3779,6 +3779,44 @@ paths:
           description: 聚合发布上游明确拒绝或请求结果不确定
         "504":
           description: 聚合发布上游超时且结果不确定
+  /v1/publication-orders/{orderId}/tracking-source:
+    get:
+      summary: 读取已发布订单的效果追踪来源
+      description: 同时校验 publication.read 与 resource.create 权限及品牌归属，只返回已发布订单的标题和 HTTP(S) 结果链接，不创建追踪或扣积分。
+      tags:
+        - Publications
+      security:
+        - cookieSession: []
+      parameters:
+        - in: path
+          name: orderId
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: "#/components/parameters/OrganizationId"
+        - $ref: "#/components/parameters/TeamBindingId"
+        - $ref: "#/components/parameters/BrandId"
+      responses:
+        "200":
+          description: 可用于追踪表单的已发布内容
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/PublicationTrackingSource"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: PUBLICATION_ORDER_NOT_FOUND，订单不存在或不属于当前企业与品牌
+        "409":
+          description: PUBLICATION_ORDER_NOT_PUBLISHED，订单尚未发布或已退稿
+        "422":
+          description: PUBLICATION_RESULT_URL_UNAVAILABLE，缺少有效的公开发布链接
   /v1/publication-orders/{orderId}/cancel:
     post:
       summary: 取消发布订单
@@ -5541,6 +5579,22 @@ components:
         organizationId:
           type: string
           format: uuid
+    PublicationTrackingSource:
+      type: object
+      required: [orderId, title, url]
+      properties:
+        orderId:
+          type: string
+          format: uuid
+        title:
+          type: string
+          minLength: 2
+          maxLength: 255
+        url:
+          type: string
+          format: uri
+          maxLength: 2000
+          pattern: "^https?://"
     PublicationOrderAction:
       type: object
       additionalProperties: false

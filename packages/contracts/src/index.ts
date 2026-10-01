@@ -1293,6 +1293,22 @@ export const publicationOrderActionSchema = z
     brandId: z.string().trim().min(1).max(128),
   })
   .strict();
+export const publicationTrackingSourceQuerySchema = publicationOrderActionSchema
+  .extend({ orderId: z.string().uuid() })
+  .strict();
+export const publicationTrackingSourceSchema = z.object({
+  orderId: z.string().uuid(),
+  title: z.string().trim().min(2).max(255),
+  url: z
+    .string()
+    .trim()
+    .url()
+    .max(2000)
+    .regex(/^https?:\/\//i),
+});
+export type PublicationTrackingSource = z.infer<
+  typeof publicationTrackingSourceSchema
+>;
 export const appealPublicationOrderSchema = publicationOrderActionSchema
   .extend({
     reason: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]),

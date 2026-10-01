@@ -24,6 +24,8 @@ JSON 请求使用 `Content-Type: application/json`；允许标准的 `applicatio
 
 列表筛选显式传递 `organizationId`、`teamBindingId`、`brandId` 等范围参数。调用方不得用前端隐藏选项代替服务端范围校验。
 
+已发布订单的 `GET /v1/publication-orders/{orderId}/tracking-source` 要求完整品牌范围、`publication.read` 与 `resource.create`，返回订单 ID、标题及公开结果链接，不创建追踪或扣费。订单在其他范围不可见返回 404，尚未发布或已退稿返回 409，缺少有效 HTTP(S) 结果链接返回 422。
+
 ## 响应格式
 
 成功响应：
@@ -62,7 +64,7 @@ JSON 请求使用 `Content-Type: application/json`；允许标准的 `applicatio
 | `402`             | 腾讯能力积分不足，或平台内部资源权益未配置、名额已满         |
 | `403`             | 已认证但缺少权限或数据范围                                   |
 | `404`             | 资源不存在或对当前范围不可见                                 |
-| `409`             | 初始化、唯一键、状态机并发冲突或计费报价已变化                 |
+| `409`             | 初始化、唯一键、状态机并发冲突或计费报价已变化               |
 | `410`             | 已弃用且不再接受写入的兼容资源                               |
 | `413`             | 请求体超过 4 MiB 上限（`PAYLOAD_TOO_LARGE`）                 |
 | `415`             | 正文不是受支持的 UTF-8 JSON 媒体类型                         |

@@ -23,7 +23,6 @@ import {
   Select,
   Space,
   Statistic,
-  Table,
   Tabs,
   Tag as AntTag,
   Typography,
@@ -38,6 +37,7 @@ import {
   useAnswerBitScope,
 } from "../use-answerbit-scope";
 import { DocumentLibrary } from "./document-library";
+import { AccessibleTable } from "../../accessible-table";
 import {
   createArticleJobSchema,
   traceArticleSchema,
@@ -51,6 +51,7 @@ import {
 } from "./generation-draft";
 import { useGenerationDraft } from "./use-generation-draft";
 import { useTrackingDraft } from "./use-tracking-draft";
+import { PublicationTrackingSource } from "./publication-tracking-source";
 type Article = {
   id: string;
   title: string;
@@ -1465,6 +1466,37 @@ export function ContentClient({
 
       {tab === "trace" ? (
         <Space direction="vertical" size="large" style={{ width: "100%" }}>
+          {searchParams.get("publicationOrderId") ? (
+            <PublicationTrackingSource
+              organizationId={organizationId}
+              teamBindingId={teamBindingId}
+              brandId={brandId}
+              canUse={scope.canWrite && scope.can("publication.read")}
+              ready={tracking.ready}
+              hasDraft={Boolean(
+                traceTitle || traceUrls || selectedTraceTags.length,
+              )}
+              pending={Boolean(tracking.pending)}
+              onUse={(source) => {
+                if (!tracking.ready || tracking.pending) return;
+                tracking.patch({
+                  title: source.title,
+                  urls: source.url,
+                  tags: [],
+                });
+                const params = new URLSearchParams(searchParams.toString());
+                params.delete("publicationOrderId");
+                router.replace(`${pathname}?${params}`, { scroll: false });
+                setTraceCreateOpen(true);
+              }}
+              onContinue={() => setTraceCreateOpen(true)}
+              onDismiss={() => {
+                const params = new URLSearchParams(searchParams.toString());
+                params.delete("publicationOrderId");
+                router.replace(`${pathname}?${params}`, { scroll: false });
+              }}
+            />
+          ) : null}
           {tracking.pending ? (
             <Alert
               type="info"
@@ -1573,7 +1605,7 @@ export function ContentClient({
             }
             title="追踪中的文章"
           >
-            <Table<Article>
+            <AccessibleTable<Article>
               columns={articleColumns}
               dataSource={articles}
               locale={{
@@ -1587,6 +1619,7 @@ export function ContentClient({
               pagination={false}
               rowKey="id"
               scroll={{ x: 760 }}
+              scrollRegionLabel="追踪文章目录，可横向滚动"
             />
             {scrollId ? (
               <Flex justify="center" style={{ marginTop: 16 }}>
