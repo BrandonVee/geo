@@ -60,7 +60,7 @@ pnpm db:release
 pnpm dev
 ```
 
-全新数据库先由 `packages/db/drizzle/v1.sql` 建立基线，再依次执行 `v2.sql` 媒体发布平台凭证、`v3.sql` 分级定价结构、`v4.sql` 本地文档库结构及历史生成内容回填、`v5.sql` AnswerBit 读取缓存、`v6.sql` 积分加价规则与 `v7.sql` 异步文章价格快照，随后执行 `v8.sql` 企业服务与积分到期日及 `v9.sql` 文档创建幂等键和原请求指纹，再执行 `v10.sql` 效果追踪幂等提交与结果状态、`v11.sql` 企业历史流水操作者受限显示查询、`v12.sql` 发布取消与申诉当前操作记录、`v13.sql` 个人视图创建幂等与删除标记，记录 schema `v13`、执行 seed `v2` 的幂等种子并完成 RLS 检查。升级到 v6 时，未修改的旧等级规则转为当前发布加价率；已由管理员修改的规则保留原实际扣费，旧折扣显示为负加价率。v7 为新文章任务保存提交时的价格快照，旧任务仍按执行时规则计价。后续 schema 变化继续通过 `pnpm db:generate` 生成增量迁移并递增 `vN`，不直接修改已发布迁移。Drizzle 快照使用四位序号文件名（如 `0008_snapshot.json`）并以 `prevId` 串联，避免混用版本名导致生成器误读旧快照或产生分叉。
+全新数据库先由 `packages/db/drizzle/v1.sql` 建立基线，再依次执行 `v2.sql` 媒体发布平台凭证、`v3.sql` 分级定价结构、`v4.sql` 本地文档库结构及历史生成内容回填、`v5.sql` AnswerBit 读取缓存、`v6.sql` 积分加价规则与 `v7.sql` 异步文章价格快照，随后执行 `v8.sql` 企业服务与积分到期日及 `v9.sql` 文档创建幂等键和原请求指纹，再执行 `v10.sql` 效果追踪幂等提交与结果状态、`v11.sql` 企业历史流水操作者受限显示查询、`v12.sql` 发布取消与申诉当前操作记录、`v13.sql` 个人视图创建幂等与删除标记、`v14.sql` 内容文件夹创建幂等与删除标记，记录 schema `v14`、执行 seed `v2` 的幂等种子并完成 RLS 检查。升级到 v6 时，未修改的旧等级规则转为当前发布加价率；已由管理员修改的规则保留原实际扣费，旧折扣显示为负加价率。v7 为新文章任务保存提交时的价格快照，旧任务仍按执行时规则计价。后续 schema 变化继续通过 `pnpm db:generate` 生成增量迁移并递增 `vN`，不直接修改已发布迁移。Drizzle 快照使用四位序号文件名（如 `0008_snapshot.json`）并以 `prevId` 串联，避免混用版本名导致生成器误读旧快照或产生分叉。
 
 访问：
 
@@ -128,6 +128,8 @@ CI 还会在全新 PostgreSQL 18 中连续执行两次 `pnpm db:release`，并�
 发布账本的真实 PostgreSQL 回归需先完成 `pnpm db:release`，再运行 `PUBLICATION_DB_TESTS=1 node scripts/run-with-env.mjs pnpm --filter @geo/db test`。测试仅使用新建 UUID 隔离数据并在结束时清理，覆盖并发幂等扣款、退款、零元订单与上游迟到状态；默认单元测试不连接数据库执行这些用例。
 
 文档库的真实 PostgreSQL 回归在完成 `pnpm db:release` 后运行 `CONTENT_DOCUMENT_DB_TESTS=1 node scripts/run-with-env.mjs pnpm --filter @geo/web exec vitest run src/server/repositories/content-documents.integration.test.ts`。测试使用新建 UUID 范围并清理数据，覆盖文档并发创建重放、原操作者与内容校验、编辑后创建重放、过期并发保存拒绝、历史恢复与归档版本校验及文件夹品牌隔离；默认测试跳过此用例。
+
+文件夹工作流回归由同一一次性数据库脚本以 `CONTENT_FOLDER_DB_TESTS=1` 执行 `src/server/repositories/content-folders.integration.test.ts`，覆盖同键并发创建、原操作者和品牌隔离、改名后创建重放、删除后禁止复活、名称复用、旧名称并发比较、删除保留活动与归档正文和历史、版本冲突及审计回滚。浏览器回归验证创建、改名、删除响应丢失后的刷新确认，原请求保持一致且只审计一次，并发改名保留输入供核对，旧删除确认拒绝覆盖最新名称。不可变历史随整个一次性数据库删除清理。
 
 成员额度的真实 PostgreSQL 并发回归在完成 `pnpm db:release` 后运行 `MEMBER_CAPACITY_DB_TESTS=1 node scripts/run-with-env.mjs pnpm --filter @geo/web exec vitest run src/server/repositories/members.integration.test.ts`。测试使用新建 UUID 范围并清理数据，覆盖并发新增、并发恢复与新增共同争用最后一个名额；默认测试跳过此用例。
 

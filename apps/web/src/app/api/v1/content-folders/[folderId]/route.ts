@@ -1,5 +1,5 @@
 import {
-  brandResourceQuerySchema,
+  contentFolderDeleteQuerySchema,
   updateContentFolderSchema,
 } from "@geo/contracts";
 import { createRequestId } from "@geo/core";
@@ -43,6 +43,7 @@ export async function PATCH(request: Request, context: Context) {
           user.id,
           requestId,
         ),
+        parsed.data.expectedName,
       ),
       requestId,
     });
@@ -59,7 +60,7 @@ export async function DELETE(request: Request, context: Context) {
       .string()
       .uuid()
       .safeParse((await context.params).folderId);
-    const scope = brandResourceQuerySchema.safeParse(
+    const scope = contentFolderDeleteQuerySchema.safeParse(
       Object.fromEntries(new URL(request.url).searchParams),
     );
     if (!id.success || !scope.success)
@@ -79,6 +80,7 @@ export async function DELETE(request: Request, context: Context) {
         user.id,
         requestId,
       ),
+      scope.data.expectedName,
     );
     return emptyResponse(requestId, { status: 204 });
   } catch (error) {

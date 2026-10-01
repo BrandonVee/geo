@@ -304,8 +304,8 @@ describe.skipIf(process.env.CONTENT_DOCUMENT_DB_TESTS !== "1")(
         "资料",
         userId,
       );
-      if (!folder) throw new Error("create folder failed");
-      folderId = folder.id;
+      if (folder.kind !== "created") throw new Error("create folder failed");
+      folderId = folder.row.id;
       expect(
         await contentDocumentRepository.update(
           scope,
@@ -330,11 +330,11 @@ describe.skipIf(process.env.CONTENT_DOCUMENT_DB_TESTS !== "1")(
       expect(crossBrand).toMatchObject({ ok: false, code: "FOLDER_NOT_FOUND" });
 
       expect(
-        await contentDocumentRepository.deleteFolder(scope, folderId),
-      ).toBe(true);
+        await contentDocumentRepository.deleteFolder(scope, folderId, userId),
+      ).toMatchObject({ kind: "deleted" });
       expect(
         await contentDocumentRepository.find(scope, documentId),
-      ).toMatchObject({ folderId: null });
+      ).toMatchObject({ folderId: null, currentVersion: 5 });
     });
   },
 );

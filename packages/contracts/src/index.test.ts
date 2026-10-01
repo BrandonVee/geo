@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   updateSavedViewSchema,
+  updateContentFolderSchema,
+  contentFolderDeleteQuerySchema,
   addOrganizationMemberSchema,
   adminAddOrganizationMemberSchema,
   adminBalanceTransactionQuerySchema,
@@ -1280,6 +1282,49 @@ describe("个人视图并发修改契约", () => {
         name: "新名称",
         expected: { name: "原视图", filters: {} },
       }).success,
+    ).toBe(false);
+  });
+});
+
+describe("文件夹并发校验契约", () => {
+  const scope = { organizationId, teamBindingId, brandId: "brand" };
+  it("兼容省略原名称，支持完整范围与原名称校验", () => {
+    expect(
+      updateContentFolderSchema.parse({ ...scope, name: "新名称" }),
+    ).toEqual({ ...scope, name: "新名称" });
+    expect(
+      contentFolderDeleteQuerySchema.parse({
+        ...scope,
+        expectedName: "原名称",
+      }),
+    ).toEqual({ ...scope, expectedName: "原名称" });
+  });
+  it.each(["", "x".repeat(81), null, 1])(
+    "拒绝非法原名称 %j",
+    (expectedName) => {
+      expect(
+        updateContentFolderSchema.safeParse({
+          ...scope,
+          name: "新名称",
+          expectedName,
+        }).success,
+      ).toBe(false);
+      expect(
+        contentFolderDeleteQuerySchema.safeParse({ ...scope, expectedName })
+          .success,
+      ).toBe(false);
+    },
+  );
+  it("删除拒绝缺少范围与额外字段", () => {
+    expect(
+      contentFolderDeleteQuerySchema.safeParse({
+        organizationId,
+        expectedName: "原名称",
+      }).success,
+    ).toBe(false);
+    expect(
+      contentFolderDeleteQuerySchema.safeParse({ ...scope, extra: true })
+        .success,
     ).toBe(false);
   });
 });

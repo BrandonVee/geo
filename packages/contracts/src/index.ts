@@ -732,7 +732,13 @@ export const createContentFolderSchema = z
     name: z.string().trim().min(1).max(80),
   })
   .strict();
-export const updateContentFolderSchema = createContentFolderSchema;
+export const updateContentFolderSchema = createContentFolderSchema.extend({
+  expectedName: z.string().min(1).max(80).optional(),
+});
+export const contentFolderDeleteQuerySchema =
+  contentFolderListQuerySchema.extend({
+    expectedName: z.string().min(1).max(80).optional(),
+  });
 export const restoreContentDocumentVersionSchema = z
   .object({
     ...brandScopeShape,

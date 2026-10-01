@@ -74,7 +74,12 @@ describe("database release readiness", () => {
     expect(migration).toContain("creation_key");
     expect(migration).toContain("creation_fingerprint");
     expect(migration).toContain("deleted_at");
-    expect(migration).toContain("saved_views_org_creation_key_ux");
+    expect(migration).toContain("content_folders_org_creation_key_ux");
+    const savedViewMigration = await readFile(
+      new URL("../drizzle/v13.sql", import.meta.url),
+      "utf8",
+    );
+    expect(savedViewMigration).toContain("saved_views_org_creation_key_ux");
     const publicationActionMigration = await readFile(
       new URL("../drizzle/v12.sql", import.meta.url),
       "utf8",

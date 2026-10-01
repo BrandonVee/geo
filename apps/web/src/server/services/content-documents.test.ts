@@ -301,10 +301,10 @@ describe("内容文档服务", () => {
       userId,
     );
 
-    mocks.deleteFolder.mockResolvedValueOnce(false);
+    mocks.deleteFolder.mockResolvedValueOnce({ kind: "missing" });
     await expect(
       contentDocumentService.deleteFolder(scope, "missing", userId, audit),
-    ).rejects.toMatchObject({ code: "CONTENT_FOLDER_NOT_FOUND" });
+    ).resolves.toBeUndefined();
     expect(mocks.writeAudit).toHaveBeenCalledTimes(1);
   });
 
@@ -380,5 +380,77 @@ describe("文章库平台与企业权限边界", () => {
       "resource.read",
     );
     expect(mocks.list).toHaveBeenCalledWith(input);
+  });
+});
+
+describe("文件夹请求恢复与原子审计", () => {
+  const folder = {
+    id: documentId,
+    ...scope,
+    name: "最新名称",
+    createdBy: userId,
+    creationKey: "private-key",
+    creationFingerprint: "private-hash",
+    deletedAt: null,
+  };
+  it("创建重放返回当前名称并隐藏内部记录", async () => {
+    mocks.createFolder.mockResolvedValue({ kind: "replayed", row: folder });
+    const result = await contentDocumentService.createFolder(
+      { ...scope, name: "原名称" },
+      userId,
+      audit,
+      "stable-key",
+    );
+    expect(result).toMatchObject({
+      id: documentId,
+      name: "最新名称",
+      replayed: true,
+    });
+    expect(result).not.toHaveProperty("creationKey");
+    expect(result).not.toHaveProperty("creationFingerprint");
+    expect(result).not.toHaveProperty("deletedAt");
+    expect(mocks.writeAudit).not.toHaveBeenCalled();
+  });
+  it.each([
+    ["conflict", "CONTENT_FOLDER_IDEMPOTENCY_CONFLICT"],
+    ["removed", "CONTENT_FOLDER_REMOVED"],
+  ])("创建 %s 不伪造成功", async (kind, code) => {
+    mocks.createFolder.mockResolvedValue({ kind });
+    await expect(
+      contentDocumentService.createFolder(
+        { ...scope, name: "原名称" },
+        userId,
+        audit,
+        "stable-key",
+      ),
+    ).rejects.toMatchObject({ status: 409, code });
+  });
+  it("改名与删除冲突返回可核对的最新名称", async () => {
+    mocks.updateFolder.mockResolvedValue({ kind: "conflict", row: folder });
+    mocks.deleteFolder.mockResolvedValue({ kind: "conflict", row: folder });
+    for (const action of [
+      () =>
+        contentDocumentService.updateFolder(
+          scope,
+          documentId,
+          "我的名称",
+          userId,
+          audit,
+          "原名称",
+        ),
+      () =>
+        contentDocumentService.deleteFolder(
+          scope,
+          documentId,
+          userId,
+          audit,
+          "原名称",
+        ),
+    ])
+      await expect(action()).rejects.toMatchObject({
+        code: "CONTENT_FOLDER_VERSION_CONFLICT",
+        details: { current: { id: documentId, name: "最新名称" } },
+      });
+    expect(mocks.writeAudit).not.toHaveBeenCalled();
   });
 });

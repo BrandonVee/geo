@@ -80,6 +80,30 @@ async function authorize(
   );
 }
 
+type Folder = Extract<
+  Awaited<ReturnType<typeof contentDocumentRepository.createFolder>>,
+  { kind: "created" }
+>["row"];
+function presentFolder(row: Folder) {
+  const {
+    creationKey: _,
+    creationFingerprint: __,
+    deletedAt: ___,
+    ...folder
+  } = row;
+  void _;
+  void __;
+  void ___;
+  return folder;
+}
+function folderConflict(row: Folder): never {
+  throw new ApiError(
+    409,
+    "CONTENT_FOLDER_VERSION_CONFLICT",
+    "文件夹已被其他页面修改，请核对最新名称后再操作",
+    { current: presentFolder(row) },
+  );
+}
 export const contentDocumentService = {
   async list(input: ContentDocumentListQuery, userId: string) {
     await authorize(input, userId, "resource.read");
@@ -247,28 +271,50 @@ export const contentDocumentService = {
 
   async listFolders(scope: Scope, userId: string) {
     await authorize(scope, userId, "resource.read");
-    return contentDocumentRepository.listFolders(scope);
+    return contentDocumentRepository.listFolders(scope, userId);
   },
 
   async createFolder(
     input: CreateContentFolderInput,
     userId: string,
     audit: AuditContext,
+    creationKey?: string,
   ) {
     await authorize(input, userId, "resource.create");
     try {
-      const folder = await contentDocumentRepository.createFolder(
+      const result = await contentDocumentRepository.createFolder(
         input,
         input.name,
         userId,
+        creationKey,
+        (tx, row) =>
+          writeAudit(
+            audit,
+            {
+              operation: "content.folder.create",
+              resourceType: "content_folder",
+              resourceId: row.id,
+              summary: `创建内容文件夹：${row.name}`,
+            },
+            tx,
+          ),
       );
-      await writeAudit(audit, {
-        operation: "content.folder.create",
-        resourceType: "content_folder",
-        resourceId: folder!.id,
-        summary: `创建内容文件夹：${input.name}`,
-      });
-      return folder;
+      if (result.kind === "conflict")
+        throw new ApiError(
+          409,
+          "CONTENT_FOLDER_IDEMPOTENCY_CONFLICT",
+          "原文件夹创建请求与本次内容或操作者不一致",
+        );
+      if (result.kind === "removed")
+        throw new ApiError(
+          409,
+          "CONTENT_FOLDER_REMOVED",
+          "原创建的文件夹已被删除，请新建文件夹",
+        );
+      return {
+        ...presentFolder(result.row),
+        replayed: result.kind === "replayed",
+      };
     } catch (error) {
       if (databaseErrorCode(error) === "23505")
         throw new ApiError(409, "CONTENT_FOLDER_EXISTS", "同名文件夹已存在");
@@ -282,23 +328,32 @@ export const contentDocumentService = {
     name: string,
     userId: string,
     audit: AuditContext,
+    expectedName?: string,
   ) {
     await authorize(scope, userId, "resource.update");
     try {
-      const folder = await contentDocumentRepository.updateFolder(
+      const result = await contentDocumentRepository.updateFolder(
         scope,
         folderId,
         name,
+        userId,
+        expectedName,
+        (tx, row) =>
+          writeAudit(
+            audit,
+            {
+              operation: "content.folder.update",
+              resourceType: "content_folder",
+              resourceId: folderId,
+              summary: `重命名内容文件夹：${row.name}`,
+            },
+            tx,
+          ),
       );
-      if (!folder)
+      if (result.kind === "missing")
         throw new ApiError(404, "CONTENT_FOLDER_NOT_FOUND", "文件夹不存在");
-      await writeAudit(audit, {
-        operation: "content.folder.update",
-        resourceType: "content_folder",
-        resourceId: folderId,
-        summary: `重命名内容文件夹：${name}`,
-      });
-      return folder;
+      if (result.kind === "conflict") folderConflict(result.row);
+      return presentFolder(result.row);
     } catch (error) {
       if (databaseErrorCode(error) === "23505")
         throw new ApiError(409, "CONTENT_FOLDER_EXISTS", "同名文件夹已存在");
@@ -311,15 +366,26 @@ export const contentDocumentService = {
     folderId: string,
     userId: string,
     audit: AuditContext,
+    expectedName?: string,
   ) {
     await authorize(scope, userId, "resource.delete");
-    if (!(await contentDocumentRepository.deleteFolder(scope, folderId)))
-      throw new ApiError(404, "CONTENT_FOLDER_NOT_FOUND", "文件夹不存在");
-    await writeAudit(audit, {
-      operation: "content.folder.delete",
-      resourceType: "content_folder",
-      resourceId: folderId,
-      summary: "删除内容文件夹并将其中文档移至未归档",
-    });
+    const result = await contentDocumentRepository.deleteFolder(
+      scope,
+      folderId,
+      userId,
+      expectedName,
+      (tx, row) =>
+        writeAudit(
+          audit,
+          {
+            operation: "content.folder.delete",
+            resourceType: "content_folder",
+            resourceId: row.id,
+            summary: "删除内容文件夹并将其中文档移至未归档",
+          },
+          tx,
+        ),
+    );
+    if (result.kind === "conflict") folderConflict(result.row);
   },
 };

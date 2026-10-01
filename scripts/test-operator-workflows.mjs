@@ -97,6 +97,18 @@ try {
     pnpm,
     [
       "--filter",
+      "@geo/web",
+      "exec",
+      "vitest",
+      "run",
+      "src/server/repositories/content-folders.integration.test.ts",
+    ],
+    { CONTENT_FOLDER_DB_TESTS: "1" },
+  );
+  await run(
+    pnpm,
+    [
+      "--filter",
       "@geo/db",
       "exec",
       "vitest",

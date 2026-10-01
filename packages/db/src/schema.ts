@@ -805,17 +805,21 @@ export const contentFolders = pgTable(
       .references(() => answerbitTeamBindings.id, { onDelete: "cascade" }),
     brandId: varchar("brand_id", { length: 128 }).notNull(),
     name: varchar("name", { length: 80 }).notNull(),
+    creationKey: varchar("creation_key", { length: 128 }),
+    creationFingerprint: varchar("creation_fingerprint", { length: 64 }),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
     createdBy: uuid("created_by")
       .notNull()
       .references(() => users.id),
     ...timestamps,
   },
   (t) => [
-    uniqueIndex("content_folders_scope_name_ux").on(
+    uniqueIndex("content_folders_scope_name_ux")
+      .on(t.organizationId, t.teamBindingId, t.brandId, t.name)
+      .where(sql`${t.deletedAt} is null`),
+    uniqueIndex("content_folders_org_creation_key_ux").on(
       t.organizationId,
-      t.teamBindingId,
-      t.brandId,
-      t.name,
+      t.creationKey,
     ),
     index("content_folders_scope_idx").on(
       t.organizationId,

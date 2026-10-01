@@ -1815,10 +1815,20 @@ paths:
           description: 文件夹列表
     post:
       summary: 创建内容文件夹
+      description: 创建与审计原子提交。同键重放校验原操作者、范围和创建名称；返回当前文件夹，后续改名不改变原指纹。兼容无键调用。
       tags:
         - Content Library
       security:
         - cookieSession: []
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: false
+          schema:
+            type: string
+            minLength: 8
+            maxLength: 128
+            pattern: "^[A-Za-z0-9._:-]+$"
       requestBody:
         required: true
         content:
@@ -1831,12 +1841,15 @@ paths:
         "415":
           $ref: "#/components/responses/UnsupportedMediaType"
         "201":
-          description: 文件夹已创建
+          description: 文件夹已创建，data.replayed=false
+        "200":
+          description: 原创建请求重放，data.replayed=true
         "409":
-          description: 当前品牌已存在同名文件夹
+          description: CONTENT_FOLDER_EXISTS（活动同名）、CONTENT_FOLDER_IDEMPOTENCY_CONFLICT（原请求不一致）或 CONTENT_FOLDER_REMOVED（原文件夹已删除，不能复活）
   /v1/content-folders/{folderId}:
     patch:
       summary: 重命名内容文件夹
+      description: 可选 expectedName 校验原名称；目标名称已达到时重放成功，不重复审计。
       tags:
         - Content Library
       security:
@@ -1853,16 +1866,21 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/ContentFolderWrite"
+              $ref: "#/components/schemas/ContentFolderRename"
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
         "415":
           $ref: "#/components/responses/UnsupportedMediaType"
         "200":
-          description: 文件夹已重命名
+          description: 文件夹已重命名或已达到目标名称
+        "404":
+          description: CONTENT_FOLDER_NOT_FOUND
+        "409":
+          description: CONTENT_FOLDER_EXISTS 或 CONTENT_FOLDER_VERSION_CONFLICT；后者 details.current 返回当前文件夹
     delete:
       summary: 删除文件夹并把其中的文档移至未归档
+      description: 删除标记、文档移位、新版本快照和审计原子提交。保留所有正文、状态及历史；已归档文档同样递增版本。
       tags:
         - Content Library
       security:
@@ -1877,9 +1895,18 @@ paths:
         - $ref: "#/components/parameters/OrganizationId"
         - $ref: "#/components/parameters/TeamBindingId"
         - $ref: "#/components/parameters/BrandId"
+        - in: query
+          name: expectedName
+          required: false
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 80
       responses:
         "204":
-          description: 文件夹已删除
+          description: 文件夹已删除或在当前范围已不存在；重复删除不新增版本或审计
+        "409":
+          description: CONTENT_FOLDER_VERSION_CONFLICT；details.current 返回当前文件夹，未改变文档
   /v1/answerbit/metering/usage:
     get:
       summary: 获取 AnswerBit 当前周期用量和积分概况
@@ -5910,6 +5937,32 @@ components:
           type: string
           maxLength: 128
         name:
+          type: string
+          minLength: 1
+          maxLength: 80
+    ContentFolderRename:
+      type: object
+      additionalProperties: false
+      required:
+        - organizationId
+        - teamBindingId
+        - brandId
+        - name
+      properties:
+        organizationId:
+          type: string
+          format: uuid
+        teamBindingId:
+          type: string
+          format: uuid
+        brandId:
+          type: string
+          maxLength: 128
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        expectedName:
           type: string
           minLength: 1
           maxLength: 80

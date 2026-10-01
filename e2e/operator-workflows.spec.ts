@@ -7250,6 +7250,242 @@ test.describe("真实运营操作闭环", () => {
     });
   });
 
+  test("文件夹创建改名删除响应丢失，刷新后确认原请求且只审计一次", async ({
+    page,
+  }) => {
+    const runtimeErrors: string[] = [];
+    page.on("pageerror", (error) => runtimeErrors.push(error.message));
+    page.on("console", (entry) => {
+      if (
+        /not connected|content security policy|hydration|validateDOMNesting/i.test(
+          entry.text(),
+        )
+      )
+        runtimeErrors.push(entry.text());
+    });
+    await mockBusinessApis(page);
+    await page.route("**/api/v1/content-folders**", (route) =>
+      route.continue(),
+    );
+    await page.route("**/api/v1/content-documents**", (route) =>
+      route.continue(),
+    );
+    const submissions: {
+      method: string;
+      key?: string;
+      input: unknown;
+      status: number;
+    }[] = [];
+    const lost = new Set<string>();
+    await page.route("**/api/v1/content-folders**", async (route) => {
+      const method = route.request().method();
+      if (method === "GET") return route.continue();
+      const response = await route.fetch();
+      submissions.push({
+        method,
+        key: route.request().headers()["idempotency-key"],
+        input:
+          method === "DELETE"
+            ? new URL(route.request().url()).search
+            : route.request().postDataJSON(),
+        status: response.status(),
+      });
+      if (!lost.has(method)) {
+        lost.add(method);
+        return route.abort("failed");
+      }
+      return route.fulfill({ response });
+    });
+    await page.goto(`${scopedPath("/dashboard/content")}&stage=library`);
+    await page.getByRole("button", { name: "新建文件夹", exact: true }).click();
+    let modal = page.getByRole("dialog", { name: "新建文件夹", exact: true });
+    await modal.getByLabel("文件夹名称").fill("原创建目录");
+    await modal
+      .getByRole("button", { name: "创建文件夹", exact: true })
+      .click();
+    await expect(
+      modal.getByText("上次文件夹操作待确认，请先确认原操作。"),
+    ).toBeVisible();
+    await expect(modal.getByLabel("文件夹名称")).toHaveValue("原创建目录");
+    await expect(modal.getByLabel("文件夹名称")).toBeDisabled();
+    await modal.getByRole("button", { name: "Close" }).click();
+    await page.reload();
+    await expect(
+      page.getByRole("button", { name: "新建文件夹", exact: true }),
+    ).toBeDisabled();
+    await page
+      .getByRole("button", { name: "确认原文件夹操作", exact: true })
+      .click();
+    await expect(
+      page.getByRole("button", {
+        name: "重命名文件夹 原创建目录",
+        exact: true,
+      }),
+    ).toBeEnabled();
+    await page
+      .getByRole("button", { name: "重命名文件夹 原创建目录", exact: true })
+      .click();
+    modal = page.getByRole("dialog", { name: "重命名文件夹", exact: true });
+    await modal.getByLabel("文件夹名称").fill("改名目录");
+    await modal
+      .getByRole("button", { name: "保存文件夹", exact: true })
+      .click();
+    await expect(
+      modal.getByText("上次文件夹操作待确认，请先确认原操作。"),
+    ).toBeVisible();
+    await modal.getByRole("button", { name: "Close" }).click();
+    await page.reload();
+    await page
+      .getByRole("button", { name: "确认原文件夹操作", exact: true })
+      .click();
+    await expect(
+      page.getByRole("button", { name: "删除文件夹 改名目录", exact: true }),
+    ).toBeEnabled();
+    for (const width of [390, 768, 1280, 1440]) {
+      await page.setViewportSize({ width, height: 900 });
+      const button = page.getByRole("button", {
+        name: "删除文件夹 改名目录",
+        exact: true,
+      });
+      await button.click({ trial: true });
+    }
+    await page
+      .getByRole("button", { name: "删除文件夹 改名目录", exact: true })
+      .click();
+    await page.getByRole("button", { name: /确\s*定/, exact: true }).click();
+    await expect(
+      page.getByText("文件夹操作结果待确认", { exact: true }),
+    ).toBeVisible();
+    await page.reload();
+    await page
+      .getByRole("button", { name: "确认原文件夹操作", exact: true })
+      .click();
+    await expect(
+      page.getByRole("button", { name: "新建文件夹", exact: true }),
+    ).toBeEnabled();
+    expect(submissions.map((s) => [s.method, s.status])).toEqual([
+      ["POST", 201],
+      ["POST", 200],
+      ["PATCH", 200],
+      ["PATCH", 200],
+      ["DELETE", 204],
+      ["DELETE", 204],
+    ]);
+    for (let j = 0; j < submissions.length; j += 2)
+      expect(submissions[j + 1]).toEqual({
+        ...submissions[j],
+        status: submissions[j + 1].status,
+      });
+    const folders = await database.db
+      .select()
+      .from(database.contentFolders)
+      .where(
+        operators.eq(
+          database.contentFolders.organizationId,
+          fixture.scopes[0].organizationId,
+        ),
+      );
+    expect(folders).toHaveLength(1);
+    expect(folders[0]).toMatchObject({
+      name: "改名目录",
+      creationKey: submissions[0].key,
+      deletedAt: expect.any(Date),
+    });
+    const audits = await database.db
+      .select()
+      .from(database.operationLogs)
+      .where(operators.eq(database.operationLogs.resourceId, folders[0].id));
+    expect(audits.map((a) => a.operation).sort()).toEqual([
+      "content.folder.create",
+      "content.folder.delete",
+      "content.folder.update",
+    ]);
+    expect(runtimeErrors).toEqual([]);
+  });
+
+  test("文件夹并发改名保留输入并核对最新名称，旧删除确认拒绝覆盖", async ({
+    page,
+  }) => {
+    await mockBusinessApis(page);
+    await page.route("**/api/v1/content-folders**", (route) =>
+      route.continue(),
+    );
+    await page.route("**/api/v1/content-documents**", (route) =>
+      route.continue(),
+    );
+    await page.goto(`${scopedPath("/dashboard/content")}&stage=library`);
+    const { organizationId, teamBindingId, brandId } = fixture.scopes[0];
+    const scope = { organizationId, teamBindingId, brandId };
+    const headers = { Origin: new URL(page.url()).origin };
+    const created = await page.request.post("/api/v1/content-folders", {
+      headers,
+      data: { ...scope, name: "多人目录" },
+    });
+    expect(created.status()).toBe(201);
+    const folder = (await created.json()).data;
+    await page.getByRole("button", { name: /刷新$/ }).first().click();
+    await page
+      .getByRole("button", { name: "重命名文件夹 多人目录", exact: true })
+      .click();
+    const modal = page.getByRole("dialog", {
+      name: "重命名文件夹",
+      exact: true,
+    });
+    await modal.getByLabel("文件夹名称").fill("我的名称");
+    expect(
+      (
+        await page.request.patch(`/api/v1/content-folders/${folder.id}`, {
+          headers,
+          data: { ...scope, name: "他人名称", expectedName: "多人目录" },
+        })
+      ).status(),
+    ).toBe(200);
+    await modal
+      .getByRole("button", { name: "保存文件夹", exact: true })
+      .click();
+    await expect(
+      modal.getByText("最新文件夹名称：他人名称", { exact: true }),
+    ).toBeVisible();
+    await expect(modal.getByLabel("文件夹名称")).toHaveValue("我的名称");
+    await expect(
+      modal.getByRole("button", { name: "保存文件夹", exact: true }),
+    ).toBeDisabled();
+    await modal
+      .getByRole("button", { name: "采用最新名称继续编辑", exact: true })
+      .click();
+    await modal
+      .getByRole("button", { name: "保存文件夹", exact: true })
+      .click();
+    await expect(modal).toHaveCount(0);
+    await page
+      .getByRole("button", { name: "删除文件夹 我的名称", exact: true })
+      .click();
+    expect(
+      (
+        await page.request.patch(`/api/v1/content-folders/${folder.id}`, {
+          headers,
+          data: { ...scope, name: "最新目录", expectedName: "我的名称" },
+        })
+      ).status(),
+    ).toBe(200);
+    await page.getByRole("button", { name: /确\s*定/, exact: true }).click();
+    await expect(
+      page.getByRole("button", { name: "删除文件夹 最新目录", exact: true }),
+    ).toBeEnabled();
+    const [row] = await database.db
+      .select()
+      .from(database.contentFolders)
+      .where(operators.eq(database.contentFolders.id, folder.id));
+    expect(row).toMatchObject({ name: "最新目录", deletedAt: null });
+    const logs = await database.db
+      .select()
+      .from(database.operationLogs)
+      .where(operators.eq(database.operationLogs.resourceId, folder.id));
+    expect(
+      logs.filter((l) => l.operation === "content.folder.delete"),
+    ).toHaveLength(0);
+  });
+
   for (const source of ["manual", "imported"] as const) {
     test(`${source === "manual" ? "新建" : "导入"}文档成功响应丢失，刷新重试找回原文档并保留之后的编辑`, async ({
       page,

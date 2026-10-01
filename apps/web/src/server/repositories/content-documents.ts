@@ -16,6 +16,9 @@ import {
   contentDocumentVersions,
   contentFolders,
   db,
+  withTenantDbContext,
+  assertEnterpriseAccess,
+  type DatabaseTransaction,
 } from "@geo/db";
 import type {
   ContentDocumentListQuery,
@@ -35,6 +38,21 @@ type Scope = {
   brandId: string;
 };
 
+type FolderRow = typeof contentFolders.$inferSelect;
+type FolderAudit = (tx: DatabaseTransaction, row: FolderRow) => Promise<void>;
+const folderConditions = (scope: Scope, id?: string) => [
+  eq(contentFolders.organizationId, scope.organizationId),
+  eq(contentFolders.teamBindingId, scope.teamBindingId),
+  eq(contentFolders.brandId, scope.brandId),
+  id ? eq(contentFolders.id, id) : undefined,
+  isNull(contentFolders.deletedAt),
+];
+async function lockLibrary(tx: DatabaseTransaction, scope: Scope) {
+  await assertEnterpriseAccess(scope.organizationId, false, tx);
+  await tx.execute(
+    sql`select pg_advisory_xact_lock(hashtextextended(${JSON.stringify(["content-library", scope.organizationId, scope.teamBindingId, scope.brandId])}, 0))`,
+  );
+}
 const scopeConditions = (scope: Scope) => [
   eq(contentDocuments.organizationId, scope.organizationId),
   eq(contentDocuments.teamBindingId, scope.teamBindingId),
@@ -55,6 +73,7 @@ async function folderExists(
         eq(contentFolders.organizationId, scope.organizationId),
         eq(contentFolders.teamBindingId, scope.teamBindingId),
         eq(contentFolders.brandId, scope.brandId),
+        isNull(contentFolders.deletedAt),
       ),
     )
     .limit(1);
@@ -199,6 +218,7 @@ export const contentDocumentRepository = {
       )
       .digest("hex");
     return db.transaction(async (tx) => {
+      await lockLibrary(tx, input);
       if (creationKey) {
         await tx.execute(
           sql`select pg_advisory_xact_lock(hashtextextended(${JSON.stringify(["content-document-create", input.organizationId, creationKey])}, 0))`,
@@ -282,6 +302,7 @@ export const contentDocumentRepository = {
     userId: string,
   ) {
     return db.transaction(async (tx) => {
+      await lockLibrary(tx, scope);
       await tx.execute(
         sql`select pg_advisory_xact_lock(hashtext(${documentId}))`,
       );
@@ -386,82 +407,164 @@ export const contentDocumentRepository = {
     );
   },
 
-  listFolders(scope: Scope) {
-    return db
-      .select({
-        id: contentFolders.id,
-        name: contentFolders.name,
-        createdBy: contentFolders.createdBy,
-        createdAt: contentFolders.createdAt,
-        updatedAt: contentFolders.updatedAt,
-        documentCount: sql<number>`count(${contentDocuments.id}) filter (where ${contentDocuments.status} <> 'archived')::int`,
-      })
-      .from(contentFolders)
-      .leftJoin(
-        contentDocuments,
-        eq(contentDocuments.folderId, contentFolders.id),
-      )
-      .where(
-        and(
-          eq(contentFolders.organizationId, scope.organizationId),
-          eq(contentFolders.teamBindingId, scope.teamBindingId),
-          eq(contentFolders.brandId, scope.brandId),
-        ),
-      )
-      .groupBy(contentFolders.id)
-      .orderBy(asc(contentFolders.name));
-  },
-
-  async createFolder(scope: Scope, name: string, userId: string) {
-    const [folder] = await db
-      .insert(contentFolders)
-      .values({ ...scope, name, createdBy: userId })
-      .returning();
-    return folder;
-  },
-
-  async updateFolder(scope: Scope, folderId: string, name: string) {
-    const [folder] = await db
-      .update(contentFolders)
-      .set({ name, updatedAt: new Date() })
-      .where(
-        and(
-          eq(contentFolders.id, folderId),
-          eq(contentFolders.organizationId, scope.organizationId),
-          eq(contentFolders.teamBindingId, scope.teamBindingId),
-          eq(contentFolders.brandId, scope.brandId),
-        ),
-      )
-      .returning();
-    return folder;
-  },
-
-  deleteFolder(scope: Scope, folderId: string) {
-    return db.transaction(async (tx) => {
-      const [folder] = await tx
-        .select({ id: contentFolders.id })
+  // @project-doc docs/domains/geo_operations.md#article_jobs
+  listFolders(scope: Scope, userId: string) {
+    return withTenantDbContext({ ...scope, userId }, (tx) =>
+      tx
+        .select({
+          id: contentFolders.id,
+          name: contentFolders.name,
+          createdBy: contentFolders.createdBy,
+          createdAt: contentFolders.createdAt,
+          updatedAt: contentFolders.updatedAt,
+          documentCount: sql<number>`count(${contentDocuments.id}) filter (where ${contentDocuments.status} <> 'archived')::int`,
+        })
         .from(contentFolders)
-        .where(
+        .leftJoin(
+          contentDocuments,
           and(
-            eq(contentFolders.id, folderId),
-            eq(contentFolders.organizationId, scope.organizationId),
-            eq(contentFolders.teamBindingId, scope.teamBindingId),
-            eq(contentFolders.brandId, scope.brandId),
-          ),
-        )
-        .limit(1);
-      if (!folder) return false;
-      await tx
-        .update(contentDocuments)
-        .set({ folderId: null, updatedAt: new Date() })
-        .where(
-          and(
-            eq(contentDocuments.folderId, folderId),
+            eq(contentDocuments.folderId, contentFolders.id),
             ...scopeConditions(scope),
           ),
+        )
+        .where(and(...folderConditions(scope)))
+        .groupBy(contentFolders.id)
+        .orderBy(asc(contentFolders.name)),
+    );
+  },
+
+  createFolder(
+    scope: Scope,
+    name: string,
+    userId: string,
+    creationKey?: string,
+    audit?: FolderAudit,
+  ) {
+    const fingerprint = createHash("sha256")
+      .update(
+        JSON.stringify({
+          teamBindingId: scope.teamBindingId,
+          brandId: scope.brandId,
+          name,
+        }),
+      )
+      .digest("hex");
+    return withTenantDbContext({ ...scope, userId }, async (tx) => {
+      await lockLibrary(tx, scope);
+      if (creationKey) {
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${JSON.stringify(["content-folder-create", scope.organizationId, creationKey])}, 0))`,
         );
-      await tx.delete(contentFolders).where(eq(contentFolders.id, folderId));
-      return true;
+        const [existing] = await tx
+          .select()
+          .from(contentFolders)
+          .where(
+            and(
+              eq(contentFolders.organizationId, scope.organizationId),
+              eq(contentFolders.creationKey, creationKey),
+            ),
+          )
+          .limit(1);
+        if (existing) {
+          if (
+            existing.createdBy !== userId ||
+            existing.creationFingerprint !== fingerprint ||
+            existing.teamBindingId !== scope.teamBindingId ||
+            existing.brandId !== scope.brandId
+          )
+            return { kind: "conflict" as const };
+          if (existing.deletedAt) return { kind: "removed" as const };
+          return { kind: "replayed" as const, row: existing };
+        }
+      }
+      const [row] = await tx
+        .insert(contentFolders)
+        .values({
+          organizationId: scope.organizationId,
+          teamBindingId: scope.teamBindingId,
+          brandId: scope.brandId,
+          name,
+          createdBy: userId,
+          creationKey,
+          creationFingerprint: creationKey ? fingerprint : undefined,
+        })
+        .returning();
+      if (audit) await audit(tx, row);
+      return { kind: "created" as const, row };
+    });
+  },
+
+  updateFolder(
+    scope: Scope,
+    folderId: string,
+    name: string,
+    userId: string,
+    expectedName?: string,
+    audit?: FolderAudit,
+  ) {
+    return withTenantDbContext({ ...scope, userId }, async (tx) => {
+      await lockLibrary(tx, scope);
+      const [current] = await tx
+        .select()
+        .from(contentFolders)
+        .where(and(...folderConditions(scope, folderId)))
+        .for("update");
+      if (!current) return { kind: "missing" as const };
+      if (current.name === name)
+        return { kind: "replayed" as const, row: current };
+      if (expectedName !== undefined && current.name !== expectedName)
+        return { kind: "conflict" as const, row: current };
+      const [row] = await tx
+        .update(contentFolders)
+        .set({ name, updatedAt: new Date() })
+        .where(and(...folderConditions(scope, folderId)))
+        .returning();
+      if (audit) await audit(tx, row);
+      return { kind: "updated" as const, row };
+    });
+  },
+
+  deleteFolder(
+    scope: Scope,
+    folderId: string,
+    userId: string,
+    expectedName?: string,
+    audit?: FolderAudit,
+  ) {
+    return withTenantDbContext({ ...scope, userId }, async (tx) => {
+      await lockLibrary(tx, scope);
+      const [current] = await tx
+        .select()
+        .from(contentFolders)
+        .where(and(...folderConditions(scope, folderId)))
+        .for("update");
+      if (!current) return { kind: "missing" as const };
+      if (expectedName !== undefined && current.name !== expectedName)
+        return { kind: "conflict" as const, row: current };
+      const documents = and(
+        eq(contentDocuments.folderId, folderId),
+        ...scopeConditions(scope),
+      );
+      // Copy snapshots inside PostgreSQL rather than loading every document body into memory.
+      await tx.execute(sql`insert into ${contentDocumentVersions} (document_id, organization_id, version, title, body, status, language, tags, change_summary, created_by)
+        select ${contentDocuments.id}, ${contentDocuments.organizationId}, ${contentDocuments.currentVersion} + 1, ${contentDocuments.title}, ${contentDocuments.body}, ${contentDocuments.status}, ${contentDocuments.language}, ${contentDocuments.tags}, ${"文件夹删除，移至未归档"}, ${userId}::uuid
+        from ${contentDocuments} where ${documents}`);
+      await tx
+        .update(contentDocuments)
+        .set({
+          folderId: null,
+          currentVersion: sql`${contentDocuments.currentVersion} + 1`,
+          updatedBy: userId,
+          updatedAt: new Date(),
+        })
+        .where(documents);
+      const [row] = await tx
+        .update(contentFolders)
+        .set({ deletedAt: new Date(), updatedAt: new Date() })
+        .where(and(...folderConditions(scope, folderId)))
+        .returning();
+      if (audit) await audit(tx, row);
+      return { kind: "deleted" as const, row };
     });
   },
 };

@@ -38,7 +38,11 @@ import {
   type TableColumnsType,
 } from "antd";
 import { createContentDocumentSchema } from "@geo/contracts";
-import { ZodError } from "zod";
+import { z, ZodError } from "zod";
+import {
+  useDirectoryAttempt,
+  type DirectoryAttempt,
+} from "../directory-attempt";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { scopeQuery } from "../use-answerbit-scope";
 import { AccessibleSelect } from "../../accessible-select";
@@ -130,6 +134,7 @@ async function api<T>(url: string, init?: RequestInit) {
       body.error?.message ?? "操作失败",
       body.error?.code,
       response.status,
+      body.error?.details,
     );
   return body.data as T;
 }
@@ -139,6 +144,7 @@ class DocumentApiError extends Error {
     message: string,
     readonly code?: string,
     readonly status?: number,
+    readonly details?: unknown,
   ) {
     super(message);
   }
@@ -188,6 +194,22 @@ export function DocumentLibrary({
   const [folderModalOpen, setFolderModalOpen] = useState(false);
   const [editingFolder, setEditingFolder] = useState<Folder>();
   const [folderSaving, setFolderSaving] = useState(false);
+  const [folderInitialName, setFolderInitialName] = useState("");
+  const [folderError, setFolderError] = useState("");
+  const [folderConflict, setFolderConflict] = useState<{
+    id: string;
+    name: string;
+  }>();
+  const folderSubmitting = useRef(false);
+  const folderAttempt = useDirectoryAttempt(
+    `geo.content-folder.${userId}.${scope.organizationId}.${scope.teamBindingId}.${scope.brandId}`,
+    true,
+  );
+  const folderBlocked =
+    !folderAttempt.ready ||
+    Boolean(folderAttempt.pending) ||
+    folderAttempt.inFlight;
+
   const [editorForm] = Form.useForm<EditorValues>();
   const [editorInitialValues, setEditorInitialValues] =
     useState<Partial<EditorValues>>();
@@ -205,6 +227,9 @@ export function DocumentLibrary({
   const pendingCreation = useRef<DocumentDraft["creation"]>(undefined);
   const { modal } = App.useApp();
   const [folderForm] = Form.useForm<{ name: string }>();
+  useEffect(() => {
+    if (folderModalOpen) folderForm.setFieldsValue({ name: folderInitialName });
+  }, [folderModalOpen, folderForm, folderInitialName]);
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -663,47 +688,204 @@ export function DocumentLibrary({
     });
   }
 
-  async function createFolder(values: { name: string }) {
+  useEffect(() => {
+    if (folderAttempt.resolvedVersion) void load();
+  }, [folderAttempt.resolvedVersion, load]);
+
+  type FolderAction = Extract<
+    NonNullable<DirectoryAttempt["form"]>,
+    { kind: "content_folder" }
+  >["action"];
+  async function runFolderAction(
+    action: FolderAction,
+    original?: DirectoryAttempt,
+  ) {
+    const allowed = action.operation === "delete" ? canDelete : canWrite;
+    if (
+      !allowed ||
+      folderSubmitting.current ||
+      folderAttempt.inFlight ||
+      (!original && folderBlocked)
+    )
+      return;
+    if (
+      action.input.organizationId !== scope.organizationId ||
+      action.input.teamBindingId !== scope.teamBindingId ||
+      action.input.brandId !== scope.brandId
+    ) {
+      setFolderError("原文件夹操作的范围不一致，请先核对原记录。");
+      return;
+    }
+    const name =
+      action.operation === "delete"
+        ? (action.input.expectedName ?? "原文件夹")
+        : action.input.name;
+    const pending: DirectoryAttempt = original ?? {
+      id: crypto.randomUUID(),
+      operation:
+        action.operation === "create"
+          ? "创建文件夹"
+          : action.operation === "rename"
+            ? "重命名文件夹"
+            : "删除文件夹",
+      submittedAt: new Date().toISOString(),
+      details: [{ label: "文件夹名称", value: name }],
+      form: { kind: "content_folder", action },
+    };
+    if (!folderAttempt.begin(pending)) return;
+    folderSubmitting.current = true;
     setFolderSaving(true);
+    setFolderError("");
+    setFolderConflict(undefined);
     try {
-      await api<Folder>(
-        editingFolder
-          ? `/api/v1/content-folders/${editingFolder.id}`
-          : "/api/v1/content-folders",
+      const result = await api<Folder>(
+        action.operation === "create"
+          ? "/api/v1/content-folders"
+          : `/api/v1/content-folders/${action.folderId}${
+              action.operation === "delete"
+                ? `?${new URLSearchParams(
+                    Object.entries(action.input)
+                      .filter(([, value]) => value !== undefined)
+                      .map(([key, value]) => [key, String(value)]),
+                  )}`
+                : ""
+            }`,
         {
-          method: editingFolder ? "PATCH" : "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ ...scopeParams, name: values.name }),
+          method:
+            action.operation === "create"
+              ? "POST"
+              : action.operation === "rename"
+                ? "PATCH"
+                : "DELETE",
+          headers:
+            action.operation === "delete"
+              ? undefined
+              : {
+                  "content-type": "application/json",
+                  ...(action.operation === "create"
+                    ? { "Idempotency-Key": pending.id }
+                    : {}),
+                },
+          body:
+            action.operation === "delete"
+              ? undefined
+              : JSON.stringify(action.input),
         },
       );
-      if (!mounted.current) return;
-      folderForm.resetFields();
+      if (
+        action.operation !== "delete" &&
+        (!result?.id || typeof result.name !== "string")
+      )
+        throw new Error("文件夹响应未确认，请继续确认原操作。");
+      if (!folderAttempt.finish(pending.id) || !mounted.current) return;
       setFolderModalOpen(false);
       setEditingFolder(undefined);
-      onMessage(editingFolder ? "文件夹已重命名" : "文件夹已创建");
+      if (action.operation === "delete" && folderFilter === action.folderId)
+        setFolderFilter("all");
+      onMessage(
+        action.operation === "create"
+          ? "文件夹已创建"
+          : action.operation === "rename"
+            ? "文件夹已重命名"
+            : "文件夹已删除，原有文档已移至未归档",
+      );
       await load();
     } catch (error) {
-      if (mounted.current)
-        onMessage(error instanceof Error ? error.message : "文件夹创建失败");
+      if (
+        error instanceof DocumentApiError &&
+        error.code === "CONTENT_FOLDER_REMOVED"
+      ) {
+        folderAttempt.finish(pending.id);
+        if (mounted.current) {
+          setFolderModalOpen(false);
+          onMessage(
+            "原创建的文件夹已被删除，本次确认已结束；如需整理请新建文件夹。",
+          );
+          await load();
+        }
+        return;
+      }
+      if (
+        error instanceof DocumentApiError &&
+        (error.status ?? 0) >= 400 &&
+        (error.status ?? 0) < 500 &&
+        (!original ||
+          [
+            "CONTENT_FOLDER_VERSION_CONFLICT",
+            "CONTENT_FOLDER_NOT_FOUND",
+            "CONTENT_FOLDER_EXISTS",
+          ].includes(error.code ?? ""))
+      )
+        folderAttempt.finish(pending.id);
+      if (!mounted.current) return;
+      const latest =
+        error instanceof DocumentApiError &&
+        error.code === "CONTENT_FOLDER_VERSION_CONFLICT"
+          ? z
+              .object({
+                current: z.object({
+                  id: z.string().uuid(),
+                  name: z.string().min(1).max(80),
+                }),
+              })
+              .safeParse(error.details)
+          : undefined;
+      if (latest?.success && action.operation === "rename") {
+        setEditingFolder({ ...latest.data.current, documentCount: 0 });
+        setFolderInitialName(action.input.name);
+        setFolderConflict(latest.data.current);
+        setFolderModalOpen(true);
+      } else if (
+        error instanceof DocumentApiError &&
+        error.code === "CONTENT_FOLDER_EXISTS" &&
+        action.operation !== "delete"
+      ) {
+        setEditingFolder(
+          action.operation === "rename"
+            ? {
+                id: action.folderId,
+                name: action.input.expectedName ?? action.input.name,
+                documentCount: 0,
+              }
+            : undefined,
+        );
+        setFolderInitialName(action.input.name);
+        setFolderModalOpen(true);
+      }
+      const message =
+        error instanceof TypeError
+          ? "文件夹操作结果暂未确认，请确认原操作。"
+          : error instanceof Error
+            ? error.message
+            : "文件夹操作未确认";
+      setFolderError(message);
+      onMessage(message);
+      if (action.operation === "delete" && latest?.success) await load();
     } finally {
+      folderAttempt.settle(pending.id);
+      folderSubmitting.current = false;
       if (mounted.current) setFolderSaving(false);
     }
   }
-
-  async function deleteFolder(folderId: string) {
-    try {
-      await api(
-        `/api/v1/content-folders/${folderId}?${scopeQuery(scopeParams)}`,
-        { method: "DELETE" },
-      );
-      if (!mounted.current) return;
-      if (folderFilter === folderId) setFolderFilter("all");
-      onMessage("文件夹已删除，原有文档已移至未归档");
-      await load();
-    } catch (error) {
-      if (mounted.current)
-        onMessage(error instanceof Error ? error.message : "文件夹删除失败");
-    }
+  async function createFolder(values: { name: string }) {
+    const name = values.name.trim();
+    if (!name || name.length > 80 || folderConflict) return;
+    return runFolderAction(
+      editingFolder
+        ? {
+            operation: "rename",
+            folderId: editingFolder.id,
+            input: { ...scopeParams, name, expectedName: editingFolder.name },
+          }
+        : { operation: "create", input: { ...scopeParams, name } },
+    );
+  }
+  async function deleteFolder(folder: Folder) {
+    return runFolderAction({
+      operation: "delete",
+      folderId: folder.id,
+      input: { ...scopeParams, expectedName: folder.name },
+    });
   }
 
   async function archiveDocument(document: DocumentDetail) {
@@ -910,16 +1092,83 @@ export function DocumentLibrary({
         </Col>
       </Row>
 
+      {folderAttempt.storageError ? (
+        <Alert type="warning" showIcon message={folderAttempt.storageError} />
+      ) : null}
+      {folderAttempt.pending?.form?.kind === "content_folder" ? (
+        <Alert
+          type="warning"
+          showIcon
+          message={
+            folderAttempt.inFlight
+              ? "原文件夹操作仍在提交"
+              : "文件夹操作结果待确认"
+          }
+          description={
+            <Space direction="vertical">
+              <Typography.Text>
+                原操作：{folderAttempt.pending.operation}
+              </Typography.Text>
+              {folderAttempt.pending.details.map((item) => (
+                <Typography.Text key={item.label}>
+                  {item.label}：{item.value}
+                </Typography.Text>
+              ))}
+              {folderError ? (
+                <Typography.Text type="danger">{folderError}</Typography.Text>
+              ) : null}
+              {!(folderAttempt.pending.form.action.operation === "delete"
+                ? canDelete
+                : canWrite) ? (
+                <Typography.Text>
+                  当前没有文件夹操作权限，原请求已保留。
+                </Typography.Text>
+              ) : null}
+              <Button
+                aria-label="确认原文件夹操作"
+                loading={folderAttempt.inFlight}
+                disabled={
+                  folderAttempt.inFlight ||
+                  folderSaving ||
+                  !(folderAttempt.pending.form.action.operation === "delete"
+                    ? canDelete
+                    : canWrite)
+                }
+                onClick={() => {
+                  const pending = folderAttempt.pending;
+                  if (pending?.form?.kind === "content_folder")
+                    void runFolderAction(pending.form.action, pending);
+                }}
+              >
+                确认原文件夹操作
+              </Button>
+            </Space>
+          }
+        />
+      ) : null}
+      {folderError && !folderModalOpen && !folderAttempt.pending ? (
+        <Alert
+          type="error"
+          showIcon
+          message={folderError}
+          action={<Button onClick={() => void load()}>刷新文件夹</Button>}
+        />
+      ) : null}
+
       <Row align="stretch" gutter={[16, 16]}>
         <Col xl={5} xs={24}>
           <Card
             extra={
               canWrite ? (
                 <Button
+                  aria-label="新建文件夹"
+                  disabled={folderBlocked || folderSaving}
                   icon={<FolderAddOutlined />}
                   onClick={() => {
                     setEditingFolder(undefined);
-                    folderForm.resetFields();
+                    setFolderInitialName("");
+                    setFolderError("");
+                    setFolderConflict(undefined);
                     setFolderModalOpen(true);
                   }}
                   size="small"
@@ -933,47 +1182,6 @@ export function DocumentLibrary({
               dataSource={folderItems}
               renderItem={(folder) => (
                 <List.Item
-                  actions={
-                    !["all", "unfiled"].includes(folder.id) && canWrite
-                      ? [
-                          <Button
-                            aria-label="重命名文件夹"
-                            icon={<EditOutlined />}
-                            key="edit"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              setEditingFolder(folder as Folder);
-                              folderForm.setFieldsValue({ name: folder.name });
-                              setFolderModalOpen(true);
-                            }}
-                            size="small"
-                            type="text"
-                          />,
-                          ...(canDelete
-                            ? [
-                                <Popconfirm
-                                  description="其中的文档会移至未归档。"
-                                  key="delete"
-                                  onConfirm={(event) => {
-                                    event?.stopPropagation();
-                                    void deleteFolder(folder.id);
-                                  }}
-                                  title="删除文件夹？"
-                                >
-                                  <Button
-                                    aria-label="删除文件夹"
-                                    danger
-                                    icon={<DeleteOutlined />}
-                                    onClick={(event) => event.stopPropagation()}
-                                    size="small"
-                                    type="text"
-                                  />
-                                </Popconfirm>,
-                              ]
-                            : []),
-                        ]
-                      : []
-                  }
                   onClick={() => setFolderFilter(folder.id)}
                   style={{
                     background:
@@ -986,15 +1194,62 @@ export function DocumentLibrary({
                     paddingInline: 10,
                   }}
                 >
-                  <Space>
-                    <FolderOpenOutlined />
-                    <Typography.Text strong={folderFilter === folder.id}>
-                      {folder.name}
-                    </Typography.Text>
-                  </Space>
-                  {folder.documentCount !== undefined ? (
-                    <Tag>{folder.documentCount}</Tag>
-                  ) : null}
+                  <Flex vertical gap={4} style={{ width: "100%", minWidth: 0 }}>
+                    <Flex align="center" gap={8}>
+                      <FolderOpenOutlined />
+                      <Typography.Text
+                        ellipsis={{ tooltip: folder.name }}
+                        strong={folderFilter === folder.id}
+                        style={{ flex: 1, minWidth: 0 }}
+                      >
+                        {folder.name}
+                      </Typography.Text>
+                      {folder.documentCount !== undefined ? (
+                        <Tag style={{ marginInlineEnd: 0 }}>
+                          {folder.documentCount}
+                        </Tag>
+                      ) : null}
+                    </Flex>
+                    {!["all", "unfiled"].includes(folder.id) && canWrite ? (
+                      <Flex justify="flex-end" gap={4}>
+                        <Button
+                          aria-label={`重命名文件夹 ${folder.name}`}
+                          disabled={folderBlocked || folderSaving}
+                          icon={<EditOutlined />}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setEditingFolder(folder as Folder);
+                            setFolderInitialName(folder.name);
+                            setFolderError("");
+                            setFolderConflict(undefined);
+                            setFolderModalOpen(true);
+                          }}
+                          size="small"
+                          type="text"
+                        />
+                        {canDelete ? (
+                          <Popconfirm
+                            description="其中的文档会移至未归档。"
+                            onConfirm={(event) => {
+                              event?.stopPropagation();
+                              return deleteFolder(folder as Folder);
+                            }}
+                            title="删除文件夹？"
+                          >
+                            <Button
+                              aria-label={`删除文件夹 ${folder.name}`}
+                              disabled={folderBlocked || folderSaving}
+                              danger
+                              icon={<DeleteOutlined />}
+                              onClick={(event) => event.stopPropagation()}
+                              size="small"
+                              type="text"
+                            />
+                          </Popconfirm>
+                        ) : null}
+                      </Flex>
+                    ) : null}
+                  </Flex>
                 </List.Item>
               )}
             />
@@ -1093,27 +1348,87 @@ export function DocumentLibrary({
       <Modal
         destroyOnHidden
         footer={null}
+        closable={!folderSaving && !folderAttempt.inFlight}
+        maskClosable={!folderSaving && !folderAttempt.inFlight}
+        keyboard={!folderSaving && !folderAttempt.inFlight}
         onCancel={() => {
           setFolderModalOpen(false);
           setEditingFolder(undefined);
         }}
         open={folderModalOpen}
         title={editingFolder ? "重命名文件夹" : "新建文件夹"}
+        width={600}
       >
+        {folderError ? (
+          <Alert
+            type="error"
+            showIcon
+            message={folderError}
+            style={{ marginBottom: 16 }}
+          />
+        ) : null}
+        {folderConflict ? (
+          <Alert
+            type="warning"
+            showIcon
+            message={`最新文件夹名称：${folderConflict.name}`}
+            description="你的输入已保留，请核对最新名称。"
+            action={
+              <Button
+                onClick={() => {
+                  setEditingFolder({ ...folderConflict, documentCount: 0 });
+                  setFolderConflict(undefined);
+                  setFolderError("");
+                }}
+              >
+                采用最新名称继续编辑
+              </Button>
+            }
+            style={{ marginBottom: 16 }}
+          />
+        ) : null}
+        {folderAttempt.pending ? (
+          <Alert
+            type="warning"
+            showIcon
+            message="上次文件夹操作待确认，请先确认原操作。"
+            style={{ marginBottom: 16 }}
+          />
+        ) : null}
+        {!canWrite ? (
+          <Alert
+            type="warning"
+            showIcon
+            message="当前没有文件夹编辑权限，输入已保留。"
+            style={{ marginBottom: 16 }}
+          />
+        ) : null}
         <Form
           form={folderForm}
           layout="vertical"
           onFinish={(values) => void createFolder(values)}
+          size="large"
         >
           <Form.Item
             label="文件夹名称"
             name="name"
             rules={[{ required: true, max: 80 }]}
           >
-            <Input autoFocus placeholder="例如：品牌案例" />
+            <Input
+              autoFocus
+              disabled={!canWrite || folderBlocked || folderSaving}
+              maxLength={80}
+              placeholder="例如：品牌案例"
+            />
           </Form.Item>
           <Flex justify="flex-end">
-            <Button htmlType="submit" loading={folderSaving} type="primary">
+            <Button
+              aria-label={editingFolder ? "保存文件夹" : "创建文件夹"}
+              disabled={!canWrite || folderBlocked || Boolean(folderConflict)}
+              htmlType="submit"
+              loading={folderSaving}
+              type="primary"
+            >
               {editingFolder ? "保存" : "创建"}
             </Button>
           </Flex>

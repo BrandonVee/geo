@@ -2,6 +2,9 @@
 import { useEffect, useRef, useState } from "react";
 import { z } from "zod";
 import {
+  createContentFolderSchema,
+  updateContentFolderSchema,
+  contentFolderDeleteQuerySchema,
   createSavedViewSchema,
   updateSavedViewSchema,
   savedViewActionSchema,
@@ -29,6 +32,25 @@ const attemptSchema = z.object({
         name: z.string(),
         alias: z.string(),
         resourceId: z.string().optional(),
+      }),
+      z.object({
+        kind: z.literal("content_folder"),
+        action: z.discriminatedUnion("operation", [
+          z.object({
+            operation: z.literal("create"),
+            input: createContentFolderSchema,
+          }),
+          z.object({
+            operation: z.literal("rename"),
+            folderId: z.string().uuid(),
+            input: updateContentFolderSchema,
+          }),
+          z.object({
+            operation: z.literal("delete"),
+            folderId: z.string().uuid(),
+            input: contentFolderDeleteQuerySchema,
+          }),
+        ]),
       }),
       z.object({
         kind: z.literal("saved_view"),
@@ -67,6 +89,7 @@ const activeAttempts = new Set<string>();
 
 // @project-doc docs/domains/geo_operations.md#monitoring_workflow
 // @project-doc docs/domains/geo_operations.md#competitor_workflow
+// @project-doc docs/domains/geo_operations.md#article_jobs
 // @project-doc docs/domains/geo_operations.md#report_exports
 // @project-doc docs/domains/geo_operations.md#publication_orders
 export function useDirectoryAttempt(
