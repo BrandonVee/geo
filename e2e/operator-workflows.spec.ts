@@ -428,6 +428,12 @@ test.describe("真实运营操作闭环", () => {
       .delete(answerbitBrandMappings)
       .where(inArray(answerbitBrandMappings.organizationId, ids));
     await db
+      .delete(database.notifications)
+      .where(inArray(database.notifications.organizationId, ids));
+    await db
+      .delete(database.notificationRules)
+      .where(inArray(database.notificationRules.organizationId, ids));
+    await db
       .delete(answerbitTeamBindings)
       .where(inArray(answerbitTeamBindings.organizationId, ids));
     await db
@@ -6336,5 +6342,273 @@ test.describe("真实运营操作闭环", () => {
       ledger.getByText(`迟到流水 ${first.name}`, { exact: true }),
     ).toBeVisible();
     await expect(amount).toHaveValue("37");
+  });
+  test("通知完整历史与独立读取恢复，跨页批量已读和品牌权限", async ({
+    page,
+  }) => {
+    await makeEnterpriseAdministrator();
+    await mockBusinessApis(page);
+    const [scope] = fixture.scopes;
+    await database.db.insert(database.notifications).values(
+      Array.from({ length: 63 }, (_, i) => ({
+        organizationId: scope.organizationId,
+        teamBindingId: scope.teamBindingId,
+        brandId: scope.brandId,
+        type: "metric_anomaly" as const,
+        severity: "warning" as const,
+        title: `历史通知 ${i}`,
+        message: "通知历史回归",
+        eventKey: randomUUID(),
+        occurredAt: new Date("2026-09-02T01:00:00Z"),
+      })),
+    );
+    let failRules = true;
+    await page.route("**/api/v1/notification-rules**", async (route) =>
+      failRules
+        ? route.fulfill({
+            status: 503,
+            json: { error: { code: "QA_READ", message: "规则暂不可用" } },
+          })
+        : route.continue(),
+    );
+    await page.route("**/api/v1/notifications**", (route) => route.continue());
+    await page.goto(
+      `/dashboard/notifications?organizationId=${scope.organizationId}&brandId=${scope.brandId}&noticeOrganizationId=${scope.organizationId}&noticePage=4`,
+    );
+    const history = page
+      .locator(".ant-card")
+      .filter({ has: page.getByText("站内通知", { exact: true }) });
+    await expect(history.getByText("共 63 条通知")).toBeVisible();
+    await expect(history.locator(".ant-list-item")).toHaveCount(3);
+    await expect(page.getByText("规则读取失败", { exact: true })).toBeVisible();
+    failRules = false;
+    await page
+      .getByRole("button", { name: "重试读取规则", exact: true })
+      .click();
+    await expect(
+      page.getByText("规则读取失败", { exact: true }),
+    ).not.toBeVisible();
+    await history.getByRole("switch", { name: "仅显示未读通知" }).click();
+    await expect(history.locator(".ant-list-item")).toHaveCount(20);
+    await page.reload();
+    await expect(
+      history.getByRole("switch", { name: "仅显示未读通知" }),
+    ).toBeChecked();
+    await history
+      .getByRole("button", { name: "当前筛选全部标为已读", exact: true })
+      .click();
+    await expect(
+      history.getByText("已将当前筛选的 63 条通知标为已读"),
+    ).toBeVisible();
+    await expect(history.getByText("没有符合条件的未读通知")).toBeVisible();
+    await history
+      .getByRole("button", { name: "清除通知筛选", exact: true })
+      .click();
+    await expect(history.locator(".ant-list-item")).toHaveCount(20);
+    const runtime: string[] = [];
+    page.on("pageerror", (error) => runtime.push(error.message));
+    for (const theme of ["light", "dark"]) {
+      if ((await page.locator("html").getAttribute("data-theme")) !== theme)
+        await page.getByRole("button", { name: "切换亮暗色模式" }).click();
+      await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
+      await expect
+        .poll(() =>
+          history
+            .locator(".ant-card-head-title")
+            .evaluate((element) => getComputedStyle(element).color),
+        )
+        .toBe(theme === "dark" ? "rgb(244, 245, 247)" : "rgb(33, 33, 33)");
+      await page.evaluate(async () => {
+        await Promise.all(
+          document
+            .getAnimations()
+            .filter(
+              (animation) =>
+                animation.effect?.getComputedTiming().iterations !== Infinity,
+            )
+            .map((animation) => animation.finished.catch(() => {})),
+        );
+      });
+      for (const width of [390, 768, 1440]) {
+        await page.setViewportSize({ width, height: 1000 });
+        expect(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth,
+          ),
+        ).toBe(true);
+        await page.evaluate(axe.source);
+        const result = await page.evaluate(async () =>
+          (window as unknown as { axe: typeof axe }).axe.run(document, {
+            runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa"] },
+          }),
+        );
+        expect(
+          result.violations.map((v) => ({
+            id: v.id,
+            nodes: v.nodes.map((n) => n.target),
+          })),
+        ).toEqual([]);
+        if (width === 390 || width === 1440)
+          await page.screenshot({
+            path: `/tmp/geo-notifications-${theme}-${width}.png`,
+            fullPage: true,
+          });
+      }
+    }
+    expect(runtime).toEqual([]);
+    // Restore brand-only membership, retaining the explicit brand access.
+    const members = await database.db
+      .select()
+      .from(database.organizationMembers)
+      .where(operators.eq(database.organizationMembers.userId, fixture.userId));
+    await database.db.delete(database.memberRoles).where(
+      operators.inArray(
+        database.memberRoles.memberId,
+        members.map((member) => member.id),
+      ),
+    );
+    await database.db.insert(database.notifications).values({
+      organizationId: scope.organizationId,
+      teamBindingId: scope.teamBindingId,
+      type: "low_credits",
+      title: "企业私有通知",
+      message: "QA",
+      eventKey: randomUUID(),
+    });
+    expect(
+      (
+        await page.request.get(
+          `/api/v1/notification-rules?organizationId=${scope.organizationId}`,
+        )
+      ).status(),
+    ).toBe(403);
+    const visible = await page.request.get(
+      `/api/v1/notifications?organizationId=${scope.organizationId}`,
+    );
+    expect(visible.status()).toBe(200);
+    expect((await visible.json()).data.total).toBe(63);
+    await page.reload();
+    await expect(
+      page.getByText("企业通知阈值", { exact: true }),
+    ).not.toBeVisible();
+    await expect(
+      page.getByText("企业私有通知", { exact: true }),
+    ).not.toBeVisible();
+  });
+
+  test("通知规则失败保留阈值，并发冲突与响应丢失刷新核对", async ({ page }) => {
+    await makeEnterpriseAdministrator();
+    await mockBusinessApis(page);
+    const [scope] = fixture.scopes;
+    const origin = process.env.APP_URL!;
+    const input = {
+      organizationId: scope.organizationId,
+      teamBindingId: scope.teamBindingId,
+      type: "low_credits",
+      threshold: 1000,
+      cooldownMinutes: 1440,
+      enabled: true,
+    };
+    const created = await page.request.post("/api/v1/notification-rules", {
+      headers: { Origin: origin },
+      data: input,
+    });
+    expect(created.status()).toBe(201);
+    const ruleId = (await created.json()).data.id;
+    let rejectWrite = true,
+      loseWrite = false,
+      failReads = false,
+      writes = 0;
+    await page.route("**/api/v1/notification-rules**", async (route) => {
+      if (route.request().method() === "GET")
+        return failReads
+          ? route.fulfill({
+              status: 503,
+              json: { error: { code: "QA_READ", message: "核对暂不可用" } },
+            })
+          : route.continue();
+      writes++;
+      if (rejectWrite) {
+        rejectWrite = false;
+        return route.fulfill({
+          status: 422,
+          json: { error: { code: "QA_REJECT", message: "保存失败，输入保留" } },
+        });
+      }
+      if (loseWrite) {
+        loseWrite = false;
+        const response = await route.fetch();
+        expect(response.status()).toBe(200);
+        failReads = true;
+        return route.fulfill({
+          status: 503,
+          json: { error: { code: "QA_LOST", message: "响应丢失" } },
+        });
+      }
+      return route.continue();
+    });
+    await page.route("**/api/v1/notifications**", (route) => route.continue());
+    await page.goto(
+      `/dashboard/notifications?organizationId=${scope.organizationId}&brandId=${scope.brandId}`,
+    );
+    await page.getByRole("button", { name: /^阈\s*值$/ }).click();
+    const dialog = page.getByRole("dialog", { name: "修改通知阈值" });
+    await dialog.getByLabel("通知阈值", { exact: true }).fill("900");
+    await dialog.getByRole("button", { name: /保\s*存/ }).click();
+    await expect(dialog.getByText("保存失败，输入保留")).toBeVisible();
+    await expect(dialog.getByLabel("通知阈值", { exact: true })).toHaveValue(
+      "900",
+    );
+    const concurrent = await page.request.put(
+      `/api/v1/notification-rules/${ruleId}`,
+      {
+        headers: { Origin: origin },
+        data: { ...input, threshold: 800, expected: input },
+      },
+    );
+    expect(concurrent.status()).toBe(200);
+    await dialog.getByRole("button", { name: /保\s*存/ }).click();
+    await expect(
+      dialog.getByText("最新阈值为 800，您的输入仍保留"),
+    ).toBeVisible();
+    await expect(dialog.getByLabel("通知阈值", { exact: true })).toHaveValue(
+      "900",
+    );
+    await dialog
+      .getByRole("button", { name: "以最新配置继续编辑", exact: true })
+      .click();
+    loseWrite = true;
+    await dialog.getByRole("button", { name: /保\s*存/ }).click();
+    await expect(dialog.getByText(/保存结果暂时无法核对/)).toBeVisible();
+    await page.reload();
+    await expect(
+      page.getByText("已恢复上次尚未核实的规则保存，请先核对结果。"),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "新增规则", exact: true }),
+    ).toBeDisabled();
+    failReads = false;
+    await page
+      .getByRole("button", { name: "核对上次保存", exact: true })
+      .click();
+    await expect(
+      page.getByText("已核对：通知规则已保存", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "新增规则", exact: true }),
+    ).toBeEnabled();
+    expect(writes).toBe(3);
+    const logs = await database.db
+      .select()
+      .from(database.operationLogs)
+      .where(
+        operators.eq(
+          database.operationLogs.organizationId,
+          scope.organizationId,
+        ),
+      );
+    expect(
+      logs.filter((log) => log.operation === "notification-rule.update"),
+    ).toHaveLength(2);
   });
 });

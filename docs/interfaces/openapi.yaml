@@ -3377,6 +3377,8 @@ paths:
           $ref: "#/components/responses/PayloadTooLarge"
         "415":
           $ref: "#/components/responses/UnsupportedMediaType"
+        "200":
+          description: 原操作者、范围及完整配置一致的创建重放，返回原规则
         "201":
           description: 通知规则已创建
         "409":
@@ -3400,7 +3402,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/NotificationRuleInput"
+              $ref: "#/components/schemas/NotificationRuleReplaceInput"
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
@@ -3408,6 +3410,8 @@ paths:
           $ref: "#/components/responses/UnsupportedMediaType"
         "200":
           description: 通知规则已更新
+        "409":
+          description: NOTIFICATION_RULE_CONFLICT（details.current 为最新配置）或相同类型范围已存在
         "404":
           description: 通知规则不存在
     delete:
@@ -3449,9 +3453,71 @@ paths:
           schema:
             type: boolean
             default: false
+        - in: query
+          name: type
+          schema:
+            type: string
+            enum: [low_credits, connection_failure, metric_anomaly]
+        - in: query
+          name: severity
+          schema:
+            type: string
+            enum: [info, warning, critical]
+        - in: query
+          name: beginDate
+          description: 北京时间开始日期（含），可单独使用
+          schema:
+            type: string
+            format: date
+        - in: query
+          name: endDate
+          description: 北京时间结束日期（含），可单独使用；不能早于开始日期
+          schema:
+            type: string
+            format: date
       responses:
         "200":
-          description: 通知分页列表、总数与未读数
+          description: 通知分页列表、筛选总数与当前用户全部授权范围未读数；页码超界回退至末页
+        "400":
+          description: 无效筛选或日期
+  /v1/notifications/read-all:
+    put:
+      summary: 将当前筛选全部可见通知标为当前用户已读
+      description: 覆盖筛选的所有页，保持其他用户已读状态，重试幂等；企业管理员可处理企业全部通知，品牌成员限授权品牌。
+      tags:
+        - Workspace Extensions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NotificationReadAllInput"
+      responses:
+        "200":
+          description: 本次新标为已读的通知条数，重复执行为零
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, requestId]
+                properties:
+                  data:
+                    type: object
+                    required: [count]
+                    properties:
+                      count:
+                        type: integer
+                        minimum: 0
+                  requestId:
+                    type: string
+        "400":
+          description: 无效筛选
+        "403":
+          description: 没有通知读取权限
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
   /v1/notifications/{notificationId}/read:
     put:
       summary: 设置当前用户的通知已读状态
@@ -5316,6 +5382,141 @@ components:
             enabled:
               type: boolean
               default: true
+    NotificationRuleReplaceInput:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required:
+            - organizationId
+            - teamBindingId
+            - type
+            - threshold
+            - expected
+          properties:
+            expected:
+              $ref: "#/components/schemas/NotificationRuleInput"
+            organizationId:
+              type: string
+              format: uuid
+            teamBindingId:
+              type: string
+              format: uuid
+            type:
+              const: low_credits
+            threshold:
+              type: integer
+              minimum: 0
+              maximum: 1000000000
+            cooldownMinutes:
+              type: integer
+              minimum: 5
+              maximum: 10080
+              default: 1440
+            enabled:
+              type: boolean
+              default: true
+        - type: object
+          additionalProperties: false
+          required:
+            - organizationId
+            - teamBindingId
+            - type
+            - threshold
+            - expected
+          properties:
+            expected:
+              $ref: "#/components/schemas/NotificationRuleInput"
+            organizationId:
+              type: string
+              format: uuid
+            teamBindingId:
+              type: string
+              format: uuid
+            type:
+              const: connection_failure
+            threshold:
+              type: integer
+              minimum: 1
+              maximum: 20
+            cooldownMinutes:
+              type: integer
+              minimum: 5
+              maximum: 10080
+              default: 1440
+            enabled:
+              type: boolean
+              default: true
+        - type: object
+          additionalProperties: false
+          required:
+            - organizationId
+            - teamBindingId
+            - brandId
+            - type
+            - metric
+            - threshold
+            - expected
+          properties:
+            expected:
+              $ref: "#/components/schemas/NotificationRuleInput"
+            organizationId:
+              type: string
+              format: uuid
+            teamBindingId:
+              type: string
+              format: uuid
+            brandId:
+              type: string
+              minLength: 1
+              maxLength: 128
+            type:
+              const: metric_anomaly
+            metric:
+              type: string
+              enum:
+                - exposure
+                - score
+                - avg_rank
+            threshold:
+              type: integer
+              minimum: 1
+              maximum: 100
+            windowDays:
+              type: integer
+              minimum: 1
+              maximum: 90
+              default: 7
+            cooldownMinutes:
+              type: integer
+              minimum: 5
+              maximum: 10080
+              default: 1440
+            enabled:
+              type: boolean
+              default: true
+    NotificationReadAllInput:
+      type: object
+      additionalProperties: false
+      required: [organizationId]
+      properties:
+        organizationId:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum: [low_credits, connection_failure, metric_anomaly]
+        severity:
+          type: string
+          enum: [info, warning, critical]
+        beginDate:
+          type: string
+          format: date
+          description: 北京时间开始日期（含），可单独使用
+        endDate:
+          type: string
+          format: date
+          description: 北京时间结束日期（含），不能早于开始日期
+
     EntitlementDefinition:
       type: object
       additionalProperties: false

@@ -1,6 +1,6 @@
 import {
   notificationRuleActionSchema,
-  notificationRuleSchema,
+  notificationRuleReplaceSchema,
 } from "@geo/contracts";
 import { createRequestId } from "@geo/core";
 import { auditContextFromRequest } from "@/server/audit/write-audit";
@@ -16,7 +16,7 @@ export async function PUT(request: Request, context: Context) {
   try {
     const user = await requireUser(request);
     const { ruleId } = await context.params;
-    const parsed = notificationRuleSchema.safeParse(
+    const parsed = notificationRuleReplaceSchema.safeParse(
       await readJsonBody(request),
     );
     if (!parsed.success)

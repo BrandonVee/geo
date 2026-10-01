@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, count, desc, eq, gte, isNull, sql } from "drizzle-orm";
+import { and, count, desc, eq, gte, isNull, sql, lt } from "drizzle-orm";
 import {
   answerbitApiCalls,
   answerbitBrandMappings,
@@ -9,8 +9,15 @@ import {
   notificationReads,
   notificationRules,
   notifications,
+  withTenantDbContext,
+  type DatabaseTransaction,
 } from "@geo/db";
-import type { NotificationRuleInput } from "@geo/contracts";
+import type {
+  NotificationRuleInput,
+  NotificationRuleReplaceInput,
+  NotificationReadAllInput,
+  NotificationListQuery,
+} from "@geo/contracts";
 
 export type StoredNotificationRule = typeof notificationRules.$inferSelect;
 
@@ -33,6 +40,64 @@ const ruleValues = (input: NotificationRuleInput, userId: string) => ({
   updatedAt: new Date(),
 });
 
+export function sameNotificationRule(
+  row: StoredNotificationRule,
+  input: NotificationRuleInput,
+) {
+  const values = ruleValues(input, row.updatedBy ?? "");
+  return [
+    "organizationId",
+    "teamBindingId",
+    "brandId",
+    "type",
+    "metric",
+    "threshold",
+    "windowDays",
+    "cooldownMinutes",
+    "scopeKey",
+    "enabled",
+  ].every(
+    (key) =>
+      row[key as keyof StoredNotificationRule] ===
+      values[key as keyof typeof values],
+  );
+}
+type CommitRule = (
+  tx: DatabaseTransaction,
+  rule: StoredNotificationRule,
+) => Promise<void>;
+
+const visibleNotices = (
+  organizationId: string,
+  userId: string,
+  unrestricted: boolean,
+) =>
+  and(
+    eq(notifications.organizationId, organizationId),
+    unrestricted
+      ? undefined
+      : sql`exists (select 1 from ${brandAccess} where ${brandAccess.organizationId} = ${notifications.organizationId} and ${brandAccess.teamBindingId} = ${notifications.teamBindingId} and ${brandAccess.brandId} = ${notifications.brandId} and ${brandAccess.userId} = ${userId})`,
+  );
+const noticeFilters = (input: NotificationReadAllInput) =>
+  and(
+    input.type ? eq(notifications.type, input.type) : undefined,
+    input.severity ? eq(notifications.severity, input.severity) : undefined,
+    input.beginDate
+      ? gte(
+          notifications.occurredAt,
+          new Date(`${input.beginDate}T00:00:00+08:00`),
+        )
+      : undefined,
+    input.endDate
+      ? lt(
+          notifications.occurredAt,
+          new Date(
+            new Date(`${input.endDate}T00:00:00+08:00`).getTime() + 86_400_000,
+          ),
+        )
+      : undefined,
+  );
+
 const projection = {
   id: notifications.id,
   organizationId: notifications.organizationId,
@@ -49,48 +114,56 @@ const projection = {
 };
 
 export const notificationRepository = {
-  listRules(organizationId: string) {
-    return db
-      .select({
-        id: notificationRules.id,
-        organizationId: notificationRules.organizationId,
-        teamBindingId: notificationRules.teamBindingId,
-        teamName: answerbitTeamBindings.displayName,
-        teamId: answerbitTeamBindings.teamId,
-        brandId: notificationRules.brandId,
-        brandName: answerbitBrandMappings.brandName,
-        type: notificationRules.type,
-        metric: notificationRules.metric,
-        threshold: notificationRules.threshold,
-        windowDays: notificationRules.windowDays,
-        cooldownMinutes: notificationRules.cooldownMinutes,
-        enabled: notificationRules.enabled,
-        lastEvaluatedAt: notificationRules.lastEvaluatedAt,
-        lastEvaluationError: notificationRules.lastEvaluationError,
-        createdAt: notificationRules.createdAt,
-        updatedAt: notificationRules.updatedAt,
-      })
-      .from(notificationRules)
-      .innerJoin(
-        answerbitTeamBindings,
-        eq(answerbitTeamBindings.id, notificationRules.teamBindingId),
-      )
-      .leftJoin(
-        answerbitBrandMappings,
-        and(
-          eq(
-            answerbitBrandMappings.organizationId,
-            notificationRules.organizationId,
+  listRules(organizationId: string, userId: string) {
+    return withTenantDbContext(
+      { organizationId, userId },
+      (tx) =>
+        tx
+          .select({
+            id: notificationRules.id,
+            organizationId: notificationRules.organizationId,
+            teamBindingId: notificationRules.teamBindingId,
+            teamName: answerbitTeamBindings.displayName,
+            teamId: answerbitTeamBindings.teamId,
+            brandId: notificationRules.brandId,
+            brandName: answerbitBrandMappings.brandName,
+            type: notificationRules.type,
+            metric: notificationRules.metric,
+            threshold: notificationRules.threshold,
+            windowDays: notificationRules.windowDays,
+            cooldownMinutes: notificationRules.cooldownMinutes,
+            enabled: notificationRules.enabled,
+            lastEvaluatedAt: notificationRules.lastEvaluatedAt,
+            lastEvaluationError: notificationRules.lastEvaluationError,
+            createdAt: notificationRules.createdAt,
+            updatedAt: notificationRules.updatedAt,
+          })
+          .from(notificationRules)
+          .innerJoin(
+            answerbitTeamBindings,
+            eq(answerbitTeamBindings.id, notificationRules.teamBindingId),
+          )
+          .leftJoin(
+            answerbitBrandMappings,
+            and(
+              eq(
+                answerbitBrandMappings.organizationId,
+                notificationRules.organizationId,
+              ),
+              eq(
+                answerbitBrandMappings.teamBindingId,
+                notificationRules.teamBindingId,
+              ),
+              eq(answerbitBrandMappings.brandId, notificationRules.brandId),
+            ),
+          )
+          .where(eq(notificationRules.organizationId, organizationId))
+          .orderBy(
+            desc(notificationRules.updatedAt),
+            desc(notificationRules.id),
           ),
-          eq(
-            answerbitBrandMappings.teamBindingId,
-            notificationRules.teamBindingId,
-          ),
-          eq(answerbitBrandMappings.brandId, notificationRules.brandId),
-        ),
-      )
-      .where(eq(notificationRules.organizationId, organizationId))
-      .orderBy(desc(notificationRules.updatedAt));
+      { accessMode: "read only" },
+    );
   },
   async findRule(id: string, organizationId: string) {
     const [rule] = await db
@@ -105,38 +178,117 @@ export const notificationRepository = {
       .limit(1);
     return rule;
   },
-  async createRule(input: NotificationRuleInput, userId: string) {
-    const [rule] = await db
-      .insert(notificationRules)
-      .values(ruleValues(input, userId))
-      .returning();
-    return rule;
+  // @project-doc docs/domains/geo_operations.md#notification_workflow
+  async createRule(
+    input: NotificationRuleInput,
+    userId: string,
+    commit: CommitRule,
+  ) {
+    return withTenantDbContext(
+      { organizationId: input.organizationId, userId },
+      async (tx) => {
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtext(${input.organizationId}), hashtext(${`${input.type}:${scopeKey(input)}`}))`,
+        );
+        const [current] = await tx
+          .select()
+          .from(notificationRules)
+          .where(
+            and(
+              eq(notificationRules.organizationId, input.organizationId),
+              eq(notificationRules.type, input.type),
+              eq(notificationRules.scopeKey, scopeKey(input)),
+            ),
+          )
+          .limit(1);
+        if (current)
+          return sameNotificationRule(current, input) &&
+            current.updatedBy === userId
+            ? { ok: true as const, rule: current, replayed: true }
+            : {
+                ok: false as const,
+                code: "NOTIFICATION_RULE_EXISTS" as const,
+                current,
+              };
+        const [rule] = await tx
+          .insert(notificationRules)
+          .values(ruleValues(input, userId))
+          .returning();
+        await commit(tx, rule);
+        return { ok: true as const, rule, replayed: false };
+      },
+    );
   },
-  async replaceRule(id: string, input: NotificationRuleInput, userId: string) {
-    const [rule] = await db
-      .update(notificationRules)
-      .set(ruleValues(input, userId))
-      .where(
-        and(
-          eq(notificationRules.id, id),
-          eq(notificationRules.organizationId, input.organizationId),
-        ),
-      )
-      .returning();
-    return rule;
+  async replaceRule(
+    id: string,
+    input: NotificationRuleReplaceInput,
+    userId: string,
+    commit: CommitRule,
+  ) {
+    return withTenantDbContext(
+      { organizationId: input.organizationId, userId },
+      async (tx) => {
+        const [current] = await tx
+          .select()
+          .from(notificationRules)
+          .where(
+            and(
+              eq(notificationRules.id, id),
+              eq(notificationRules.organizationId, input.organizationId),
+            ),
+          )
+          .for("update")
+          .limit(1);
+        if (!current)
+          return {
+            ok: false as const,
+            code: "NOTIFICATION_RULE_NOT_FOUND" as const,
+          };
+        if (sameNotificationRule(current, input))
+          return { ok: true as const, rule: current, replayed: true };
+        if (!sameNotificationRule(current, input.expected))
+          return {
+            ok: false as const,
+            code: "NOTIFICATION_RULE_CONFLICT" as const,
+            current,
+          };
+        const [rule] = await tx
+          .update(notificationRules)
+          .set(ruleValues(input, userId))
+          .where(eq(notificationRules.id, id))
+          .returning();
+        await commit(tx, rule);
+        return { ok: true as const, rule, replayed: false };
+      },
+    );
   },
-  async disableRule(id: string, organizationId: string, userId: string) {
-    const [rule] = await db
-      .update(notificationRules)
-      .set({ enabled: false, updatedBy: userId, updatedAt: new Date() })
-      .where(
-        and(
-          eq(notificationRules.id, id),
-          eq(notificationRules.organizationId, organizationId),
-        ),
-      )
-      .returning();
-    return rule;
+  async disableRule(
+    id: string,
+    organizationId: string,
+    userId: string,
+    commit: CommitRule,
+  ) {
+    return withTenantDbContext({ organizationId, userId }, async (tx) => {
+      const [current] = await tx
+        .select()
+        .from(notificationRules)
+        .where(
+          and(
+            eq(notificationRules.id, id),
+            eq(notificationRules.organizationId, organizationId),
+          ),
+        )
+        .for("update")
+        .limit(1);
+      if (!current || !current.enabled) return current;
+      const [rule] = await tx
+        .update(notificationRules)
+        .set({ enabled: false, updatedBy: userId, updatedAt: new Date() })
+        .where(eq(notificationRules.id, id))
+        .returning();
+      await commit(tx, rule);
+      return rule;
+    });
   },
   async findEnabledRule(
     organizationId: string,
@@ -247,93 +399,74 @@ export const notificationRepository = {
   async list(
     organizationId: string,
     userId: string,
-    input: { page: number; pageSize: number; unreadOnly: boolean },
+    input: NotificationListQuery,
     unrestricted: boolean,
   ) {
-    const offset = (input.page - 1) * input.pageSize;
-    const readJoin = and(
-      eq(notificationReads.notificationId, notifications.id),
-      eq(notificationReads.userId, userId),
-    );
-    const baseConditions = [
-      eq(notifications.organizationId, organizationId),
-      input.unreadOnly ? isNull(notificationReads.readAt) : undefined,
-    ];
-    if (unrestricted) {
-      const [list, [total], [unread]] = await Promise.all([
-        db
+    return withTenantDbContext(
+      { organizationId, userId },
+      async (tx) => {
+        const readJoin = and(
+          eq(notificationReads.notificationId, notifications.id),
+          eq(notificationReads.userId, userId),
+        );
+        const allowed = visibleNotices(organizationId, userId, unrestricted);
+        const where = and(
+          allowed,
+          noticeFilters(input),
+          input.unreadOnly ? isNull(notificationReads.readAt) : undefined,
+        );
+        const [total] = await tx
+          .select({ value: count(notifications.id) })
+          .from(notifications)
+          .leftJoin(notificationReads, readJoin)
+          .where(where);
+        const [unread] = await tx
+          .select({ value: count(notifications.id) })
+          .from(notifications)
+          .leftJoin(notificationReads, readJoin)
+          .where(and(allowed, isNull(notificationReads.readAt)));
+        const page = Math.min(
+          input.page,
+          Math.max(1, Math.ceil(total.value / input.pageSize)),
+        );
+        const list = await tx
           .select(projection)
           .from(notifications)
           .leftJoin(notificationReads, readJoin)
-          .where(and(...baseConditions))
-          .orderBy(desc(notifications.createdAt))
+          .where(where)
+          .orderBy(desc(notifications.occurredAt), desc(notifications.id))
           .limit(input.pageSize)
-          .offset(offset),
-        db
-          .select({ value: count(notifications.id) })
-          .from(notifications)
-          .leftJoin(notificationReads, readJoin)
-          .where(and(...baseConditions)),
-        db
-          .select({ value: count(notifications.id) })
-          .from(notifications)
-          .leftJoin(notificationReads, readJoin)
-          .where(
-            and(
-              eq(notifications.organizationId, organizationId),
-              isNull(notificationReads.readAt),
-            ),
-          ),
-      ]);
-      return {
-        list,
-        total: Number(total.value),
-        unreadCount: Number(unread.value),
-        page: input.page,
-        pageSize: input.pageSize,
-      };
-    }
-    const accessJoin = and(
-      eq(brandAccess.organizationId, notifications.organizationId),
-      eq(brandAccess.teamBindingId, notifications.teamBindingId),
-      eq(brandAccess.brandId, notifications.brandId),
-      eq(brandAccess.userId, userId),
+          .offset((page - 1) * input.pageSize);
+        return {
+          list,
+          total: total.value,
+          unreadCount: unread.value,
+          page,
+          pageSize: input.pageSize,
+        };
+      },
+      { isolationLevel: "repeatable read", accessMode: "read only" },
     );
-    const [list, [total], [unread]] = await Promise.all([
-      db
-        .select(projection)
-        .from(notifications)
-        .innerJoin(brandAccess, accessJoin)
-        .leftJoin(notificationReads, readJoin)
-        .where(and(...baseConditions))
-        .orderBy(desc(notifications.createdAt))
-        .limit(input.pageSize)
-        .offset(offset),
-      db
-        .select({ value: count(notifications.id) })
-        .from(notifications)
-        .innerJoin(brandAccess, accessJoin)
-        .leftJoin(notificationReads, readJoin)
-        .where(and(...baseConditions)),
-      db
-        .select({ value: count(notifications.id) })
-        .from(notifications)
-        .innerJoin(brandAccess, accessJoin)
-        .leftJoin(notificationReads, readJoin)
-        .where(
-          and(
-            eq(notifications.organizationId, organizationId),
-            isNull(notificationReads.readAt),
-          ),
-        ),
-    ]);
-    return {
-      list,
-      total: Number(total.value),
-      unreadCount: Number(unread.value),
-      page: input.page,
-      pageSize: input.pageSize,
-    };
+  },
+  async readAll(
+    input: NotificationReadAllInput,
+    userId: string,
+    unrestricted: boolean,
+  ) {
+    return withTenantDbContext(
+      { organizationId: input.organizationId, userId },
+      async (tx) => {
+        const result = await tx.execute<{ count: number }>(sql`
+        with inserted as (
+          insert into notification_reads (notification_id, user_id)
+          select ${notifications.id}, ${userId}::uuid from ${notifications}
+          where ${and(visibleNotices(input.organizationId, userId, unrestricted), noticeFilters(input))}
+          on conflict (notification_id, user_id) do nothing returning 1
+        ) select count(*)::int as count from inserted
+      `);
+        return { count: result.rows[0]?.count ?? 0 };
+      },
+    );
   },
   async canAccessNotification(
     id: string,
@@ -375,26 +508,33 @@ export const notificationRepository = {
       .limit(1);
     return Boolean(row);
   },
-  async setRead(notificationId: string, userId: string, read: boolean) {
-    if (!read) {
-      await db
-        .delete(notificationReads)
-        .where(
-          and(
-            eq(notificationReads.notificationId, notificationId),
-            eq(notificationReads.userId, userId),
-          ),
-        );
-      return null;
-    }
-    const [receipt] = await db
-      .insert(notificationReads)
-      .values({ notificationId, userId })
-      .onConflictDoUpdate({
-        target: [notificationReads.notificationId, notificationReads.userId],
-        set: { readAt: new Date() },
-      })
-      .returning();
-    return receipt;
+  async setRead(
+    notificationId: string,
+    organizationId: string,
+    userId: string,
+    read: boolean,
+  ) {
+    return withTenantDbContext({ organizationId, userId }, async (tx) => {
+      if (!read) {
+        await tx
+          .delete(notificationReads)
+          .where(
+            and(
+              eq(notificationReads.notificationId, notificationId),
+              eq(notificationReads.userId, userId),
+            ),
+          );
+        return null;
+      }
+      const [receipt] = await tx
+        .insert(notificationReads)
+        .values({ notificationId, userId })
+        .onConflictDoUpdate({
+          target: [notificationReads.notificationId, notificationReads.userId],
+          set: { readAt: new Date() },
+        })
+        .returning();
+      return receipt;
+    });
   },
 };

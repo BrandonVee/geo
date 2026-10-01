@@ -156,3 +156,5 @@ Worker 等待任务的权限复核回归在已迁移数据库执行 `WORKER_ACCE
 企业品牌划拨由同一一次性数据库脚本以 `BALANCE_ALLOCATION_DB_TESTS=1` 运行 `src/server/services/balance-allocations.integration.test.ts`，保留真实余额事务、审计和租户核对查询，只替换企业授权边界；覆盖两类资产并发重放、同键内容冲突、审计失败整体回滚、原操作者及品牌核对隔离、核对等待事务、代理商跨企业额度竞争与到期限制。测试要求一次性库；不可变审计由脚本删除整个测试库清理。
 
 企业资产流水由同一一次性数据库脚本以 `TENANT_BALANCE_HISTORY_DB_TESTS=1` 运行 `packages/db/src/tenant-balance-history.integration.test.ts`，使用真实租户角色，覆盖超过 100 条历史的稳定分页、来源/目标账户、操作者与资产/类型交集、北京时间边界、历史停用成员搜索、文字通配符转义和并发读取快照。浏览器验证完整历史查找、远程操作者筛选、URL 刷新恢复、流水独立错误重试、企业和筛选条件的迟到响应隔离及查账时保留待划拨输入；品牌角色不能读取企业整体余额和流水。
+
+通知工作流由一次性数据库脚本以 `NOTIFICATION_WORKFLOW_DB_TESTS=1` 运行 `src/server/repositories/notifications.integration.test.ts`，覆盖超过50条的完整历史、稳定分页、北京时间筛选、品牌隔离、私有已读与跨页批量已读，以及并发规则创建去重、配置比较冲突、Worker健康更新不冲突、审计回滚与重放。浏览器同时覆盖读取独立重试、历史末页、跨页批量已读、品牌权限、失败输入保留、并发阈值冲突与响应丢失后刷新核对，以及明暗主题多尺寸无障碍。数据库历史随测试库整体删除清理，不对日常库执行。

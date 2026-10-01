@@ -1,6 +1,8 @@
 import type {
   NotificationListQuery,
+  NotificationReadAllInput,
   NotificationRuleInput,
+  NotificationRuleReplaceInput,
 } from "@geo/contracts";
 import {
   classifyConnectionFailure,
@@ -36,11 +38,7 @@ async function readScope(organizationId: string, userId: string) {
     userId,
     "notification.read",
   );
-  if (
-    membership.role &&
-    hasPermission(membership.role as Role, "notification.read")
-  )
-    return { unrestricted: true };
+  if (membership.role === "tenant_admin") return { unrestricted: true };
   const accesses = (
     await notificationRepository.listAccesses(organizationId, userId)
   ).filter((item) => hasPermission(item.role as Role, "notification.read"));
@@ -101,7 +99,7 @@ export const notificationService = {
       userId,
       "notification.manage",
     );
-    return notificationRepository.listRules(organizationId);
+    return notificationRepository.listRules(organizationId, userId);
   },
   async createRule(
     input: NotificationRuleInput,
@@ -115,21 +113,31 @@ export const notificationService = {
     );
     await validateRule(input);
     try {
-      const rule = await notificationRepository.createRule(input, userId);
-      await writeAudit(audit, {
-        operation: "notification-rule.create",
-        resourceType: "notification_rule",
-        resourceId: rule.id,
-        summary: `创建通知规则：${rule.type}`,
-      });
-      return rule;
+      const result = await notificationRepository.createRule(
+        input,
+        userId,
+        (tx, rule) =>
+          writeAudit(
+            audit,
+            {
+              operation: "notification-rule.create",
+              resourceType: "notification_rule",
+              resourceId: rule.id,
+              summary: `创建通知规则：${rule.type}`,
+            },
+            tx,
+          ),
+      );
+      if (!result.ok)
+        throw new ApiError(409, result.code, "相同类型和范围的通知规则已存在");
+      return { ...result.rule, replayed: result.replayed };
     } catch (error) {
       return duplicate(error);
     }
   },
   async replaceRule(
     id: string,
-    input: NotificationRuleInput,
+    input: NotificationRuleReplaceInput,
     userId: string,
     audit: AuditContext,
   ) {
@@ -138,18 +146,34 @@ export const notificationService = {
       userId,
       "notification.manage",
     );
-    if (!(await notificationRepository.findRule(id, input.organizationId)))
-      throw new ApiError(404, "NOTIFICATION_RULE_NOT_FOUND", "通知规则不存在");
     await validateRule(input);
     try {
-      const rule = await notificationRepository.replaceRule(id, input, userId);
-      await writeAudit(audit, {
-        operation: "notification-rule.update",
-        resourceType: "notification_rule",
-        resourceId: id,
-        summary: `更新通知规则：${rule!.type}`,
-      });
-      return rule!;
+      const result = await notificationRepository.replaceRule(
+        id,
+        input,
+        userId,
+        (tx, rule) =>
+          writeAudit(
+            audit,
+            {
+              operation: "notification-rule.update",
+              resourceType: "notification_rule",
+              resourceId: id,
+              summary: `更新通知规则：${rule.type}`,
+            },
+            tx,
+          ),
+      );
+      if (!result.ok)
+        throw new ApiError(
+          result.code === "NOTIFICATION_RULE_NOT_FOUND" ? 404 : 409,
+          result.code,
+          result.code === "NOTIFICATION_RULE_NOT_FOUND"
+            ? "通知规则不存在"
+            : "规则已被其他管理员修改，请核对最新配置后再保存",
+          "current" in result ? { current: result.current } : undefined,
+        );
+      return result.rule;
     } catch (error) {
       return duplicate(error);
     }
@@ -169,15 +193,24 @@ export const notificationService = {
       id,
       organizationId,
       userId,
+      (tx, current) =>
+        writeAudit(
+          audit,
+          {
+            operation: "notification-rule.disable",
+            resourceType: "notification_rule",
+            resourceId: id,
+            summary: `停用通知规则：${current.type}`,
+          },
+          tx,
+        ),
     );
     if (!rule)
       throw new ApiError(404, "NOTIFICATION_RULE_NOT_FOUND", "通知规则不存在");
-    await writeAudit(audit, {
-      operation: "notification-rule.disable",
-      resourceType: "notification_rule",
-      resourceId: id,
-      summary: `停用通知规则：${rule.type}`,
-    });
+  },
+  async readAll(input: NotificationReadAllInput, userId: string) {
+    const scope = await readScope(input.organizationId, userId);
+    return notificationRepository.readAll(input, userId, scope.unrestricted);
   },
   async setRead(
     id: string,
@@ -195,7 +228,7 @@ export const notificationService = {
       ))
     )
       throw new ApiError(404, "NOTIFICATION_NOT_FOUND", "通知不存在");
-    return notificationRepository.setRead(id, userId, read);
+    return notificationRepository.setRead(id, organizationId, userId, read);
   },
 };
 

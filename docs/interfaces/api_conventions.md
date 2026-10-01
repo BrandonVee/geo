@@ -109,6 +109,8 @@ JSON 请求使用 `Content-Type: application/json`；允许标准的 `applicatio
 
 GET、PUT、DELETE 按 HTTP 语义保持幂等；POST 中具有财务或外部副作用的端点必须在契约中显式包含幂等语义。腾讯监控品牌扩容的上游契约未提供幂等键：明确返回 429 表示请求被拒绝，可按 `Retry-After` 有限退避；超时或 5xx 的结果不确定，服务端不自动重放，管理员应先刷新积分、配额和流水再决定是否再次提交。
 
+通知 `PUT /v1/notification-rules/{ruleId}` 全量替换要求 `expected` 原始规则配置；并发配置变化返回 `409 NOTIFICATION_RULE_CONFLICT` 和 `details.current`，Worker 评估时间不参与冲突判断。创建以企业、类型、范围去重，相同原操作者与完整配置重放返回 200，首次创建返回 201；写入与审计原子提交。`PUT /v1/notifications/read-all` 接受企业及可选类型、严重程度、北京时间起止日期，返回 `{count}`，覆盖所有匹配页，仅为当前用户写入已读记录，不接受分页参数。
+
 ## OpenAPI 维护
 
 [OpenAPI 定义](./openapi.yaml) 是客户端生成和接口联调入口。新增、重命名或删除 API 时，同一变更必须更新 Route、共享契约、OpenAPI 与相关领域/集成文档。OpenAPI 中应包含安全方案、参数范围、成功响应和主要错误响应。Web 测试会双向比对 `apps/web/src/app/api` 的 Route、HTTP 方法与 OpenAPI；Better Auth 由单一 catch-all Route 承载多个已公开认证路径，是唯一允许的路径映射例外。

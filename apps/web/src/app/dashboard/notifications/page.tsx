@@ -24,6 +24,7 @@ export default async function NotificationsPage() {
         title="通知中心"
       />
       <NotificationsClient
+        userId={session.user.id}
         organizations={organizations.map(
           ({ id, name, role, teamBindingId }) => ({
             id,

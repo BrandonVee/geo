@@ -1140,7 +1140,7 @@ export const balanceOperationSchema = z.enum([
   "restore",
   "adjust",
 ]);
-const ledgerDateSchema = dateSchema.refine(
+const calendarDateSchema = dateSchema.refine(
   (value) =>
     !Number.isNaN(Date.parse(`${value}T00:00:00Z`)) &&
     new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value,
@@ -1152,8 +1152,8 @@ export const balanceTransactionQuerySchema = z
     userId: z.string().uuid().optional(),
     asset: balanceAssetSchema.optional(),
     operation: balanceOperationSchema.optional(),
-    beginDate: ledgerDateSchema.optional(),
-    endDate: ledgerDateSchema.optional(),
+    beginDate: calendarDateSchema.optional(),
+    endDate: calendarDateSchema.optional(),
     page: queryInteger(1, 1, 100_000),
     pageSize: queryInteger(20, 1, 100),
   })
@@ -1601,6 +1601,20 @@ export const notificationRuleSchema = z.discriminatedUnion("type", [
     })
     .strict(),
 ]);
+export const notificationRuleReplaceSchema = z.discriminatedUnion("type", [
+  notificationRuleSchema.options[0].extend({
+    expected: notificationRuleSchema,
+  }),
+  notificationRuleSchema.options[1].extend({
+    expected: notificationRuleSchema,
+  }),
+  notificationRuleSchema.options[2].extend({
+    expected: notificationRuleSchema,
+  }),
+]);
+export type NotificationRuleReplaceInput = z.infer<
+  typeof notificationRuleReplaceSchema
+>;
 export const notificationRuleListQuerySchema = z
   .object({ organizationId: z.string().uuid() })
   .strict();
@@ -1610,6 +1624,12 @@ export const notificationRuleActionSchema = z
 export const notificationListQuerySchema = z
   .object({
     organizationId: z.string().uuid(),
+    type: z
+      .enum(["low_credits", "connection_failure", "metric_anomaly"])
+      .optional(),
+    severity: z.enum(["info", "warning", "critical"]).optional(),
+    beginDate: calendarDateSchema.optional(),
+    endDate: calendarDateSchema.optional(),
     page: queryInteger(1, 1, 100000),
     pageSize: queryInteger(20, 1, 100),
     unreadOnly: z.preprocess(
@@ -1624,7 +1644,12 @@ export const notificationListQuerySchema = z
       z.boolean(),
     ),
   })
-  .strict();
+  .strict()
+  .refine(
+    (value) =>
+      !value.beginDate || !value.endDate || value.beginDate <= value.endDate,
+    { message: "开始日期不能晚于结束日期", path: ["beginDate"] },
+  );
 export const notificationReadSchema = z
   .object({
     organizationId: z.string().uuid(),
@@ -1632,8 +1657,24 @@ export const notificationReadSchema = z
   })
   .strict();
 export const notificationReadAllSchema = z
-  .object({ organizationId: z.string().uuid() })
-  .strict();
+  .object({
+    organizationId: z.string().uuid(),
+    type: z
+      .enum(["low_credits", "connection_failure", "metric_anomaly"])
+      .optional(),
+    severity: z.enum(["info", "warning", "critical"]).optional(),
+    beginDate: calendarDateSchema.optional(),
+    endDate: calendarDateSchema.optional(),
+  })
+  .strict()
+  .refine(
+    (value) =>
+      !value.beginDate || !value.endDate || value.beginDate <= value.endDate,
+    { message: "开始日期不能晚于结束日期", path: ["beginDate"] },
+  );
+export type NotificationReadAllInput = z.infer<
+  typeof notificationReadAllSchema
+>;
 export type TraceArticleInput = z.infer<typeof traceArticleSchema>;
 export type ArticleListQuery = z.infer<typeof articleListQuerySchema>;
 export type ArticleDetailQuery = z.infer<typeof articleDetailQuerySchema>;

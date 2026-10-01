@@ -66,7 +66,7 @@ export async function POST(request: Request) {
     return apiJson(
       { data: rule, requestId },
       {
-        status: 201,
+        status: rule.replayed ? 200 : 201,
         headers: { Location: `/api/v1/notification-rules/${rule.id}` },
       },
     );

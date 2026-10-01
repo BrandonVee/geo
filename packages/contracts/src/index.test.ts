@@ -1159,3 +1159,56 @@ describe("发布渠道分页契约", () => {
     ).toBe(false);
   });
 });
+
+describe("通知筛选与并发保存契约", () => {
+  it("规则替换必须携带有效原配置", async () => {
+    const { notificationRuleReplaceSchema } = await import("./index");
+    const rule = {
+      organizationId,
+      teamBindingId,
+      type: "low_credits",
+      threshold: 1000,
+    };
+    expect(notificationRuleReplaceSchema.safeParse(rule).success).toBe(false);
+    expect(
+      notificationRuleReplaceSchema.safeParse({ ...rule, expected: rule })
+        .success,
+    ).toBe(true);
+    expect(
+      notificationRuleReplaceSchema.safeParse({
+        ...rule,
+        expected: { ...rule, threshold: -1 },
+      }).success,
+    ).toBe(false);
+  });
+  it("查询支持单边日期，拒绝非法日期和反向区间，批量已读不接受页码", async () => {
+    const { notificationListQuerySchema, notificationReadAllSchema } =
+      await import("./index");
+    expect(
+      notificationListQuerySchema.parse({
+        organizationId,
+        type: "low_credits",
+        severity: "critical",
+        beginDate: "2026-09-01",
+      }),
+    ).toMatchObject({ page: 1, pageSize: 20, beginDate: "2026-09-01" });
+    for (const patch of [
+      { beginDate: "2026-02-30" },
+      { beginDate: "2026-09-02", endDate: "2026-09-01" },
+      { severity: "invalid" },
+      { type: "invalid" },
+    ]) {
+      expect(
+        notificationListQuerySchema.safeParse({ organizationId, ...patch })
+          .success,
+      ).toBe(false);
+      expect(
+        notificationReadAllSchema.safeParse({ organizationId, ...patch })
+          .success,
+      ).toBe(false);
+    }
+    expect(
+      notificationReadAllSchema.safeParse({ organizationId, page: 2 }).success,
+    ).toBe(false);
+  });
+});
