@@ -81,6 +81,8 @@ Web 与 Worker 共用的品牌目录、仪表盘、文章生成和报表响应 S
 
 问题分组接口 `/geo/prompt/get/group` 的生产响应使用 `daily_avg_score[].avg_score` 表示每日平均得分，部分接口定义样例则使用 `score`；适配层同时接受两者并统一输出为 `score`。问题的 `created_time` 可能是非空日期/时间字符串或非负整数时间值，适配层统一转为字符串，其他格式继续按非法上游响应处理。监控问题列表接受逗号分隔的 `platforms` 查询参数并将其作为字符串数组传给该上游接口；可选值始终从 `/geo/team/get/filter_platforms` 读取，不接受页面自造模型标识。
 
+批量创建监测问题 `/geo/prompt/create/batch` 必须为每个提交的问题返回唯一且非空的 ID，按上游顺序规范为字符串；少返回、多返回、重复或空 ID 均视为 `invalid_response`，不进入本地映射或成功审计，也不自动重试。前端按结果待核对保留原操作，使用实时目录确认后才继续写入。
+
 文章列表接口 `/geo/article/query` 的生产响应可能将 `ref_count`、`ref_trends[].count`、`total` 与 `total_links` 返回为十进制整数字符串；适配层同时接受非负整数和纯数字字符串，并统一转换为安全整数后再写入本地映射或返回页面。
 
 AI 内容页分别以 `tag_type=1` 和 `tag_type=2` 调用 `/geo/article/tag/get`，合并并按 `tag_id` 去重后分组展示用户标签与系统标签，避免依赖上游省略 `tag_type` 时的不明确默认行为。腾讯当前发布的 AnswerBit API 只提供标签查询，没有标签新增 operation。AI 生成表单因此允许用户直接输入平台内容标签并回车新增：这些名称保存在 `article_generation_jobs.tags`，用于生成内容库复用和展示，但不会伪装成腾讯 TagID；选择真实腾讯标签时仍把对应 `tag_id` 传给上游。效果追踪只能选择真实腾讯标签，也可以不选。

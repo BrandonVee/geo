@@ -23,6 +23,7 @@ export default async function MonitoringPage() {
         title="监控问题库"
       />
       <MonitoringClient
+        userId={session.user.id}
         organizations={organizations.map(
           ({ id, name, role, teamBindingId }) => ({
             id,

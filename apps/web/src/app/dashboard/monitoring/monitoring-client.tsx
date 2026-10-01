@@ -30,7 +30,7 @@ import {
   type TableColumnsType,
 } from "antd";
 import dayjs, { type Dayjs } from "dayjs";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ScopeFields,
   scopeQuery,
@@ -42,6 +42,18 @@ import {
   ModelLabel,
   modelSelectOptions,
 } from "../model-display";
+import { useMonitoringRead } from "./monitoring-read";
+import {
+  useMonitoringAttempt,
+  type MonitoringAttempt,
+} from "./monitoring-attempt";
+import {
+  createCategorySchema,
+  updateCategorySchema,
+  createPromptSchema,
+  createPromptsBatchSchema,
+  updatePromptSchema,
+} from "@geo/contracts";
 import { AccessibleTable } from "../../accessible-table";
 
 type Category = {
@@ -87,27 +99,43 @@ const accessRoleLabel = {
 } as const;
 export function MonitoringClient({
   organizations,
+  userId,
 }: {
   organizations: ScopeOrganization[];
+  userId: string;
 }) {
   const scope = useAnswerBitScope(organizations);
+  return (
+    <MonitoringWorkspace
+      key={`${scope.organizationId}:${scope.teamBindingId}:${scope.brandId}`}
+      organizations={organizations}
+      scope={scope}
+      userId={userId}
+    />
+  );
+}
+const emptyCategories: Category[] = [];
+const emptyGroups: Group[] = [];
+// @project-doc docs/domains/geo_operations.md#monitoring_workflow
+function MonitoringWorkspace({
+  organizations,
+  scope,
+  userId,
+}: {
+  organizations: ScopeOrganization[];
+  scope: ReturnType<typeof useAnswerBitScope>;
+  userId: string;
+}) {
   const { organizationId, teamBindingId, brandId } = scope;
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [groups, setGroups] = useState<Group[]>([]);
-  const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [keywordDraft, setKeywordDraft] = useState("");
   const [keyword, setKeyword] = useState("");
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>([]);
-  const [platforms, setPlatforms] = useState<Record<string, string>>({});
   const [categoryFilterIds, setCategoryFilterIds] = useState<string[]>([]);
   const [dateRange, setDateRange] = useState<[Dayjs, Dayjs] | null>(null);
   const [selectedPromptIds, setSelectedPromptIds] = useState<string[]>([]);
   const [notice, setNotice] = useState<Notice | null>(null);
-  const [syncError, setSyncError] = useState("");
-  const [syncFailureCount, setSyncFailureCount] = useState(0);
-  const [loading, setLoading] = useState(false);
   const [actionKey, setActionKey] = useState("");
   const [categoryName, setCategoryName] = useState("");
   const [categoryDescription, setCategoryDescription] = useState("");
@@ -121,189 +149,270 @@ export function MonitoringClient({
   const [editingPrompt, setEditingPrompt] = useState<Prompt | null>(null);
   const [promptCreateOpen, setPromptCreateOpen] = useState(false);
   const [editingPromptText, setEditingPromptText] = useState("");
-  const displayedModelIds = [...new Set(Object.values(platforms))];
-  const scopeKey = `${organizationId}:${teamBindingId}:${brandId}`;
-  const scopeKeyRef = useRef(scopeKey);
-  const loadRunRef = useRef(0);
-  const loadControllerRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(false);
+  const mutationRef = useRef("");
+  const attempt = useMonitoringAttempt(
+    `geo-monitoring-attempt:${userId}:${organizationId}:${teamBindingId}:${brandId}`,
+  );
+  const [reviewed, setReviewed] = useState(false);
   useEffect(() => {
-    if (!organizationId || !teamBindingId) {
-      setPlatforms({});
-      return;
+    const form = attempt.pending?.form;
+    if (form?.kind === "category") {
+      setCategoryName(form.name);
+      setCategoryDescription(form.description);
     }
-    const controller = new AbortController();
-    fetch(
-      `/api/v1/answerbit/dashboard/platforms?${scopeQuery({ organizationId, teamBindingId })}`,
-      { signal: controller.signal },
-    )
-      .then(async (response) => {
-        const body = await response.json();
-        if (!response.ok) throw new Error(body.error?.message);
-        setPlatforms(body.data ?? {});
-      })
-      .catch((error) => {
-        if (!(error instanceof DOMException && error.name === "AbortError"))
-          setPlatforms({});
-      });
-    return () => controller.abort();
-  }, [organizationId, teamBindingId]);
-  useEffect(() => {
-    scopeKeyRef.current = scopeKey;
-    setEditingCategory(null);
-    setEditingPrompt(null);
-    setCategoryCreateOpen(false);
-    setPromptCreateOpen(false);
-    setCategoryName("");
-    setCategoryDescription("");
-    setPromptText("");
-    setKeywordDraft("");
-    setKeyword("");
-    setSelectedPlatforms([]);
-    setCategoryFilterIds([]);
-    setDateRange(null);
-    setSelectedPromptIds([]);
-    setPage(1);
-    setNotice(null);
-    setSyncError("");
-    setSyncFailureCount(0);
-  }, [scopeKey]);
-  const load = useCallback(
-    async (options?: { announce?: boolean }) => {
-      const runId = ++loadRunRef.current;
-      loadControllerRef.current?.abort();
-      if (!brandId) {
-        setCategories([]);
-        setGroups([]);
-        setTotal(0);
-        setPromptTitleId("");
-        setSyncError("");
-        setSyncFailureCount(0);
-        setLoading(false);
-        return;
-      }
-      const controller = new AbortController();
-      loadControllerRef.current = controller;
-      setLoading(true);
-      const base = { organizationId, teamBindingId, brandId };
-      try {
-        const [categoryResponse, promptResponse] = await Promise.all([
-          fetch(`/api/v1/answerbit/categories?${scopeQuery(base)}`, {
-            signal: controller.signal,
-          }),
-          fetch(
-            `/api/v1/answerbit/prompts?${scopeQuery({
-              ...base,
-              page: String(page),
-              pageSize: String(pageSize),
-              ...(keyword ? { query: keyword } : {}),
-              ...(selectedPlatforms.length
-                ? { platforms: selectedPlatforms.join(",") }
-                : {}),
-              ...(categoryFilterIds.length
-                ? { titleIds: categoryFilterIds.join(",") }
-                : {}),
-              ...(dateRange
-                ? {
-                    beginDate: dateRange[0].format("YYYY-MM-DD"),
-                    endDate: dateRange[1].format("YYYY-MM-DD"),
-                  }
-                : {}),
-            })}`,
-            { signal: controller.signal },
-          ),
-        ]);
-        const [categoryBody, promptBody] = await Promise.all([
-          categoryResponse.json(),
-          promptResponse.json(),
-        ]);
-        if (!categoryResponse.ok || !promptResponse.ok)
-          throw new Error(
-            categoryBody.error?.message ?? promptBody.error?.message,
-          );
-        if (controller.signal.aborted || runId !== loadRunRef.current) return;
-        const nextTotal = promptBody.data.total_prompts;
-        const lastPage = Math.max(1, Math.ceil(nextTotal / pageSize));
-        if (page > lastPage) {
-          setPage(lastPage);
-          return;
-        }
-        setCategories(categoryBody.data);
-        setCategoryFilterIds((current) => {
-          const next = current.filter((id) =>
-            categoryBody.data.some((item: Category) => item.id === id),
-          );
-          return next.length === current.length ? current : next;
-        });
-        setGroups(promptBody.data.titles);
-        setTotal(nextTotal);
-        setPromptTitleId((current) =>
-          categoryBody.data.some((item: Category) => item.id === current)
-            ? current
-            : categoryBody.data[0]?.id || "",
-        );
-        setSyncError("");
-        setSyncFailureCount(0);
-        if (options?.announce)
-          setNotice({ type: "success", text: "监测数据已刷新" });
-      } catch (error) {
-        if (error instanceof DOMException && error.name === "AbortError")
-          return;
-        if (runId !== loadRunRef.current) return;
-        setSyncError(
-          error instanceof Error ? error.message : "监控问题加载失败",
-        );
-        setSyncFailureCount((current) => current + 1);
-      } finally {
-        if (runId === loadRunRef.current) setLoading(false);
-      }
-    },
-    [
-      organizationId,
-      teamBindingId,
-      brandId,
-      keyword,
-      selectedPlatforms,
-      categoryFilterIds,
-      dateRange,
-      page,
-      pageSize,
-    ],
+    if (form?.kind === "prompts") {
+      setPromptText(form.text);
+      setPromptTitleId(form.titleId);
+    }
+  }, [attempt.pending]);
+  const mutationDisabled = Boolean(
+    actionKey || attempt.pending || !attempt.ready,
   );
   useEffect(() => {
-    void load();
-    return () => loadControllerRef.current?.abort();
-  }, [load]);
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+  const base = { organizationId, teamBindingId, brandId };
+  const categoryRead = useMonitoringRead<Category[]>(
+    brandId ? `/api/v1/answerbit/categories?${scopeQuery(base)}` : null,
+  );
+  const platformRead = useMonitoringRead<Record<string, string>>(
+    teamBindingId
+      ? `/api/v1/answerbit/dashboard/platforms?${scopeQuery({ organizationId, teamBindingId })}`
+      : null,
+  );
+  const promptUrl = brandId
+    ? `/api/v1/answerbit/prompts?${scopeQuery({
+        ...base,
+        page: String(page),
+        pageSize: String(pageSize),
+        ...(keyword ? { query: keyword } : {}),
+        ...(selectedPlatforms.length
+          ? { platforms: selectedPlatforms.join(",") }
+          : {}),
+        ...(categoryFilterIds.length
+          ? { titleIds: categoryFilterIds.join(",") }
+          : {}),
+        ...(dateRange
+          ? {
+              beginDate: dateRange[0].format("YYYY-MM-DD"),
+              endDate: dateRange[1].format("YYYY-MM-DD"),
+            }
+          : {}),
+      })}`
+    : null;
+  const promptRead = useMonitoringRead<{
+    titles: Group[];
+    total_prompts: number;
+  }>(promptUrl);
+  const categories = categoryRead.data ?? emptyCategories;
+  const groups = promptRead.data?.titles ?? emptyGroups;
+  const total = promptRead.data?.total_prompts ?? 0;
+  const platforms = platformRead.data ?? {};
+  const displayedModelIds = [...new Set(Object.values(platforms))];
+  const syncError = promptRead.error;
+  const syncFailureCount = promptRead.failures;
+  const loading = promptRead.loading;
+  const batchInput = useMemo(() => {
+    const lines = promptText
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    const prompts = [...new Set(lines)];
+    return {
+      prompts,
+      duplicates: lines.length - prompts.length,
+      error:
+        prompts.length > 100
+          ? "单次最多添加 100 个不同的问题，请分批添加。"
+          : prompts.some((line) => line.length > 2000)
+            ? "每个问题最多 2000 字，请缩短超长的问题。"
+            : "",
+    };
+  }, [promptText]);
+  useEffect(() => {
+    if (!categoryRead.data) return;
+    setPromptTitleId((current) => current || categories[0]?.id || "");
+    setCategoryFilterIds((current) => {
+      const next = current.filter((id) =>
+        categories.some((item) => item.id === id),
+      );
+      return next.length === current.length ? current : next;
+    });
+  }, [categoryRead.data, categories]);
+  useEffect(() => {
+    if (!promptRead.data) return;
+    const last = Math.max(1, Math.ceil(total / pageSize));
+    if (page > last) setPage(last);
+  }, [promptRead.data, total, pageSize, page]);
+  async function load(options?: { announce?: boolean; verify?: boolean }) {
+    const results = await Promise.all([
+      categoryRead.reload(),
+      promptRead.reload(),
+      platformRead.reload(),
+    ]);
+    if (!mountedRef.current) return;
+    if (options?.verify && results[0] && results[1]) setReviewed(true);
+    if (options?.announce && results.every(Boolean))
+      setNotice({ type: "success", text: "监测数据已刷新" });
+  }
+  const loadRef = useRef(load);
+  useEffect(() => {
+    loadRef.current = load;
+  });
+  useEffect(() => {
+    if (attempt.resolvedVersion) void loadRef.current();
+  }, [attempt.resolvedVersion]);
   async function request(url: string, options: RequestInit) {
     const response = await fetch(url, options);
     const body = response.status === 204 ? {} : await response.json();
-    if (!response.ok) throw new Error(body.error?.message ?? "操作失败");
+    if (!response.ok) {
+      const error = new Error(body.error?.message ?? "操作失败") as Error & {
+        definite?: boolean;
+      };
+      error.definite = response.status >= 400 && response.status < 500;
+      throw error;
+    }
     return body;
+  }
+  function operationDetails() {
+    if (mutationRef.current === "category-create")
+      return [
+        { label: "分类名称", value: categoryName.trim() },
+        { label: "分类描述", value: categoryDescription.trim() },
+      ];
+    if (mutationRef.current.startsWith("category-update-"))
+      return [
+        { label: "分类名称", value: editingCategoryName.trim() },
+        { label: "分类描述", value: editingCategoryDescription.trim() },
+      ];
+    if (mutationRef.current === "prompt-create")
+      return [
+        {
+          label: "所属分类",
+          value:
+            categories.find((item) => item.id === promptTitleId)?.title_name ??
+            promptTitleId,
+        },
+        { label: "问题内容", value: batchInput.prompts.join("\n") },
+      ];
+    if (editingPrompt)
+      return [
+        { label: "原问题", value: editingPrompt.query_str },
+        { label: "修改后问题", value: editingPromptText.trim() },
+      ];
+    const id = mutationRef.current.replace(/^prompt-(update|move|delete)-/, "");
+    const prompt = groups
+      .flatMap((group) => group.prompts)
+      .find((item) => item.id === id);
+    return [
+      {
+        label: "操作对象",
+        value:
+          prompt?.query_str ??
+          categories.find(
+            (item) => `category-delete-${item.id}` === mutationRef.current,
+          )?.title_name ??
+          selectedPromptIds.join("、"),
+      },
+    ];
   }
   async function runMutation(
     key: string,
     action: () => Promise<unknown>,
     successMessage: string,
+    details?: MonitoringAttempt["details"],
   ) {
-    if (actionKey) return false;
-    const mutationScopeKey = scopeKeyRef.current;
+    if (mutationRef.current || mutationDisabled) return false;
+    mutationRef.current = key;
     setActionKey(key);
     setNotice(null);
+    setReviewed(false);
+    const operation =
+      key === "category-create"
+        ? "新增问题分类"
+        : key.startsWith("category-update-")
+          ? "编辑问题分类"
+          : key.startsWith("category-delete-")
+            ? "删除问题分类"
+            : key === "prompt-create"
+              ? "新增监控问题"
+              : key.startsWith("prompt-update-")
+                ? "修改监控问题"
+                : key.startsWith("prompt-move-")
+                  ? "移动问题分类"
+                  : "删除监控问题";
+    const attemptId = crypto.randomUUID();
+    attempt.begin({
+      id: attemptId,
+      operation,
+      details: details ?? operationDetails(),
+      submittedAt: new Date().toISOString(),
+      ...(key === "category-create"
+        ? {
+            form: {
+              kind: "category" as const,
+              name: categoryName,
+              description: categoryDescription,
+            },
+          }
+        : key === "prompt-create"
+          ? {
+              form: {
+                kind: "prompts" as const,
+                titleId: promptTitleId,
+                text: promptText,
+              },
+            }
+          : {}),
+    });
     try {
       await action();
-      if (mutationScopeKey === scopeKeyRef.current) {
-        setNotice({ type: "success", text: successMessage });
-        await load();
-      }
+      attempt.finish(attemptId);
+      if (!mountedRef.current) return false;
+      setNotice({ type: "success", text: successMessage });
       return true;
     } catch (error) {
-      if (mutationScopeKey === scopeKeyRef.current)
-        setNotice({ type: "error", text: (error as Error).message });
+      if ((error as Error & { definite?: boolean }).definite)
+        attempt.finish(attemptId);
+      if (mountedRef.current)
+        setNotice({
+          type: "error",
+          text: error instanceof Error ? error.message : "操作失败，请核对结果",
+        });
       return false;
     } finally {
-      setActionKey("");
+      attempt.settle(attemptId);
+      mutationRef.current = "";
+      if (mountedRef.current) setActionKey("");
     }
   }
+  const formError =
+    notice?.type === "error" ? (
+      <Alert
+        showIcon
+        type="error"
+        message={notice.text}
+        style={{ marginBottom: 16 }}
+      />
+    ) : null;
   async function createCategory() {
+    if (
+      !createCategorySchema.safeParse({
+        ...apiScope(scope),
+        titleName: categoryName,
+        titleDescription: categoryDescription,
+      }).success
+    ) {
+      setNotice({
+        type: "error",
+        text: "分类名称须为 1–255 字，描述最多 2000 字。",
+      });
+      return;
+    }
     const created = await runMutation(
       "category-create",
       () =>
@@ -325,12 +434,26 @@ export function MonitoringClient({
     }
   }
   function editCategory(item: Category) {
+    setNotice(null);
     setEditingCategory(item);
     setEditingCategoryName(item.title_name);
     setEditingCategoryDescription(item.title_desc);
   }
   async function saveCategory() {
     if (!editingCategory || !editingCategoryName.trim()) return;
+    if (
+      !updateCategorySchema.safeParse({
+        ...apiScope(scope),
+        titleName: editingCategoryName,
+        titleDescription: editingCategoryDescription,
+      }).success
+    ) {
+      setNotice({
+        type: "error",
+        text: "分类名称须为 1–255 字，描述最多 2000 字。",
+      });
+      return;
+    }
     const categoryId = editingCategory.id;
     const saved = await runMutation(
       `category-update-${categoryId}`,
@@ -361,11 +484,25 @@ export function MonitoringClient({
     if (removed) setSelectedPromptIds([]);
   }
   async function createPrompts() {
-    const prompts = promptText
-      .split("\n")
-      .map((item) => item.trim())
-      .filter(Boolean);
+    const prompts = batchInput.prompts;
     if (!prompts.length) return;
+    const payload =
+      prompts.length === 1
+        ? { ...apiScope(scope), titleId: promptTitleId, query: prompts[0] }
+        : { ...apiScope(scope), titleId: promptTitleId, prompts };
+    if (
+      batchInput.error ||
+      !(
+        prompts.length === 1 ? createPromptSchema : createPromptsBatchSchema
+      ).safeParse(payload).success ||
+      !categories.some((item) => item.id === promptTitleId)
+    ) {
+      setNotice({
+        type: "error",
+        text: batchInput.error || "请选择有效分类后添加问题。",
+      });
+      return;
+    }
     const created = await runMutation(
       "prompt-create",
       () =>
@@ -398,6 +535,12 @@ export function MonitoringClient({
     item: Prompt,
     changes: { query?: string; status?: 1 | 2 },
   ) {
+    if (
+      !updatePromptSchema.safeParse({ ...apiScope(scope), ...changes }).success
+    ) {
+      setNotice({ type: "error", text: "问题内容须为 1–2000 字。" });
+      return false;
+    }
     return runMutation(
       `prompt-update-${item.id}`,
       () =>
@@ -411,6 +554,17 @@ export function MonitoringClient({
           ? "问题已启用，AnswerBit 将持续监测"
           : "问题已停用"
         : "问题已更新",
+      [
+        { label: "原问题", value: item.query_str },
+        ...(changes.status
+          ? [
+              {
+                label: "修改后状态",
+                value: changes.status === 1 ? "监测中" : "已停用",
+              },
+            ]
+          : [{ label: "修改后问题", value: changes.query ?? "" }]),
+      ],
     );
   }
   async function savePrompt() {
@@ -430,6 +584,15 @@ export function MonitoringClient({
           body: JSON.stringify({ ...apiScope(scope), titleId }),
         }),
       "问题已移动",
+      [
+        { label: "问题内容", value: item.query_str },
+        {
+          label: "目标分类",
+          value:
+            categories.find((category) => category.id === titleId)
+              ?.title_name ?? titleId,
+        },
+      ],
     );
   }
   async function removePrompt(id: string) {
@@ -460,7 +623,7 @@ export function MonitoringClient({
               <Checkbox
                 aria-label={`选择问题 ${item.query_str}`}
                 checked={selectedPromptIds.includes(item.id)}
-                disabled={Boolean(actionKey)}
+                disabled={mutationDisabled}
                 onChange={(event) =>
                   togglePromptSelection(item.id, event.target.checked)
                 }
@@ -504,10 +667,14 @@ export function MonitoringClient({
       key: "category",
       width: 160,
       render: (_, item) =>
-        scope.can("resource.create", "geo_insights") ? (
+        scope.can("resource.update", "geo_insights") ? (
           <Select
             aria-label={`移动问题 ${item.query_str}`}
-            disabled={Boolean(actionKey)}
+            disabled={
+              mutationDisabled ||
+              !categoryRead.data ||
+              Boolean(categoryRead.error)
+            }
             loading={actionKey === `prompt-move-${item.id}`}
             onChange={(value) => void movePrompt(item, value)}
             options={categories.map((category) => ({
@@ -574,9 +741,10 @@ export function MonitoringClient({
               <Space size={4} wrap>
                 <Button
                   aria-label={`编辑问题 ${item.query_str}`}
-                  disabled={Boolean(actionKey)}
+                  disabled={mutationDisabled}
                   icon={<EditOutlined />}
                   onClick={() => {
+                    setNotice(null);
                     setEditingPrompt(item);
                     setEditingPromptText(item.query_str);
                   }}
@@ -594,7 +762,7 @@ export function MonitoringClient({
                 ) : null}
                 <Button
                   aria-label={`${item.status === 1 ? "停用" : "启用"}问题 ${item.query_str}`}
-                  disabled={Boolean(actionKey)}
+                  disabled={mutationDisabled}
                   loading={actionKey === `prompt-update-${item.id}`}
                   onClick={() =>
                     void updatePrompt(item, {
@@ -618,7 +786,7 @@ export function MonitoringClient({
                     <Button
                       aria-label={`删除问题 ${item.query_str}`}
                       danger
-                      disabled={Boolean(actionKey)}
+                      disabled={mutationDisabled}
                       icon={<DeleteOutlined />}
                       size="small"
                     />
@@ -703,9 +871,9 @@ export function MonitoringClient({
   );
   const monitoringStatus = !brandId
     ? { status: "default" as const, text: "等待选择品牌" }
-    : loading
+    : loading || categoryRead.loading || platformRead.loading
       ? { status: "processing" as const, text: "正在刷新" }
-      : syncError
+      : syncError || categoryRead.error || platformRead.error
         ? { status: "error" as const, text: "请求异常" }
         : { status: "success" as const, text: "数据已加载" };
   return (
@@ -717,20 +885,29 @@ export function MonitoringClient({
       <Row gutter={[16, 16]}>
         <Col lg={6} xs={12}>
           <Card>
-            <Statistic title="问题分类" value={categories.length} />
+            <Statistic
+              title="问题分类"
+              value={categoryRead.data ? categories.length : "—"}
+            />
           </Card>
         </Col>
         <Col lg={6} xs={12}>
           <Card>
-            <Statistic title="监控问题" suffix="条" value={total} />
+            <Statistic
+              title="监控问题"
+              suffix="条"
+              value={promptRead.data ? total : "—"}
+            />
           </Card>
         </Col>
         <Col lg={6} xs={12}>
           <Card>
             <Statistic
               title="当前页已启用"
-              suffix={`/ ${visiblePrompts.length}`}
-              value={activePrompts}
+              suffix={
+                promptRead.data ? `/ ${visiblePrompts.length}` : undefined
+              }
+              value={promptRead.data ? activePrompts : "—"}
             />
           </Card>
         </Col>
@@ -738,6 +915,7 @@ export function MonitoringClient({
           <Card>
             <Statistic
               title="当前权限"
+              valueStyle={{ fontSize: 20, whiteSpace: "nowrap" }}
               value={
                 scope.brand ? accessRoleLabel[scope.brand.accessRole] : "—"
               }
@@ -747,27 +925,30 @@ export function MonitoringClient({
       </Row>
 
       <Card
-        extra={
-          <Space wrap>
-            <Badge
-              status={monitoringStatus.status}
-              text={monitoringStatus.text}
-            />
-            <Button
-              disabled={!scope.brandId}
-              icon={<ReloadOutlined />}
-              loading={loading}
-              onClick={() => void load({ announce: true })}
-            >
-              刷新数据
-            </Button>
-          </Space>
-        }
         title={
-          <Space>
-            <CloudSyncOutlined />
-            <span>持续检测控制台</span>
-          </Space>
+          <Flex align="center" justify="space-between" gap={12} wrap>
+            <Space>
+              <CloudSyncOutlined />
+              <span>持续检测控制台</span>
+            </Space>
+            <Space wrap>
+              <Badge
+                status={monitoringStatus.status}
+                text={monitoringStatus.text}
+              />
+              <Button
+                aria-label="刷新数据"
+                disabled={!scope.brandId}
+                icon={<ReloadOutlined />}
+                loading={
+                  loading || categoryRead.loading || platformRead.loading
+                }
+                onClick={() => void load({ announce: true })}
+              >
+                刷新数据
+              </Button>
+            </Space>
+          </Flex>
         }
       >
         <Typography.Paragraph type="secondary" style={{ marginBottom: 16 }}>
@@ -833,8 +1014,14 @@ export function MonitoringClient({
             <Flex style={{ flex: "1 1 260px", minWidth: 240 }} vertical>
               <Typography.Text type="secondary">监测日期</Typography.Text>
               <DatePicker.RangePicker
+                aria-label="监测日期"
                 allowClear
-                allowEmpty={[true, true]}
+                allowEmpty={[false, false]}
+                id={{
+                  start: "monitoring-date-start",
+                  end: "monitoring-date-end",
+                }}
+                placeholder={["监测开始日期", "监测结束日期"]}
                 disabled={!brandId}
                 format="YYYY-MM-DD"
                 onChange={(value) => {
@@ -859,8 +1046,12 @@ export function MonitoringClient({
               />
             </Flex>
             <Flex style={{ flex: "1 1 240px", minWidth: 200 }} vertical>
-              <Typography.Text type="secondary">搜索问题</Typography.Text>
+              <label htmlFor="monitoring-search">
+                <Typography.Text type="secondary">搜索问题</Typography.Text>
+              </label>
               <Input.Search
+                id="monitoring-search"
+                maxLength={500}
                 allowClear
                 onChange={(event) => {
                   setKeywordDraft(event.target.value);
@@ -901,10 +1092,133 @@ export function MonitoringClient({
         />
       ) : null}
 
+      {categoryRead.error ? (
+        <Alert
+          showIcon
+          type="error"
+          message="问题分类请求失败"
+          description={categoryRead.error}
+          action={
+            <Button
+              aria-label="重试分类"
+              loading={categoryRead.loading}
+              onClick={() => void categoryRead.reload()}
+            >
+              重试分类
+            </Button>
+          }
+        />
+      ) : null}
+      {platformRead.error ? (
+        <Alert
+          showIcon
+          type="error"
+          message="监测模型请求失败"
+          description={platformRead.error}
+          action={
+            <Button
+              aria-label="重试模型"
+              loading={platformRead.loading}
+              onClick={() => void platformRead.reload()}
+            >
+              重试模型
+            </Button>
+          }
+        />
+      ) : null}
+      {attempt.storageError ? (
+        <Alert showIcon type="error" message={attempt.storageError} />
+      ) : null}
+      {(attempt.pending || (!attempt.ready && attempt.storageError)) &&
+      !actionKey ? (
+        <Card title="上次操作结果待核对">
+          <Alert
+            showIcon
+            type="warning"
+            message={`${attempt.pending?.operation ?? "原操作"}的结果尚未确认`}
+            description={
+              attempt.inFlight
+                ? "原操作仍在提交，请等待结果后再核对。"
+                : "原操作不会自动重发。请刷新目录，并按以下原内容搜索、翻页核对；确认后结束本次操作，才能继续修改。"
+            }
+          />
+          <List
+            dataSource={attempt.pending?.details ?? []}
+            renderItem={(detail) => (
+              <List.Item>
+                <Flex vertical style={{ width: "100%" }}>
+                  <Typography.Text type="secondary">
+                    {detail.label}
+                  </Typography.Text>
+                  <Typography.Paragraph
+                    ellipsis={{
+                      rows: 6,
+                      expandable: true,
+                      symbol: "展开原内容",
+                    }}
+                    style={{
+                      whiteSpace: "pre-wrap",
+                      overflowWrap: "anywhere",
+                      marginBottom: 0,
+                    }}
+                  >
+                    {detail.value || "无"}
+                  </Typography.Paragraph>
+                </Flex>
+              </List.Item>
+            )}
+          />
+          <Space wrap>
+            <Button
+              aria-label="刷新目录核对"
+              disabled={attempt.inFlight}
+              loading={loading || categoryRead.loading}
+              onClick={() => {
+                setCategoryCreateOpen(false);
+                setPromptCreateOpen(false);
+                setEditingCategory(null);
+                setEditingPrompt(null);
+                void load({ verify: true });
+              }}
+            >
+              刷新目录核对
+            </Button>
+            <Popconfirm
+              title="已核对腾讯目录中的操作结果？"
+              description="只结束本次核对，不会再次发送原操作。"
+              okText="结束本次操作"
+              onConfirm={() => {
+                if (attempt.finish()) {
+                  setReviewed(false);
+                  setNotice({
+                    type: "info",
+                    text: "本次核对已结束，请根据目录结果继续操作。",
+                  });
+                }
+              }}
+            >
+              <Button
+                disabled={
+                  attempt.inFlight ||
+                  !reviewed ||
+                  Boolean(categoryRead.error || syncError) ||
+                  loading
+                }
+              >
+                已核对，结束本次操作
+              </Button>
+            </Popconfirm>
+          </Space>
+        </Card>
+      ) : null}
       {syncError ? (
         <Alert
           action={
-            <Button loading={loading} onClick={() => void load()}>
+            <Button
+              aria-label="立即重试"
+              loading={loading}
+              onClick={() => void promptRead.reload()}
+            >
               立即重试
             </Button>
           }
@@ -937,12 +1251,16 @@ export function MonitoringClient({
                 upstreamLabel={findModelUpstreamLabel(platforms, modelId)}
               />
             ))}
-            <Tag>{total} 条</Tag>
+            <Tag>{promptRead.data ? `${total} 条` : "未加载"}</Tag>
             {scope.can("resource.create", "geo_insights") ? (
               <Button
+                aria-label="新增问题"
                 icon={<PlusOutlined />}
-                onClick={() => setPromptCreateOpen(true)}
-                disabled={!brandId}
+                onClick={() => {
+                  setNotice(null);
+                  setPromptCreateOpen(true);
+                }}
+                disabled={!brandId || mutationDisabled}
               >
                 新增问题
               </Button>
@@ -956,6 +1274,7 @@ export function MonitoringClient({
             <Flex align="center" gap={12} justify="space-between" wrap>
               <Space size={12} wrap>
                 <Checkbox
+                  disabled={mutationDisabled || loading}
                   checked={allVisiblePromptsSelected}
                   indeterminate={
                     someVisiblePromptsSelected && !allVisiblePromptsSelected
@@ -974,7 +1293,7 @@ export function MonitoringClient({
               <Space>
                 {selectedPromptIds.length ? (
                   <Button
-                    disabled={Boolean(actionKey)}
+                    disabled={mutationDisabled}
                     onClick={() => setSelectedPromptIds([])}
                     type="text"
                   >
@@ -994,7 +1313,7 @@ export function MonitoringClient({
                 >
                   <Button
                     danger
-                    disabled={!selectedPromptIds.length || Boolean(actionKey)}
+                    disabled={!selectedPromptIds.length || mutationDisabled}
                     icon={<DeleteOutlined />}
                   >
                     批量删除
@@ -1016,11 +1335,13 @@ export function MonitoringClient({
             emptyText: (
               <Empty
                 description={
-                  brandId
-                    ? hasActiveFilters
-                      ? "没有符合筛选条件的监控问题"
-                      : "暂无监控问题，可在下方添加"
-                    : "请先选择品牌"
+                  syncError && !promptRead.data
+                    ? "当前条件的问题尚未加载，请重试"
+                    : brandId
+                      ? hasActiveFilters
+                        ? "没有符合筛选条件的监控问题"
+                        : "暂无监控问题，可点击新增问题"
+                      : "请先选择品牌"
                 }
                 image={Empty.PRESENTED_IMAGE_SIMPLE}
               />
@@ -1047,9 +1368,13 @@ export function MonitoringClient({
         extra={
           scope.can("resource.create", "geo_insights") ? (
             <Button
-              disabled={!brandId}
+              aria-label="新增分类"
+              disabled={!brandId || mutationDisabled}
               icon={<PlusOutlined />}
-              onClick={() => setCategoryCreateOpen(true)}
+              onClick={() => {
+                setNotice(null);
+                setCategoryCreateOpen(true);
+              }}
             >
               新增分类
             </Button>
@@ -1069,7 +1394,7 @@ export function MonitoringClient({
                       ? [
                           <Button
                             aria-label={`编辑分类 ${item.title_name}`}
-                            disabled={Boolean(actionKey)}
+                            disabled={mutationDisabled}
                             icon={<EditOutlined />}
                             key="edit"
                             onClick={() => editCategory(item)}
@@ -1096,7 +1421,7 @@ export function MonitoringClient({
                                   <Button
                                     aria-label={`删除分类 ${item.title_name}`}
                                     danger
-                                    disabled={Boolean(actionKey)}
+                                    disabled={mutationDisabled}
                                     icon={<DeleteOutlined />}
                                     size="small"
                                     type="text"
@@ -1127,17 +1452,26 @@ export function MonitoringClient({
           />
         ) : (
           <Empty
-            description="暂无问题分类"
+            description={
+              categoryRead.error && !categoryRead.data
+                ? "分类尚未加载，请重试"
+                : "暂无问题分类"
+            }
             image={Empty.PRESENTED_IMAGE_SIMPLE}
           />
         )}
       </Card>
 
       <Modal
+        closable={!actionKey}
+        maskClosable={!actionKey}
+        keyboard={!actionKey}
+        cancelButtonProps={{ disabled: Boolean(actionKey) }}
         cancelText="取消"
         confirmLoading={actionKey === "category-create"}
         okButtonProps={{
-          disabled: !categoryName.trim() || Boolean(actionKey),
+          "aria-label": "创建分类",
+          disabled: !categoryName.trim() || mutationDisabled,
         }}
         okText="创建分类"
         onCancel={() => setCategoryCreateOpen(false)}
@@ -1146,7 +1480,16 @@ export function MonitoringClient({
         title="新增问题分类"
         width={640}
       >
-        <Form layout="vertical">
+        {formError}
+        {attempt.pending && !actionKey ? (
+          <Alert
+            showIcon
+            type="warning"
+            message="操作结果待核对，请关闭弹窗查看原操作记录。"
+            style={{ marginBottom: 16 }}
+          />
+        ) : null}
+        <Form layout="vertical" disabled={mutationDisabled}>
           <Form.Item
             htmlFor="monitoring-create-category-name"
             label="分类名称"
@@ -1176,10 +1519,15 @@ export function MonitoringClient({
       </Modal>
 
       <Modal
+        closable={!actionKey}
+        maskClosable={!actionKey}
+        keyboard={!actionKey}
+        cancelButtonProps={{ disabled: Boolean(actionKey) }}
         cancelText="取消"
         confirmLoading={actionKey.startsWith("category-update-")}
         okButtonProps={{
-          disabled: !editingCategoryName.trim() || Boolean(actionKey),
+          "aria-label": "保存分类",
+          disabled: !editingCategoryName.trim() || mutationDisabled,
         }}
         okText="保存分类"
         onCancel={() => setEditingCategory(null)}
@@ -1188,7 +1536,16 @@ export function MonitoringClient({
         title="编辑问题分类"
         width={640}
       >
-        <Form layout="vertical">
+        {formError}
+        {attempt.pending && !actionKey ? (
+          <Alert
+            showIcon
+            type="warning"
+            message="操作结果待核对，请关闭弹窗查看原操作记录。"
+            style={{ marginBottom: 16 }}
+          />
+        ) : null}
+        <Form layout="vertical" disabled={mutationDisabled}>
           <Form.Item
             htmlFor="monitoring-edit-category-name"
             label="分类名称"
@@ -1218,10 +1575,21 @@ export function MonitoringClient({
       </Modal>
 
       <Modal
+        closable={!actionKey}
+        maskClosable={!actionKey}
+        keyboard={!actionKey}
+        cancelButtonProps={{ disabled: Boolean(actionKey) }}
         cancelText="取消"
         confirmLoading={actionKey === "prompt-create"}
         okButtonProps={{
-          disabled: !promptTitleId || !promptText.trim() || Boolean(actionKey),
+          "aria-label": "添加问题",
+          disabled:
+            !promptTitleId ||
+            !promptText.trim() ||
+            mutationDisabled ||
+            Boolean(batchInput.error) ||
+            !categoryRead.data ||
+            Boolean(categoryRead.error),
         }}
         okText="添加问题"
         onCancel={() => setPromptCreateOpen(false)}
@@ -1230,7 +1598,26 @@ export function MonitoringClient({
         title="新增监控问题"
         width={760}
       >
-        <Form layout="vertical">
+        {formError}
+        {attempt.pending && !actionKey ? (
+          <Alert
+            showIcon
+            type="warning"
+            message="操作结果待核对，请关闭弹窗查看原操作记录。"
+            style={{ marginBottom: 16 }}
+          />
+        ) : null}
+        {promptTitleId &&
+        categoryRead.data &&
+        !categories.some((item) => item.id === promptTitleId) ? (
+          <Alert
+            showIcon
+            type="warning"
+            message="原分类已不在当前目录，请重新选择分类。"
+            style={{ marginBottom: 16 }}
+          />
+        ) : null}
+        <Form layout="vertical" disabled={mutationDisabled}>
           <Form.Item
             htmlFor="monitoring-new-prompt-category"
             label="所属分类"
@@ -1248,7 +1635,9 @@ export function MonitoringClient({
             />
           </Form.Item>
           <Form.Item
-            extra="每行一个问题，支持批量创建。"
+            extra={`每行一个问题，单次最多 100 个，每个最多 2000 字。将添加 ${batchInput.prompts.length} 个${batchInput.duplicates ? `，已合并 ${batchInput.duplicates} 行重复内容` : ""}。`}
+            validateStatus={batchInput.error ? "error" : undefined}
+            help={batchInput.error || undefined}
             htmlFor="monitoring-new-prompt-text"
             label="问题内容"
             required
@@ -1266,10 +1655,15 @@ export function MonitoringClient({
       </Modal>
 
       <Modal
+        closable={!actionKey}
+        maskClosable={!actionKey}
+        keyboard={!actionKey}
+        cancelButtonProps={{ disabled: Boolean(actionKey) }}
         cancelText="取消"
         confirmLoading={actionKey.startsWith("prompt-update-")}
         okButtonProps={{
-          disabled: !editingPromptText.trim() || Boolean(actionKey),
+          "aria-label": "保存问题",
+          disabled: !editingPromptText.trim() || mutationDisabled,
         }}
         okText="保存问题"
         onCancel={() => setEditingPrompt(null)}
@@ -1278,7 +1672,16 @@ export function MonitoringClient({
         title="编辑监控问题"
         width={720}
       >
-        <Form layout="vertical">
+        {formError}
+        {attempt.pending && !actionKey ? (
+          <Alert
+            showIcon
+            type="warning"
+            message="操作结果待核对，请关闭弹窗查看原操作记录。"
+            style={{ marginBottom: 16 }}
+          />
+        ) : null}
+        <Form layout="vertical" disabled={mutationDisabled}>
           <Form.Item
             htmlFor="monitoring-edit-prompt-text"
             label="问题内容"

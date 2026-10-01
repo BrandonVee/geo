@@ -10,7 +10,7 @@ import {
 } from "./brands";
 import { queryCompetitors } from "./competitors";
 import { queryDashboardMetrics, queryExposureTrends } from "./dashboard";
-import { queryPromptGroups, queryTitles } from "./prompts";
+import { createPromptsBatch, queryPromptGroups, queryTitles } from "./prompts";
 import { queryTaskDetail } from "./insights";
 import { getArticleContent, queryArticles, traceArticle } from "./articles";
 import {
@@ -760,4 +760,44 @@ describe("AnswerBit 计量模块", () => {
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+});
+
+describe("监测批量创建的真实成功边界", () => {
+  const payload = {
+    brand_id: "brand-1",
+    title_id: "title-1",
+    prompts: ["如何选择产品？", "价格是多少？"],
+  };
+  it("只接受与请求一一对应的唯一 ID，保留腾讯 ID 顺序且只写一次", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(response({ prompt_ids: [123, "prompt-2"] }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(
+      createPromptsBatch("key", payload, "request"),
+    ).resolves.toEqual({ prompt_ids: ["123", "prompt-2"] });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual(payload);
+  });
+  it.each([
+    [],
+    ["only-one"],
+    ["one", "two", "three"],
+    ["same", "same"],
+    [12, "12"],
+    ["", "two"],
+    [" ", "two"],
+  ])(
+    "部分、重复或空 ID 不能进入本地成功映射，也不自动重放 %#",
+    async (...ids) => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValue(response({ prompt_ids: ids }));
+      vi.stubGlobal("fetch", fetchMock);
+      await expect(
+        createPromptsBatch("key", payload, "request"),
+      ).rejects.toMatchObject({ kind: "invalid_response" });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    },
+  );
 });

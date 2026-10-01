@@ -107,6 +107,66 @@ async function mockBusinessApis(
     });
   });
 }
+async function mockMonitoringApis(
+  page: Page,
+  handler?: (route: Route, path: string, index: number) => Promise<boolean>,
+) {
+  await mockBusinessApis(page);
+  await page.route("**/api/v1/answerbit/**", async (route) => {
+    const url = new URL(route.request().url());
+    const body =
+      route.request().method() !== "GET" && route.request().postData()
+        ? route.request().postDataJSON()
+        : {};
+    const index = fixture.scopes.findIndex(
+      (scope) =>
+        scope.organizationId ===
+        (url.searchParams.get("organizationId") ?? body.organizationId),
+    );
+    if (handler && (await handler(route, url.pathname, index))) return;
+    if (route.request().method() !== "GET") return route.fallback();
+    if (url.pathname.endsWith("/dashboard/platforms"))
+      return fulfill(route, { DeepSeek: "deepseek" });
+    if (url.pathname === "/api/v1/answerbit/categories")
+      return fulfill(route, [
+        {
+          id: `category-${index}`,
+          title_name: "产品选择",
+          title_desc: "了解产品",
+          count: 1,
+        },
+      ]);
+    if (url.pathname === "/api/v1/answerbit/prompts")
+      return fulfill(route, {
+        total_prompts: 1,
+        titles: [
+          {
+            title_id: `category-${index}`,
+            title_name: "产品选择",
+            title_desc: "了解产品",
+            prompt_count: 1,
+            exposure: 12.5,
+            avg_rank: 2,
+            fluctuation: 0,
+            prompts: [
+              {
+                id: `prompt-${index}`,
+                query_str: `${fixture.scopes[index].name} 的监测问题`,
+                status: 1,
+                title_id: `category-${index}`,
+                tags: [],
+                exposure: 12.5,
+                avg_rank: 2,
+                fluctuation: 0,
+              },
+            ],
+          },
+        ],
+      });
+    return route.fallback();
+  });
+}
+
 const scopedPath = (path: string, index = 0) =>
   `${path}?${new URLSearchParams({ organizationId: fixture.scopes[index].organizationId, brandId: fixture.scopes[index].brandId })}`;
 
@@ -6927,5 +6987,465 @@ test.describe("真实运营操作闭环", () => {
       .poll(() => new URL(page.url()).searchParams.get("reportQ"))
       .toBe(createdId);
     expect(createdId).not.toBe(old.id);
+  });
+  test("监测批量去重和限制提前校验，明确失败保留弹窗，提交时锁定输入和关闭", async ({
+    page,
+  }) => {
+    let writes = 0,
+      fail = true,
+      release!: () => void;
+    let completed = false,
+      refreshedAfterWrite = false;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await mockMonitoringApis(page, async (route, path) => {
+      if (
+        route.request().method() === "GET" &&
+        path === "/api/v1/answerbit/prompts" &&
+        completed
+      )
+        refreshedAfterWrite = true;
+      if (
+        path !== "/api/v1/answerbit/prompts/batch" ||
+        route.request().method() !== "POST"
+      )
+        return false;
+      writes++;
+      expect(route.request().postDataJSON().prompts).toEqual([
+        "如何选择产品？",
+        "价格是多少？",
+      ]);
+      if (fail)
+        await route.fulfill({
+          status: 422,
+          json: {
+            error: {
+              code: "ANSWERBIT_BUSINESS_ERROR",
+              message: "分类已经更新，请检查后重试",
+            },
+          },
+        });
+      else {
+        await held;
+        completed = true;
+        await fulfill(route, { prompt_ids: ["new-1", "new-2"] });
+      }
+      return true;
+    });
+    await page.goto(scopedPath("/dashboard/monitoring"));
+    await expect(
+      page.getByText("流程测试企业 A 的监测问题", { exact: true }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "新增问题", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "新增监控问题" });
+    const text = dialog.getByLabel("问题内容", { exact: true });
+    await text.fill(
+      Array.from({ length: 101 }, (_, i) => `不同的问题 ${i}`).join("\n"),
+    );
+    await expect(
+      dialog.getByText("单次最多添加 100 个不同的问题，请分批添加。", {
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(
+      dialog.getByRole("button", { name: "添加问题", exact: true }),
+    ).toBeDisabled();
+    await text.fill("长".repeat(2001));
+    await expect(
+      dialog.getByText("每个问题最多 2000 字，请缩短超长的问题。", {
+        exact: true,
+      }),
+    ).toBeVisible();
+    expect(writes).toBe(0);
+    const input = "  如何选择产品？  \n\n如何选择产品？\n价格是多少？ ";
+    await text.fill(input);
+    await expect(
+      dialog.getByText(/将添加 2 个，已合并 1 行重复内容/),
+    ).toBeVisible();
+    await dialog.getByRole("button", { name: "添加问题", exact: true }).click();
+    await expect(
+      dialog.getByText("分类已经更新，请检查后重试", { exact: true }),
+    ).toBeVisible();
+    await expect(text).toHaveValue(input);
+    await expect(
+      dialog.getByRole("button", { name: "添加问题", exact: true }),
+    ).toBeEnabled();
+    await expect(
+      page.getByText("上次操作结果待核对", { exact: true }),
+    ).toHaveCount(0);
+    fail = false;
+    await dialog.getByRole("button", { name: "添加问题", exact: true }).click();
+    await expect.poll(() => writes).toBe(2);
+    await expect(text).toBeDisabled();
+    await expect(
+      dialog.getByRole("button", { name: /取\s*消/ }),
+    ).toBeDisabled();
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeVisible();
+    release();
+    await expect(dialog).not.toBeVisible();
+    await expect(
+      page.getByText("已创建 2 个监控问题", { exact: true }),
+    ).toBeVisible();
+    await expect.poll(() => refreshedAfterWrite).toBeTruthy();
+    expect(writes).toBe(2);
+  });
+
+  test("监测响应丢失刷新恢复原操作，只读核对不重复提交，失败可恢复且明暗多尺寸可访问", async ({
+    page,
+  }) => {
+    let writes = 0,
+      failRead = false;
+    const runtime: string[] = [];
+    page.on("pageerror", (error) => runtime.push(error.message));
+    await mockMonitoringApis(page, async (route, path) => {
+      if (
+        path === "/api/v1/answerbit/prompts" &&
+        route.request().method() === "POST"
+      ) {
+        writes++;
+        await route.fulfill({
+          status: 502,
+          json: {
+            error: {
+              code: "ANSWERBIT_UNAVAILABLE",
+              message: "上游响应丢失，请核对目录",
+            },
+          },
+        });
+        return true;
+      }
+      if (failRead && path === "/api/v1/answerbit/categories") {
+        await route.fulfill({
+          status: 503,
+          json: { error: { message: "分类暂时无法读取" } },
+        });
+        return true;
+      }
+      return false;
+    });
+    await page.goto(scopedPath("/dashboard/monitoring"));
+    await expect(
+      page.getByText("流程测试企业 A 的监测问题", { exact: true }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "新增问题", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "新增监控问题" });
+    await dialog.getByLabel("问题内容", { exact: true }).fill("原提交的问题");
+    await dialog.getByRole("button", { name: "添加问题", exact: true }).click();
+    await expect(
+      dialog.getByText("上游响应丢失，请核对目录", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      dialog.getByRole("button", { name: "添加问题", exact: true }),
+    ).toBeDisabled();
+    await dialog.getByRole("button", { name: /取\s*消/ }).click();
+    await expect(
+      page.getByText("上次操作结果待核对", { exact: true }),
+    ).toBeVisible();
+    await page.reload();
+    await expect(page.getByText("原提交的问题", { exact: true })).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "新增问题", exact: true }),
+    ).toBeDisabled();
+    await expect(
+      page.getByRole("button", { name: "已核对，结束本次操作", exact: true }),
+    ).toBeDisabled();
+    failRead = true;
+    await page
+      .getByRole("button", { name: "刷新目录核对", exact: true })
+      .click();
+    await expect(
+      page.getByText("分类暂时无法读取", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("流程测试企业 A 的监测问题", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "已核对，结束本次操作", exact: true }),
+    ).toBeDisabled();
+    failRead = false;
+    await page
+      .getByRole("button", { name: "刷新目录核对", exact: true })
+      .click();
+    await expect(
+      page.getByRole("button", { name: "已核对，结束本次操作", exact: true }),
+    ).toBeEnabled();
+    for (const theme of ["light", "dark"]) {
+      await page.evaluate((value) => {
+        localStorage.setItem("ab-theme", value);
+      }, theme);
+      await page.reload();
+      await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
+      await expect(
+        page.getByText("上次操作结果待核对", { exact: true }),
+      ).toBeVisible();
+      for (const width of [390, 768, 1440]) {
+        await page.setViewportSize({ width, height: 1000 });
+        await expect
+          .poll(() =>
+            page.evaluate(
+              () => document.documentElement.scrollWidth <= window.innerWidth,
+            ),
+          )
+          .toBeTruthy();
+        await page.evaluate(axe.source);
+        const result = await page.evaluate(async () =>
+          (window as unknown as { axe: typeof axe }).axe.run(document, {
+            runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa"] },
+          }),
+        );
+        expect(
+          result.violations.map(({ id, nodes }) => ({
+            id,
+            targets: nodes.map(({ target }) => target),
+          })),
+        ).toEqual([]);
+        if (width === 390 || width === 1440) {
+          await page.screenshot({
+            path: `/tmp/geo-monitoring-${theme}-${width}.png`,
+            fullPage: true,
+          });
+          await page
+            .getByText("上次操作结果待核对", { exact: true })
+            .scrollIntoViewIfNeeded();
+          await page.screenshot({
+            path: `/tmp/geo-monitoring-${theme}-${width}-pending.png`,
+            fullPage: true,
+          });
+          await page
+            .getByRole("heading", { name: "监控问题库", exact: true })
+            .scrollIntoViewIfNeeded();
+        }
+      }
+    }
+    await page
+      .getByRole("button", { name: "刷新目录核对", exact: true })
+      .click();
+    await expect(
+      page.getByRole("button", { name: "已核对，结束本次操作", exact: true }),
+    ).toBeEnabled();
+    await page
+      .getByRole("button", { name: "已核对，结束本次操作", exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: "结束本次操作", exact: true })
+      .click();
+    await expect(
+      page.getByText("上次操作结果待核对", { exact: true }),
+    ).toHaveCount(0);
+    await page.getByRole("button", { name: "新增问题", exact: true }).click();
+    await expect(dialog.getByLabel("问题内容", { exact: true })).toHaveValue(
+      "原提交的问题",
+    );
+    expect(writes).toBe(1);
+    expect(runtime).toEqual([]);
+  });
+
+  test("监测分类与模型独立重试，新筛选不显示旧问题，迟到写入不能清空新企业表单", async ({
+    page,
+  }) => {
+    let failCategory = true,
+      failModels = true,
+      failQuery = false,
+      writeRequested = false;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let categoryReads = 0,
+      promptReads = 0;
+    await mockMonitoringApis(page, async (route, path) => {
+      if (
+        path.startsWith("/api/v1/answerbit/prompts/") &&
+        route.request().method() === "PATCH"
+      ) {
+        writeRequested = true;
+        await held;
+        await fulfill(route, { id: "prompt-0" }).catch(() => {});
+        return true;
+      }
+      if (path === "/api/v1/answerbit/categories") {
+        categoryReads++;
+        if (failCategory) {
+          await route.fulfill({
+            status: 503,
+            json: { error: { message: "分类独立失败" } },
+          });
+          return true;
+        }
+      }
+      if (path.endsWith("/dashboard/platforms") && failModels) {
+        await route.fulfill({
+          status: 503,
+          json: { error: { message: "模型独立失败" } },
+        });
+        return true;
+      }
+      if (path === "/api/v1/answerbit/prompts") {
+        promptReads++;
+        if (
+          failQuery &&
+          new URL(route.request().url()).searchParams.get("query")
+        ) {
+          await route.fulfill({
+            status: 503,
+            json: { error: { message: "新条件读取失败" } },
+          });
+          return true;
+        }
+      }
+      return false;
+    });
+    await page.goto(scopedPath("/dashboard/monitoring"));
+    await expect(
+      page.getByText("流程测试企业 A 的监测问题", { exact: true }),
+    ).toBeVisible();
+    await expect(page.getByText("分类独立失败", { exact: true })).toBeVisible();
+    await expect(page.getByText("模型独立失败", { exact: true })).toBeVisible();
+    const initialPrompts = promptReads;
+    failCategory = false;
+    await page.getByRole("button", { name: "重试分类", exact: true }).click();
+    await expect(page.getByText("分类独立失败", { exact: true })).toHaveCount(
+      0,
+    );
+    expect(promptReads).toBe(initialPrompts);
+    failModels = false;
+    await page.getByRole("button", { name: "重试模型", exact: true }).click();
+    await expect(page.getByText("模型独立失败", { exact: true })).toHaveCount(
+      0,
+    );
+    const initialCategories = categoryReads;
+    failQuery = true;
+    await page.getByLabel("搜索问题", { exact: true }).fill("新条件");
+    await page.getByLabel("搜索问题", { exact: true }).press("Enter");
+    await expect(
+      page.getByText("新条件读取失败", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("流程测试企业 A 的监测问题", { exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByText("当前条件的问题尚未加载，请重试", { exact: true }),
+    ).toBeVisible();
+    expect(categoryReads).toBe(initialCategories);
+    failQuery = false;
+    await page.getByRole("button", { name: "立即重试", exact: true }).click();
+    await expect(
+      page.getByText("流程测试企业 A 的监测问题", { exact: true }),
+    ).toBeVisible();
+    await page
+      .getByRole("button", {
+        name: "停用问题 流程测试企业 A 的监测问题",
+        exact: true,
+      })
+      .click();
+    await expect.poll(() => writeRequested).toBeTruthy();
+    await page.locator("#answerbit-scope-organization").focus();
+    await page.locator("#answerbit-scope-organization").press("ArrowDown");
+    await page.getByTitle("流程测试企业 B", { exact: true }).click();
+    await expect(
+      page.getByText("流程测试企业 B 的监测问题", { exact: true }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "新增问题", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "新增监控问题" });
+    await dialog
+      .getByLabel("问题内容", { exact: true })
+      .fill("新企业未提交的输入");
+    release();
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByLabel("问题内容", { exact: true })).toHaveValue(
+      "新企业未提交的输入",
+    );
+    await expect(
+      dialog.getByRole("button", { name: "添加问题", exact: true }),
+    ).toBeEnabled();
+    await expect(page.getByText("问题已停用", { exact: true })).toHaveCount(0);
+  });
+  test("监测切换回来仍等待原写入，不能提前结束核对，迟到成功刷新当前目录", async ({
+    page,
+  }) => {
+    let release!: () => void,
+      requested = false,
+      written = false;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await mockMonitoringApis(page, async (route, path, index) => {
+      if (route.request().method() === "PATCH") {
+        requested = true;
+        await held;
+        written = true;
+        await fulfill(route, { id: "prompt-0" }).catch(() => {});
+        return true;
+      }
+      if (written && path === "/api/v1/answerbit/prompts" && index === 0) {
+        await fulfill(route, {
+          total_prompts: 1,
+          titles: [
+            {
+              title_id: "category-0",
+              title_name: "产品选择",
+              title_desc: "",
+              prompt_count: 1,
+              exposure: 0,
+              avg_rank: 0,
+              fluctuation: 0,
+              prompts: [
+                {
+                  id: "prompt-0",
+                  query_str: "流程测试企业 A 的监测问题",
+                  status: 2,
+                  title_id: "category-0",
+                  tags: [],
+                  exposure: 0,
+                  avg_rank: 0,
+                  fluctuation: 0,
+                },
+              ],
+            },
+          ],
+        });
+        return true;
+      }
+      return false;
+    });
+    await page.goto(scopedPath("/dashboard/monitoring"));
+    await page
+      .getByRole("button", {
+        name: "停用问题 流程测试企业 A 的监测问题",
+        exact: true,
+      })
+      .click();
+    await expect.poll(() => requested).toBeTruthy();
+    const selectOrganization = async (name: string) => {
+      await page.locator("#answerbit-scope-organization").focus();
+      await page.locator("#answerbit-scope-organization").press("ArrowDown");
+      await page.getByTitle(name, { exact: true }).click();
+    };
+    await selectOrganization("流程测试企业 B");
+    await expect(
+      page.getByText("流程测试企业 B 的监测问题", { exact: true }),
+    ).toBeVisible();
+    await selectOrganization("流程测试企业 A");
+    await expect(
+      page.getByText("原操作仍在提交，请等待结果后再核对。", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "刷新目录核对", exact: true }),
+    ).toBeDisabled();
+    await expect(
+      page.getByRole("button", { name: "已核对，结束本次操作", exact: true }),
+    ).toBeDisabled();
+    release();
+    await expect(
+      page.getByText("上次操作结果待核对", { exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole("button", {
+        name: "启用问题 流程测试企业 A 的监测问题",
+        exact: true,
+      }),
+    ).toBeVisible();
   });
 });

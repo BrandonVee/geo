@@ -97,6 +97,7 @@ export const createPrompt = (
     requestId,
     { timeoutMs: 15_000 },
   );
+// @project-doc docs/interfaces/answerbit_integration.md#response_validation
 export const createPromptsBatch = (
   apiKey: string,
   payload: {
@@ -110,7 +111,13 @@ export const createPromptsBatch = (
   client(apiKey).post(
     "/geo/prompt/create/batch",
     payload,
-    answerBitBatchPromptResultSchema,
+    answerBitBatchPromptResultSchema.refine(
+      (result) =>
+        result.prompt_ids.length === payload.prompts.length &&
+        new Set(result.prompt_ids).size === payload.prompts.length &&
+        result.prompt_ids.every((id) => id.trim().length > 0),
+      "批量创建必须为每个问题返回唯一且非空的 ID",
+    ),
     requestId,
     { timeoutMs: 20_000 },
   );
