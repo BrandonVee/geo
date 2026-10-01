@@ -52,7 +52,18 @@ export const adminService = {
     if (!organization)
       throw new ApiError(404, "ORGANIZATION_NOT_FOUND", "企业不存在");
     const members = await adminRepository.listOrganizationMembers(id);
-    return { organization, members };
+    return {
+      organization,
+      members: members.map(({ agentValidFrom, agentExpiresAt, ...member }) => ({
+        ...member,
+        accountState: getUserAccessState({
+          status: member.userStatus,
+          accountType: member.accountType,
+          agentValidFrom,
+          agentExpiresAt,
+        }),
+      })),
+    };
   },
   async rejectLocalOrganizationCreation(userId: string) {
     await allowed(userId, "platform.tenant.manage");

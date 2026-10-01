@@ -67,6 +67,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { EnterpriseValidity } from "./enterprise-validity";
 import { AdminDocumentLibrary } from "./admin-document-library";
 import { AdminAccountStatusAction } from "./admin-account-status";
+import {
+  AdminMemberActions,
+  useAdminMemberCommand,
+} from "./admin-member-command";
 import { AdminPublicationOrders } from "./admin-publication-orders";
 import { MeteringClient } from "../dashboard/metering/metering-client";
 import type { ScopeOrganization } from "../dashboard/use-answerbit-scope";
@@ -176,6 +180,7 @@ type OrganizationMember = {
   username: string | null;
   accountType: User["accountType"];
   userStatus: string;
+  accountState: "active" | "disabled" | "scheduled" | "expired";
   memberStatus: "active" | "disabled" | "invited";
   joinedAt: string | null;
   role: string | null;
@@ -804,6 +809,38 @@ export function AdminClient({
     useState<OrganizationDetail | null>(null);
   const [userDetail, setUserDetail] = useState<UserDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState("");
+  const [organizationReadError, setOrganizationReadError] = useState("");
+  const [userReadError, setUserReadError] = useState("");
+  const organizationDetailVersion = useRef(0);
+  const userDetailVersion = useRef(0);
+  const directoryUserSearchVersion = useRef(0);
+  const organizationGrant = useAdminMemberCommand(
+    organizationDetail?.organization.id,
+    async (command) => {
+      memberForm.resetFields();
+      memberForm.setFieldValue("role", "tenant_admin");
+      setSelectedMemberRole("tenant_admin");
+      await Promise.all([
+        openOrganization(command.organizationId, true),
+        load(),
+      ]);
+    },
+  );
+  const userGrant = useAdminMemberCommand(
+    userDetail?.user.id,
+    async (command) => {
+      if (command.kind !== "grant") return;
+      userOrganizationForm.resetFields();
+      userOrganizationForm.setFieldValue(
+        "role",
+        userDetail?.user.accountType === "customer"
+          ? "brand_editor"
+          : "tenant_admin",
+      );
+      await Promise.all([openUser(command.userId, true), load()]);
+    },
+  );
+
   const [grantOrganization, setGrantOrganization] =
     useState<Organization | null>(null);
   const [editingChannel, setEditingChannel] = useState<Channel | null>(null);
@@ -1292,16 +1329,16 @@ export function AdminClient({
       }),
     });
   }, [editingUserAccess, userAccessForm]);
+  const userDetailId = userDetail?.user.id;
+  const userDetailAccountType = userDetail?.user.accountType;
   useEffect(() => {
-    if (!userDetail) return;
+    if (!userDetailId) return;
     userOrganizationForm.resetFields();
     userOrganizationForm.setFieldValue(
       "role",
-      userDetail.user.accountType === "customer"
-        ? "brand_editor"
-        : "tenant_admin",
+      userDetailAccountType === "customer" ? "brand_editor" : "tenant_admin",
     );
-  }, [userDetail, userOrganizationForm]);
+  }, [userDetailId, userDetailAccountType, userOrganizationForm]);
   useEffect(() => {
     if (!editingPlatformBrand) return;
     platformBrandUpdateForm.setFieldsValue({
@@ -1378,7 +1415,9 @@ export function AdminClient({
       setBusy("");
     }
   }
-  async function openOrganization(organizationId: string) {
+  async function openOrganization(organizationId: string, refresh = false) {
+    const version = ++organizationDetailVersion.current;
+    setOrganizationReadError("");
     setDetailLoading("organization");
     try {
       const [detail, availableUsers] = await Promise.all([
@@ -1391,33 +1430,50 @@ export function AdminClient({
               "/api/v1/admin/users?page=1&pageSize=100&status=active",
             ),
       ]);
-      setSelectedMemberRole("tenant_admin");
+      if (version !== organizationDetailVersion.current) return;
+      if (!refresh) setSelectedMemberRole("tenant_admin");
       setOrganizationDetail(detail);
       if (availableUsers) setDirectoryUsers(availableUsers.list);
     } catch (error) {
+      if (version !== organizationDetailVersion.current) return;
       setMessage((error as Error).message);
+      if (refresh) {
+        setOrganizationReadError((error as Error).message);
+        throw error;
+      }
     } finally {
-      setDetailLoading("");
+      if (version === organizationDetailVersion.current) setDetailLoading("");
     }
   }
   async function searchDirectoryUsers(value: string) {
+    const version = ++directoryUserSearchVersion.current;
     try {
       const result = await api<PageData<User>>(
         `/api/v1/admin/users?page=1&pageSize=100&status=active&q=${encodeURIComponent(value)}`,
       );
-      setDirectoryUsers(result.list);
+      if (version === directoryUserSearchVersion.current)
+        setDirectoryUsers(result.list);
     } catch (error) {
-      setMessage((error as Error).message);
+      if (version === directoryUserSearchVersion.current)
+        setMessage((error as Error).message);
     }
   }
-  async function openUser(userId: string) {
+  async function openUser(userId: string, refresh = false) {
+    const version = ++userDetailVersion.current;
+    setUserReadError("");
     setDetailLoading("user");
     try {
-      setUserDetail(await api<UserDetail>(`/api/v1/admin/users/${userId}`));
+      const detail = await api<UserDetail>(`/api/v1/admin/users/${userId}`);
+      if (version === userDetailVersion.current) setUserDetail(detail);
     } catch (error) {
+      if (version !== userDetailVersion.current) return;
       setMessage((error as Error).message);
+      if (refresh) {
+        setUserReadError((error as Error).message);
+        throw error;
+      }
     } finally {
-      setDetailLoading("");
+      if (version === userDetailVersion.current) setDetailLoading("");
     }
   }
   async function searchUserOrganizations(query = "") {
@@ -1441,44 +1497,12 @@ export function AdminClient({
   }
   async function saveUserOrganization(values: UserOrganizationForm) {
     if (!userDetail) return;
-    const userId = userDetail.user.id;
-    setBusy("user-organization");
-    try {
-      await api(
-        `/api/v1/admin/organizations/${values.organizationId}/members`,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ userId, role: values.role }),
-        },
-      );
-      userOrganizationForm.resetFields();
-      setMessage("企业权限已保存");
-      await Promise.all([openUser(userId), load()]);
-    } catch (error) {
-      setMessage((error as Error).message);
-    } finally {
-      setBusy("");
-    }
-  }
-  async function removeUserOrganization(
-    member: UserDetail["memberships"][number],
-  ) {
-    if (!userDetail) return;
-    const userId = userDetail.user.id;
-    setBusy("user-organization-" + member.memberId);
-    try {
-      await api(
-        `/api/v1/admin/organizations/${member.organizationId}/members/${member.memberId}`,
-        { method: "DELETE" },
-      );
-      setMessage("已移出企业，相关品牌权限已清除");
-      await Promise.all([openUser(userId), load()]);
-    } catch (error) {
-      setMessage((error as Error).message);
-    } finally {
-      setBusy("");
-    }
+    await userGrant.run({
+      kind: "grant",
+      organizationId: values.organizationId,
+      userId: userDetail.user.id,
+      role: values.role,
+    });
   }
   async function saveUserName() {
     if (
@@ -1557,63 +1581,12 @@ export function AdminClient({
   }
   async function addOrganizationMember(values: MemberForm) {
     if (!organizationDetail) return;
-    const organizationId = organizationDetail.organization.id;
-    setBusy("member-add");
-    try {
-      await api(`/api/v1/admin/organizations/${organizationId}/members`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(values),
-      });
-      memberForm.resetFields();
-      memberForm.setFieldValue("role", "tenant_admin");
-      setSelectedMemberRole("tenant_admin");
-      setMessage("企业成员及权限已更新");
-      await Promise.all([openOrganization(organizationId), load()]);
-    } catch (error) {
-      setMessage((error as Error).message);
-    } finally {
-      setBusy("");
-    }
-  }
-  async function changeMemberStatus(member: OrganizationMember) {
-    if (!organizationDetail) return;
-    const organizationId = organizationDetail.organization.id;
-    setBusy("member-" + member.id);
-    try {
-      await api(
-        `/api/v1/admin/organizations/${organizationId}/members/${member.id}`,
-        {
-          method: "PATCH",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            status: member.memberStatus === "active" ? "disabled" : "active",
-          }),
-        },
-      );
-      await Promise.all([openOrganization(organizationId), load()]);
-    } catch (error) {
-      setMessage((error as Error).message);
-    } finally {
-      setBusy("");
-    }
-  }
-  async function removeMember(member: OrganizationMember) {
-    if (!organizationDetail) return;
-    const organizationId = organizationDetail.organization.id;
-    setBusy("member-" + member.id);
-    try {
-      await api(
-        `/api/v1/admin/organizations/${organizationId}/members/${member.id}`,
-        { method: "DELETE" },
-      );
-      setMessage("成员已从企业移除");
-      await Promise.all([openOrganization(organizationId), load()]);
-    } catch (error) {
-      setMessage((error as Error).message);
-    } finally {
-      setBusy("");
-    }
+    await organizationGrant.run({
+      kind: "grant",
+      organizationId: organizationDetail.organization.id,
+      userId: values.userId,
+      role: values.role,
+    });
   }
   async function savePlatformAnswerBitConfiguration(
     values: PlatformCredentialForm,
@@ -2242,6 +2215,7 @@ export function AdminClient({
       render: (_, item) => (
         <Space>
           <Button
+            aria-label={`管理用户 ${item.name}`}
             loading={detailLoading === "user"}
             onClick={() => void openUser(item.id)}
           >
@@ -5537,9 +5511,26 @@ export function AdminClient({
       <Drawer
         destroyOnHidden
         onClose={() => {
+          organizationDetailVersion.current++;
+          directoryUserSearchVersion.current++;
           setOrganizationDetail(null);
           memberForm.resetFields();
         }}
+        extra={
+          <Button
+            aria-label="刷新企业详情"
+            loading={detailLoading === "organization"}
+            onClick={() =>
+              organizationDetail &&
+              void openOrganization(
+                organizationDetail.organization.id,
+                true,
+              ).catch(() => {})
+            }
+          >
+            刷新
+          </Button>
+        }
         open={Boolean(organizationDetail)}
         title={
           organizationDetail
@@ -5550,6 +5541,14 @@ export function AdminClient({
       >
         {organizationDetail ? (
           <Flex gap={20} vertical>
+            {organizationReadError ? (
+              <Alert
+                type="error"
+                showIcon
+                message="企业详情刷新失败"
+                description={organizationReadError}
+              />
+            ) : null}
             <Button
               onClick={() =>
                 setValidityOrganization(organizationDetail.organization)
@@ -5635,7 +5634,9 @@ export function AdminClient({
                     title="有效成员"
                     value={
                       organizationDetail.members.filter(
-                        (member) => member.memberStatus === "active",
+                        (member) =>
+                          member.memberStatus === "active" &&
+                          member.accountState === "active",
                       ).length
                     }
                   />
@@ -5647,10 +5648,24 @@ export function AdminClient({
               <Form<MemberForm>
                 form={memberForm}
                 name="admin-enterprise-member"
+                disabled={organizationGrant.busy || organizationGrant.checking}
                 initialValues={{ role: "tenant_admin" }}
                 layout="vertical"
                 onFinish={(values) => void addOrganizationMember(values)}
               >
+                {organizationGrant.error ? (
+                  <Alert
+                    type={organizationGrant.refreshFailed ? "warning" : "error"}
+                    showIcon
+                    message={
+                      organizationGrant.refreshFailed
+                        ? "成员权限已保存，目录未刷新"
+                        : "成员权限未保存"
+                    }
+                    description={organizationGrant.error}
+                    style={{ marginBottom: 16 }}
+                  />
+                ) : null}
                 <Row gutter={12}>
                   <Col md={12} xs={24}>
                     <Form.Item
@@ -5698,12 +5713,24 @@ export function AdminClient({
                   </Col>
                 </Row>
                 <Button
+                  aria-label="保存成员权限"
                   htmlType="submit"
-                  loading={busy === "member-add"}
+                  loading={organizationGrant.busy}
                   type="primary"
                 >
                   保存成员权限
                 </Button>
+                {organizationGrant.checking ? (
+                  <Button
+                    aria-label="核对操作结果"
+                    loading={organizationGrant.busy}
+                    disabled={false}
+                    onClick={() => void organizationGrant.run()}
+                    style={{ marginLeft: 8 }}
+                  >
+                    核对操作结果
+                  </Button>
+                ) : null}
               </Form>
             </Card>
 
@@ -5725,6 +5752,15 @@ export function AdminClient({
                         <Typography.Text type="secondary">
                           @{member.username ?? "legacy"}
                         </Typography.Text>
+                        {member.accountState !== "active" ? (
+                          <Typography.Text type="secondary">
+                            {member.accountState === "disabled"
+                              ? "账号已停用"
+                              : member.accountState === "expired"
+                                ? "账号已过期"
+                                : "账号未生效"}
+                          </Typography.Text>
+                        ) : null}
                       </Space>
                     ),
                   },
@@ -5733,9 +5769,17 @@ export function AdminClient({
                     key: "role",
                     render: (_, member) => (
                       <Space wrap>
-                        <Tag>{member.accountType}</Tag>
+                        <Tag>
+                          {member.accountType === "agent"
+                            ? "代理商"
+                            : member.accountType === "admin"
+                              ? "管理员"
+                              : "客户"}
+                        </Tag>
                         <Tag color={member.role ? "blue" : "default"}>
-                          {member.role ?? "品牌范围用户"}
+                          {member.role
+                            ? (roleLabels[member.role] ?? member.role)
+                            : "品牌范围用户"}
                         </Tag>
                       </Space>
                     ),
@@ -5757,21 +5801,24 @@ export function AdminClient({
                     width: 170,
                     render: (_, member) => (
                       <Space>
-                        <Button
-                          loading={busy === "member-" + member.id}
-                          onClick={() => void changeMemberStatus(member)}
-                        >
-                          {member.memberStatus === "active" ? "停用" : "启用"}
-                        </Button>
-                        <Popconfirm
-                          description="成员的品牌权限也会一并移除。"
-                          okButtonProps={{ danger: true }}
-                          okText="移除"
-                          onConfirm={() => void removeMember(member)}
-                          title="确认移出企业？"
-                        >
-                          <Button danger>移除</Button>
-                        </Popconfirm>
+                        <AdminMemberActions
+                          organization={organizationDetail.organization}
+                          member={{
+                            id: member.id,
+                            name: member.name,
+                            username: member.username,
+                            status: member.memberStatus,
+                          }}
+                          onChanged={async () => {
+                            await Promise.all([
+                              openOrganization(
+                                organizationDetail.organization.id,
+                                true,
+                              ),
+                              load(),
+                            ]);
+                          }}
+                        />
                       </Space>
                     ),
                   },
@@ -5792,17 +5839,38 @@ export function AdminClient({
       <Drawer
         destroyOnHidden
         onClose={() => {
+          userDetailVersion.current++;
           setUserDetail(null);
           userOrganizationSearchVersion.current += 1;
           setUserOrganizationOptions([]);
           userOrganizationForm.resetFields();
         }}
+        extra={
+          <Button
+            aria-label="刷新用户档案"
+            loading={detailLoading === "user"}
+            onClick={() =>
+              userDetail &&
+              void openUser(userDetail.user.id, true).catch(() => {})
+            }
+          >
+            刷新
+          </Button>
+        }
         open={Boolean(userDetail)}
         title="用户档案"
         width={mobile ? "100%" : 860}
       >
         {userDetail ? (
           <Flex gap={20} vertical>
+            {userReadError ? (
+              <Alert
+                type="error"
+                showIcon
+                message="用户档案刷新失败"
+                description={userReadError}
+              />
+            ) : null}
             <Card size="small">
               <Flex align="center" gap={16} justify="space-between" wrap>
                 <Space size={16}>
@@ -5967,6 +6035,8 @@ export function AdminClient({
             <Card size="small" title="添加或调整企业权限">
               <Form<UserOrganizationForm>
                 form={userOrganizationForm}
+                name="admin-user-organization"
+                disabled={userGrant.busy || userGrant.checking}
                 initialValues={{
                   role:
                     userDetail.user.accountType === "customer"
@@ -5976,6 +6046,19 @@ export function AdminClient({
                 layout="vertical"
                 onFinish={(values) => void saveUserOrganization(values)}
               >
+                {userGrant.error ? (
+                  <Alert
+                    type={userGrant.refreshFailed ? "warning" : "error"}
+                    showIcon
+                    message={
+                      userGrant.refreshFailed
+                        ? "企业权限已保存，目录未刷新"
+                        : "企业权限未保存"
+                    }
+                    description={userGrant.error}
+                    style={{ marginBottom: 16 }}
+                  />
+                ) : null}
                 <Row gutter={12}>
                   <Col md={12} xs={24}>
                     <Form.Item
@@ -5993,7 +6076,7 @@ export function AdminClient({
                         }
                         options={userOrganizationOptions.map(
                           (organization) => ({
-                            label: organization.name,
+                            label: `${organization.name} · ${organization.answerbitBrandId ?? "品牌未绑定"}`,
                             value: organization.id,
                           }),
                         )}
@@ -6023,12 +6106,24 @@ export function AdminClient({
                   </Col>
                 </Row>
                 <Button
+                  aria-label="保存企业权限"
                   htmlType="submit"
-                  loading={busy === "user-organization"}
+                  loading={userGrant.busy}
                   type="primary"
                 >
                   保存企业权限
                 </Button>
+                {userGrant.checking ? (
+                  <Button
+                    aria-label="核对操作结果"
+                    disabled={false}
+                    loading={userGrant.busy}
+                    onClick={() => void userGrant.run()}
+                    style={{ marginLeft: 8 }}
+                  >
+                    核对操作结果
+                  </Button>
+                ) : null}
               </Form>
             </Card>
 
@@ -6109,22 +6204,25 @@ export function AdminClient({
                     key: "action",
                     width: 110,
                     render: (_, item) => (
-                      <Popconfirm
-                        description="该企业的品牌权限也会一并移除。"
-                        okText="确认移出"
-                        onConfirm={() => void removeUserOrganization(item)}
-                        title="将用户移出企业？"
-                      >
-                        <Button
-                          danger
-                          loading={
-                            busy === "user-organization-" + item.memberId
-                          }
-                          size="small"
-                        >
-                          移出企业
-                        </Button>
-                      </Popconfirm>
+                      <AdminMemberActions
+                        onlyRemove
+                        organization={{
+                          id: item.organizationId,
+                          name: item.organizationName,
+                        }}
+                        member={{
+                          id: item.memberId,
+                          name: userDetail.user.name,
+                          username: userDetail.user.username,
+                          status: item.memberStatus,
+                        }}
+                        onChanged={async () => {
+                          await Promise.all([
+                            openUser(userDetail.user.id, true),
+                            load(),
+                          ]);
+                        }}
+                      />
                     ),
                   },
                 ]}

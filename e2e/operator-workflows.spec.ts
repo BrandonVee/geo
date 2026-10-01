@@ -1718,6 +1718,537 @@ test.describe("真实运营操作闭环", () => {
     ).toHaveCount(0);
   });
 
+  test("平台企业成员停用与移除保留失败确认，授权和停用响应丢失只读核对，刷新失败可恢复", async ({
+    page,
+  }) => {
+    await makePlatformAdministrator();
+    const { db, users, roles, organizationMembers, memberRoles } = database;
+    const { eq, and } = operators;
+    const scope = fixture.scopes[0];
+    const [role] = await db
+      .select()
+      .from(roles)
+      .where(eq(roles.code, "tenant_admin"));
+    const [actorMember] = await db
+      .select()
+      .from(organizationMembers)
+      .where(
+        and(
+          eq(organizationMembers.organizationId, scope.organizationId),
+          eq(organizationMembers.userId, fixture.userId),
+        ),
+      );
+    await db
+      .insert(memberRoles)
+      .values({ memberId: actorMember.id, roleId: role.id });
+    const backupId = randomUUID(),
+      backupUsername = `platform_backup_${randomUUID().slice(0, 8)}`;
+    await db.insert(users).values({
+      id: backupId,
+      name: "平台接任管理员",
+      username: backupUsername,
+      email: `${backupId}@workflow.invalid`,
+      accountType: "agent",
+      pricingTier: "bronze",
+    });
+    const [backup] = await db
+      .insert(organizationMembers)
+      .values({
+        organizationId: scope.organizationId,
+        userId: backupId,
+        status: "active",
+      })
+      .returning();
+    const expiredId = randomUUID();
+    await db.insert(users).values({
+      id: expiredId,
+      name: "已到期代理商",
+      username: `expired_${randomUUID().slice(0, 8)}`,
+      email: `${expiredId}@workflow.invalid`,
+      accountType: "agent",
+      pricingTier: "bronze",
+      agentExpiresAt: new Date(Date.now() - 60_000),
+    });
+    await db.insert(organizationMembers).values({
+      organizationId: scope.organizationId,
+      userId: expiredId,
+      status: "active",
+    });
+    await mockAdminReads(page);
+    let readsFail = false,
+      grants = 0;
+    const detailPath = `**/api/v1/admin/organizations/${scope.organizationId}`;
+    const collection = `**/api/v1/admin/organizations/${scope.organizationId}/members`;
+    await page.route(detailPath, (route) =>
+      readsFail
+        ? route.fulfill({
+            status: 503,
+            json: { error: { message: "企业目录暂不可用" } },
+          })
+        : route.continue(),
+    );
+    await page.route(collection, async (route) => {
+      if (route.request().method() !== "POST") return route.continue();
+      grants++;
+      if (grants === 1) {
+        readsFail = true;
+        return route.fulfill({
+          status: 503,
+          json: { error: { message: "授权暂不可用" } },
+        });
+      }
+      const response = await route.fetch();
+      expect(response.ok()).toBeTruthy();
+      readsFail = true;
+      await route.abort("failed");
+    });
+    await page.goto("/admin?section=organizations");
+    await page
+      .locator("tr")
+      .filter({ hasText: scope.brandId })
+      .getByRole("button", { name: `管理企业 ${scope.name}`, exact: true })
+      .click();
+    const drawer = page.getByRole("dialog", {
+      name: `企业详情 · ${scope.name}`,
+    });
+    await expect(drawer.getByText("账号已过期", { exact: true })).toBeVisible();
+    await expect(
+      drawer
+        .locator(".ant-statistic")
+        .filter({ hasText: "有效成员" })
+        .locator(".ant-statistic-content-value"),
+    ).toHaveText("2");
+    await drawer
+      .getByRole("button", { name: "停用企业成员 操作流程测试", exact: true })
+      .click();
+    const statusDialog = page.getByRole("dialog", { name: "停用企业成员？" });
+    await expect(
+      statusDialog.getByText(new RegExp(fixture.username)),
+    ).toBeVisible();
+    await statusDialog
+      .getByRole("button", { name: "确认停用", exact: true })
+      .click();
+    await expect(
+      statusDialog.getByText(/企业必须保留至少一名可用管理员/),
+    ).toBeVisible();
+    for (const theme of ["light", "dark"]) {
+      if (theme === "dark") {
+        await statusDialog.getByRole("button", { name: /取\s*消/ }).click();
+        await drawer.getByRole("button", { name: /close|关闭/i }).click();
+        await page.getByRole("button", { name: "切换亮暗色模式" }).click();
+        await page
+          .locator("tr")
+          .filter({ hasText: scope.brandId })
+          .getByRole("button", { name: `管理企业 ${scope.name}`, exact: true })
+          .click();
+        await drawer
+          .getByRole("button", {
+            name: "停用企业成员 操作流程测试",
+            exact: true,
+          })
+          .click();
+        await statusDialog
+          .getByRole("button", { name: "确认停用", exact: true })
+          .click();
+        await expect(
+          statusDialog.getByText(/企业必须保留至少一名可用管理员/),
+        ).toBeVisible();
+      }
+      for (const width of [390, 768, 1440]) {
+        await page.setViewportSize({ width, height: 1000 });
+        expect(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth,
+          ),
+        ).toBeTruthy();
+        await page.evaluate(axe.source);
+        const result = await page.evaluate(async () =>
+          (window as unknown as { axe: typeof axe }).axe.run(
+            document.querySelector(
+              '.ant-modal [role="dialog"], .ant-modal[role="dialog"]',
+            )!,
+            {
+              runOnly: {
+                type: "tag",
+                values: ["wcag2a", "wcag2aa", "wcag21aa"],
+              },
+            },
+          ),
+        );
+        expect(result.violations.map(({ id }) => id)).toEqual([]);
+      }
+    }
+    await statusDialog.getByRole("button", { name: /取\s*消/ }).click();
+    await drawer
+      .getByRole("button", { name: "移出企业成员 操作流程测试", exact: true })
+      .click();
+    const removeDialog = page.getByRole("dialog", { name: "移出此企业？" });
+    await removeDialog
+      .getByRole("button", { name: "确认移出", exact: true })
+      .click();
+    await expect(
+      removeDialog.getByText(/企业必须保留至少一名可用管理员/),
+    ).toBeVisible();
+    await removeDialog.getByRole("button", { name: /取\s*消/ }).click();
+    await drawer.getByLabel("平台用户", { exact: true }).click();
+    await drawer.getByLabel("平台用户", { exact: true }).fill(backupUsername);
+    await page
+      .locator(".ant-select-item-option")
+      .filter({ hasText: backupUsername })
+      .click();
+    await drawer
+      .getByRole("button", { name: "保存成员权限", exact: true })
+      .click();
+    await expect(
+      drawer.getByText("提交结果尚未核实，请先核对结果，避免重复操作。", {
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(drawer.getByLabel("平台用户", { exact: true })).toBeDisabled();
+    readsFail = false;
+    await drawer
+      .getByRole("button", { name: "核对操作结果", exact: true })
+      .click();
+    await expect(
+      drawer.getByText(
+        "核对后未发现这次变更，请检查当前成员关系后重新确认操作。",
+        { exact: true },
+      ),
+    ).toBeVisible();
+    expect(grants).toBe(1);
+    await expect(drawer.getByLabel("平台用户", { exact: true })).toBeEnabled();
+    await expect(
+      drawer
+        .locator(".ant-select-selection-item")
+        .filter({ hasText: backupUsername }),
+    ).toBeVisible();
+    await drawer
+      .getByRole("button", { name: "保存成员权限", exact: true })
+      .click();
+    await expect(
+      drawer.getByRole("button", { name: "核对操作结果", exact: true }),
+    ).toBeVisible();
+    readsFail = false;
+    await drawer
+      .getByRole("button", { name: "核对操作结果", exact: true })
+      .click();
+    await expect(
+      drawer.getByRole("button", { name: "核对操作结果", exact: true }),
+    ).toHaveCount(0);
+    expect(grants).toBe(2);
+    expect(
+      (
+        await db
+          .select()
+          .from(memberRoles)
+          .where(
+            and(
+              eq(memberRoles.memberId, backup.id),
+              eq(memberRoles.roleId, role.id),
+            ),
+          )
+      ).length,
+    ).toBe(1);
+    let statusWrites = 0;
+    await page.route(
+      `**/api/v1/admin/organizations/${scope.organizationId}/members/${backup.id}`,
+      async (route) => {
+        if (route.request().method() !== "PATCH") return route.continue();
+        statusWrites++;
+        const response = await route.fetch();
+        expect(response.ok()).toBeTruthy();
+        readsFail = true;
+        await route.abort("failed");
+      },
+    );
+    await drawer
+      .getByRole("button", { name: "停用企业成员 平台接任管理员", exact: true })
+      .click();
+    await statusDialog
+      .getByRole("button", { name: "确认停用", exact: true })
+      .click();
+    await expect(
+      statusDialog.getByRole("button", { name: "核对操作结果", exact: true }),
+    ).toBeVisible();
+    readsFail = false;
+    await statusDialog
+      .getByRole("button", { name: "核对操作结果", exact: true })
+      .click();
+    await expect(statusDialog).not.toBeVisible();
+    expect(statusWrites).toBe(1);
+    await page.unroute(
+      `**/api/v1/admin/organizations/${scope.organizationId}/members/${backup.id}`,
+    );
+    await db
+      .update(users)
+      .set({ status: "disabled" })
+      .where(eq(users.id, backupId));
+    await drawer
+      .getByRole("button", { name: "刷新企业详情", exact: true })
+      .click();
+    await expect(drawer.getByText("账号已停用", { exact: true })).toBeVisible();
+    await drawer
+      .getByRole("button", { name: "启用企业成员 平台接任管理员", exact: true })
+      .click();
+    const activate = page.getByRole("dialog", { name: "启用企业成员？" });
+    await activate
+      .getByRole("button", { name: "确认启用", exact: true })
+      .click();
+    await expect(
+      activate.getByText("该账户已停用", { exact: true }),
+    ).toBeVisible();
+    await activate.getByRole("button", { name: /取\s*消/ }).click();
+    // A successful removal is distinct from a failed directory refresh.
+    await page.unroute(
+      `**/api/v1/admin/organizations/${scope.organizationId}/members/${backup.id}`,
+    );
+    let deletes = 0;
+    await page.route(
+      `**/api/v1/admin/organizations/${scope.organizationId}/members/${backup.id}`,
+      async (route) => {
+        deletes++;
+        const response = await route.fetch();
+        expect(response.ok()).toBeTruthy();
+        readsFail = true;
+        await route.fulfill({ response });
+      },
+    );
+    await drawer
+      .getByRole("button", { name: "移出企业成员 平台接任管理员", exact: true })
+      .click();
+    await removeDialog
+      .getByRole("button", { name: "确认移出", exact: true })
+      .click();
+    await expect(removeDialog).not.toBeVisible();
+    await expect(
+      drawer.getByText("企业详情刷新失败", { exact: true }),
+    ).toBeVisible();
+    readsFail = false;
+    await drawer
+      .getByRole("button", { name: "刷新企业详情", exact: true })
+      .click();
+    await expect(
+      drawer.getByRole("button", {
+        name: "移出企业成员 平台接任管理员",
+        exact: true,
+      }),
+    ).toHaveCount(0);
+    expect(deletes).toBe(1);
+  });
+
+  test("用户档案企业授权保留输入，刷新不清空表单，品牌权限响应丢失核对原企业，移除只写一次", async ({
+    page,
+  }) => {
+    await makePlatformAdministrator();
+    const { db, users, organizationMembers, brandAccess } = database;
+    const { eq, and } = operators;
+    const scope = fixture.scopes[0];
+    const targetId = randomUUID(),
+      username = `profile_member_${randomUUID().slice(0, 8)}`;
+    await db.insert(users).values({
+      id: targetId,
+      name: "档案品牌成员",
+      username,
+      email: `${targetId}@workflow.invalid`,
+      accountType: "customer",
+      pricingTier: "retail",
+    });
+    const [member] = await db
+      .insert(organizationMembers)
+      .values({
+        organizationId: scope.organizationId,
+        userId: targetId,
+        status: "active",
+      })
+      .returning();
+    const other = fixture.scopes[1];
+    await db.insert(organizationMembers).values({
+      organizationId: other.organizationId,
+      userId: targetId,
+      status: "active",
+    });
+    await db.insert(brandAccess).values({
+      organizationId: other.organizationId,
+      teamBindingId: other.teamBindingId,
+      brandId: other.brandId,
+      userId: targetId,
+      role: "brand_admin",
+    });
+    await mockAdminReads(page);
+    let readsFail = false,
+      writes = 0;
+    await page.route(
+      `**/api/v1/admin/organizations/${scope.organizationId}`,
+      (route) =>
+        readsFail
+          ? route.fulfill({
+              status: 503,
+              json: { error: { message: "权限核对暂不可用" } },
+            })
+          : route.continue(),
+    );
+    await page.route(
+      `**/api/v1/admin/organizations/${scope.organizationId}/members`,
+      async (route) => {
+        if (route.request().method() !== "POST") return route.continue();
+        writes++;
+        if (writes === 1)
+          return route.fulfill({
+            status: 422,
+            json: { error: { code: "QA_DENIED", message: "权限保存暂时受限" } },
+          });
+        if (writes === 2)
+          return route.fulfill({
+            status: 503,
+            json: { error: { message: "保存结果需核对" } },
+          });
+        const response = await route.fetch();
+        expect(response.ok()).toBeTruthy();
+        readsFail = true;
+        await route.abort("failed");
+      },
+    );
+    await page.goto("/admin?section=users");
+    await page
+      .getByPlaceholder("搜索姓名或登录账号", { exact: true })
+      .fill(username);
+    await page
+      .getByPlaceholder("搜索姓名或登录账号", { exact: true })
+      .press("Enter");
+    await page
+      .getByRole("button", { name: "管理用户 档案品牌成员", exact: true })
+      .click();
+    const drawer = page.getByRole("dialog", { name: "用户档案", exact: true });
+    await drawer.getByLabel("目标企业", { exact: true }).click();
+    await drawer.getByLabel("目标企业", { exact: true }).fill(scope.name);
+    await page
+      .locator(".ant-select-item-option")
+      .filter({ hasText: scope.brandId })
+      .click();
+    await drawer
+      .getByRole("button", { name: "保存企业权限", exact: true })
+      .click();
+    await expect(
+      drawer.getByText("权限保存暂时受限", { exact: true }),
+    ).toBeVisible();
+    await drawer
+      .getByRole("button", { name: "刷新用户档案", exact: true })
+      .click();
+    await expect(
+      drawer
+        .locator(".ant-select-selection-item")
+        .filter({ hasText: scope.name }),
+    ).toBeVisible();
+    await drawer.getByLabel("企业角色", { exact: true }).press("ArrowDown");
+    await page
+      .locator(".ant-select-item-option")
+      .filter({ hasText: "品牌管理员" })
+      .click();
+    await drawer
+      .getByRole("button", { name: "保存企业权限", exact: true })
+      .click();
+    await expect(
+      drawer.getByText(
+        "核对后未发现这次变更，请检查当前成员关系后重新确认操作。",
+        { exact: true },
+      ),
+    ).toBeVisible();
+    expect(writes).toBe(2);
+    await drawer
+      .getByRole("button", { name: "保存企业权限", exact: true })
+      .click();
+    await expect(
+      drawer.getByRole("button", { name: "核对操作结果", exact: true }),
+    ).toBeVisible();
+    readsFail = false;
+    await drawer
+      .getByRole("button", { name: "核对操作结果", exact: true })
+      .click();
+    await expect(
+      drawer.getByRole("button", { name: "核对操作结果", exact: true }),
+    ).toHaveCount(0);
+    expect(writes).toBe(3);
+    const access = await db
+      .select()
+      .from(brandAccess)
+      .where(
+        and(
+          eq(brandAccess.userId, targetId),
+          eq(brandAccess.organizationId, scope.organizationId),
+        ),
+      );
+    expect(access).toHaveLength(1);
+    expect(access[0]).toMatchObject({
+      brandId: scope.brandId,
+      role: "brand_admin",
+    });
+    let deletes = 0;
+    await page.route(
+      `**/api/v1/admin/organizations/${scope.organizationId}/members/${member.id}`,
+      async (route) => {
+        deletes++;
+        const response = await route.fetch();
+        expect(response.ok()).toBeTruthy();
+        readsFail = true;
+        await route.abort("failed");
+      },
+    );
+    await drawer
+      .getByRole("button", {
+        name: `移出企业成员 档案品牌成员 · ${scope.name}`,
+        exact: true,
+      })
+      .click();
+    const confirmation = page.getByRole("dialog", { name: "移出此企业？" });
+    await expect(confirmation.getByText(new RegExp(username))).toBeVisible();
+    await confirmation
+      .getByRole("button", { name: "确认移出", exact: true })
+      .click();
+    await expect(
+      confirmation.getByRole("button", { name: "核对操作结果", exact: true }),
+    ).toBeVisible();
+    readsFail = false;
+    await confirmation
+      .getByRole("button", { name: "核对操作结果", exact: true })
+      .click();
+    await expect(confirmation).not.toBeVisible();
+    await expect(
+      drawer.getByRole("button", {
+        name: `移出企业成员 档案品牌成员 · ${scope.name}`,
+        exact: true,
+      }),
+    ).toHaveCount(0);
+    expect(deletes).toBe(1);
+    const remaining = await db
+      .select()
+      .from(brandAccess)
+      .where(eq(brandAccess.userId, targetId));
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]).toMatchObject({
+      organizationId: other.organizationId,
+      brandId: other.brandId,
+      role: "brand_admin",
+    });
+    // Closing a drawer invalidates an in-flight refresh instead of reopening it.
+    let requested = false,
+      release!: () => void;
+    const delayed = new Promise<void>((resolve) => (release = resolve));
+    await page.route(`**/api/v1/admin/users/${targetId}`, async (route) => {
+      requested = true;
+      await delayed;
+      await route.continue();
+    });
+    await drawer
+      .getByRole("button", { name: "刷新用户档案", exact: true })
+      .click();
+    await expect.poll(() => requested).toBe(true);
+    await drawer.getByRole("button", { name: /close|关闭/i }).click();
+    release();
+    await expect(drawer).not.toBeVisible();
+    await page.waitForLoadState("networkidle");
+    await expect(drawer).not.toBeVisible();
+  });
+
   test("多企业管理员停用先交接，失败保留确认层并可直达企业，响应丢失核对一次写入", async ({
     page,
   }) => {

@@ -356,6 +356,8 @@ export const adminRepository = {
         username: users.username,
         accountType: users.accountType,
         userStatus: users.status,
+        agentValidFrom: users.agentValidFrom,
+        agentExpiresAt: users.agentExpiresAt,
         memberStatus: organizationMembers.status,
         joinedAt: organizationMembers.joinedAt,
         role: roles.code,
