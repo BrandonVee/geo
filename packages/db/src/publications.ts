@@ -5,11 +5,13 @@ import {
   count,
   desc,
   eq,
+  gte,
   getTableColumns,
   ilike,
   inArray,
   isNotNull,
   lte,
+  lt,
   or,
   sql,
 } from "drizzle-orm";
@@ -24,6 +26,7 @@ import {
   users,
 } from "./schema";
 import type { PricingTier } from "./pricing";
+import { withTenantDbContext } from "./context";
 
 const pricingTiers = ["retail", "bronze", "silver", "gold"] as const;
 
@@ -439,6 +442,87 @@ export function listPublicationOrders(organizationId?: string) {
         : undefined,
     )
     .orderBy(desc(publicationOrders.createdAt));
+}
+// @project-doc docs/domains/geo_operations.md#publication_orders
+export function listPublicationOrdersPage(input: {
+  organizationId: string;
+  userId: string;
+  teamBindingId?: string;
+  brandId?: string;
+  page: number;
+  pageSize: number;
+  keyword?: string;
+  status?: typeof publicationOrders.$inferSelect.status;
+  beginDate?: string;
+  endDate?: string;
+}) {
+  return withTenantDbContext(
+    input,
+    async (tx) => {
+      const conditions = [
+        eq(publicationOrders.organizationId, input.organizationId),
+      ];
+      if (input.brandId)
+        conditions.push(eq(publicationOrders.brandId, input.brandId));
+      if (input.status)
+        conditions.push(eq(publicationOrders.status, input.status));
+      if (input.beginDate && input.endDate) {
+        conditions.push(
+          gte(
+            publicationOrders.createdAt,
+            new Date(`${input.beginDate}T00:00:00+08:00`),
+          ),
+        );
+        conditions.push(
+          lt(
+            publicationOrders.createdAt,
+            new Date(
+              new Date(`${input.endDate}T00:00:00+08:00`).getTime() +
+                86_400_000,
+            ),
+          ),
+        );
+      }
+      if (input.keyword) {
+        const pattern = `%${input.keyword.replace(/[\\%_]/g, "\\$&")}%`;
+        conditions.push(
+          or(
+            ilike(publicationOrders.title, pattern),
+            ilike(publicationChannels.name, pattern),
+            sql`${publicationOrders.id}::text ilike ${pattern}`,
+          )!,
+        );
+      }
+      const where = and(...conditions);
+      const [totals] = await tx
+        .select({ total: count() })
+        .from(publicationOrders)
+        .innerJoin(
+          publicationChannels,
+          eq(publicationChannels.id, publicationOrders.channelId),
+        )
+        .where(where);
+      const total = totals?.total ?? 0;
+      const pages = Math.ceil(total / input.pageSize);
+      const page = Math.min(input.page, Math.max(1, pages));
+      const list = await tx
+        .select({ order: publicationOrders, channel: publicationChannels })
+        .from(publicationOrders)
+        .innerJoin(
+          publicationChannels,
+          eq(publicationChannels.id, publicationOrders.channelId),
+        )
+        .where(where)
+        .orderBy(desc(publicationOrders.createdAt), desc(publicationOrders.id))
+        .limit(input.pageSize)
+        .offset((page - 1) * input.pageSize);
+      return {
+        list,
+        pagination: { page, pageSize: input.pageSize, total, pages },
+      };
+    },
+    { isolationLevel: "repeatable read", accessMode: "read only" },
+  );
 }
 // @project-doc docs/domains/balance_and_publication.md#publication_state_machine
 export async function createPublicationOrderWithBalance(input: {

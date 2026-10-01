@@ -7,6 +7,10 @@ const m = vi.hoisted(() => ({
   updateOrder: vi.fn(),
   recordProviderSnapshot: vi.fn(),
   findOrder: vi.fn(),
+  orders: vi.fn(),
+  orderPage: vi.fn(),
+  reconcile: vi.fn(),
+  organizationAuthorize: vi.fn(),
   submit: vi.fn(),
   cancel: vi.fn(),
   appeal: vi.fn(),
@@ -40,7 +44,7 @@ vi.mock("@/server/permissions/platform", () => ({
 }));
 vi.mock("@/server/audit/write-audit", () => ({ writeAudit: m.writeAudit }));
 vi.mock("./organizations", () => ({
-  organizationService: { authorize: vi.fn() },
+  organizationService: { authorize: m.organizationAuthorize },
 }));
 vi.mock("@/server/http/errors", () => ({
   ApiError: class extends Error {
@@ -57,6 +61,7 @@ vi.mock("@/server/integrations/frog-publication/client", async () => {
   const actual = await import("@geo/publication");
   return {
     ...actual,
+    reconcilePublicationOrders: m.reconcile,
     frogPublicationClient: {
       configured: true,
       submit: m.submit,
@@ -101,6 +106,7 @@ const order = {
 };
 beforeEach(() => {
   vi.resetAllMocks();
+  m.reconcile.mockResolvedValue({ errors: 0 });
   m.findChannel.mockResolvedValue(channel);
   m.findChannelForUser.mockResolvedValue(channel);
   m.createOrder.mockResolvedValue({ ok: true, order, replayed: false });
@@ -131,6 +137,74 @@ beforeEach(() => {
   });
 });
 describe("发布业务闭环", () => {
+  it("只同步已授权分页，再读取状态改变后的匹配结果", async () => {
+    const first = {
+      list: [{ order, channel }],
+      pagination: { page: 2, pageSize: 20, total: 21, pages: 2 },
+    };
+    const latest = {
+      list: [],
+      pagination: { page: 1, pageSize: 20, total: 0, pages: 0 },
+    };
+    m.orderPage.mockResolvedValueOnce(first).mockResolvedValueOnce(latest);
+    const query = {
+      organizationId: "org",
+      teamBindingId: "team",
+      brandId: "brand",
+      keyword: "标题",
+      page: 2,
+      pageSize: 20,
+      status: "processing" as const,
+    };
+    await expect(publicationService.list(query, "user")).resolves.toEqual(
+      latest,
+    );
+    expect(m.authorizeBrand).toHaveBeenCalledWith(
+      "org",
+      "team",
+      "brand",
+      "user",
+      "publication.read",
+    );
+    expect(m.orderPage).toHaveBeenCalledTimes(2);
+    expect(m.orderPage).toHaveBeenCalledWith({ ...query, userId: "user" });
+    expect(m.reconcile).toHaveBeenCalledWith(
+      first.list,
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(m.orders).not.toHaveBeenCalled();
+    expect(m.submit).not.toHaveBeenCalled();
+  });
+  it("无品牌的企业查询先校验企业权限，拒绝时不读分页", async () => {
+    m.organizationAuthorize.mockRejectedValue(new Error("ACCESS_DENIED"));
+    await expect(
+      publicationService.list(
+        { organizationId: "org", page: 1, pageSize: 20, keyword: "" },
+        "user",
+      ),
+    ).rejects.toThrow("ACCESS_DENIED");
+    expect(m.orderPage).not.toHaveBeenCalled();
+  });
+  it("品牌权限拒绝时不查询或同步订单", async () => {
+    m.authorizeBrand.mockRejectedValue(new Error("ACCESS_DENIED"));
+    await expect(
+      publicationService.list(
+        {
+          organizationId: "org",
+          teamBindingId: "team",
+          brandId: "brand",
+          page: 1,
+          pageSize: 20,
+          keyword: "",
+        },
+        "user",
+      ),
+    ).rejects.toThrow("ACCESS_DENIED");
+    expect(m.orderPage).not.toHaveBeenCalled();
+    expect(m.reconcile).not.toHaveBeenCalled();
+  });
+
   it("已发布来源仅返回标题与公开链接，读取不投稿或扣款", async () => {
     const id = "11111111-1111-4111-8111-111111111111";
     m.findOrder.mockResolvedValue({

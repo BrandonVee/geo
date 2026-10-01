@@ -13,6 +13,7 @@ import {
   adminUserPageQuerySchema,
   balanceTransactionQuerySchema,
   pointUsageQuerySchema,
+  publicationOrderQuerySchema,
 } from "./index";
 
 const organizationId = "e17c707b-f07c-4464-a4fa-26d699dad45b";
@@ -20,6 +21,46 @@ const teamBindingId = "630dacb0-54b4-464c-acd0-de1079ff2a0b";
 const userId = "d5ddb2bc-44ad-4395-a05b-e3a2ad0129f8";
 const pngBase64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+
+describe("发布订单查询契约", () => {
+  it("默认返回有界分页，完整品牌范围和合法筛选可以组合", () => {
+    expect(publicationOrderQuerySchema.parse({ organizationId })).toMatchObject(
+      { page: 1, pageSize: 20, keyword: "" },
+    );
+    expect(
+      publicationOrderQuerySchema.parse({
+        organizationId,
+        teamBindingId,
+        brandId: "brand",
+        page: "2",
+        pageSize: "50",
+        keyword: "  100%_文章  ",
+        status: "published",
+        beginDate: "2026-09-01",
+        endDate: "2026-09-30",
+      }),
+    ).toMatchObject({
+      page: 2,
+      pageSize: 50,
+      keyword: "100%_文章",
+      status: "published",
+    });
+  });
+  it.each([
+    { page: "0" },
+    { pageSize: "101" },
+    { status: "unknown" },
+    { brandId: "brand" },
+    { beginDate: "2026-09-01" },
+    { beginDate: "2026-09-02", endDate: "2026-09-01" },
+    { endDate: "not-a-date", beginDate: "2026-09-01" },
+  ])("拒绝不完整或非法查询 %j", (value) => {
+    expect(
+      publicationOrderQuerySchema.safeParse({ organizationId, ...value })
+        .success,
+    ).toBe(false);
+  });
+});
 
 describe("平台资源管理契约", () => {
   it("媒体发布配置只接受 HTTP(S) Origin", () => {

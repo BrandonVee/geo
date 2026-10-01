@@ -26,6 +26,8 @@ JSON 请求使用 `Content-Type: application/json`；允许标准的 `applicatio
 
 已发布订单的 `GET /v1/publication-orders/{orderId}/tracking-source` 要求完整品牌范围、`publication.read` 与 `resource.create`，返回订单 ID、标题及公开结果链接，不创建追踪或扣费。订单在其他范围不可见返回 404，尚未发布或已退稿返回 409，缺少有效 HTTP(S) 结果链接返回 422。
 
+`GET /v1/publication-orders` 默认每页 20 条，上限 100 条；可按 `keyword`、`status` 及成对的 `beginDate`/`endDate` 筛选。`data` 保持订单数组，envelope 新增 `pagination`（`page`、`pageSize`、`total`、`pages`）；日期按北京时间计算，超出末页返回实际末页。只即时同步本次授权分页的履约状态，再读取最新匹配结果。
+
 ## 响应格式
 
 成功响应：

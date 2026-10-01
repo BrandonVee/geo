@@ -10,6 +10,7 @@ import {
   Button,
   Card,
   Col,
+  DatePicker,
   Divider,
   Empty,
   Form,
@@ -29,6 +30,7 @@ import {
 } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import dayjs from "dayjs";
 import { AccessibleTable } from "../../accessible-table";
 import {
   ScopeFields,
@@ -46,6 +48,7 @@ import {
 } from "./publication-draft";
 import { type PublicationChannel } from "./publication-channel";
 import styles from "./publication-form.module.css";
+import { usePublicationOrderPage } from "./use-publication-order-page";
 
 type Asset = "answerbit_points" | "publication_cny";
 type Account = {
@@ -207,7 +210,11 @@ function BillingWorkspace({
   const [channelOptions, setChannelOptions] = useState<Channel[]>([]);
   const [selectedChannel, setSelectedChannel] = useState<Channel>();
   const [channelEditing, setChannelEditing] = useState(false);
-  const [orders, setOrders] = useState<PublicationOrder[]>([]);
+  const orderPage = usePublicationOrderPage<PublicationOrder>(
+    scope,
+    view === "orders" && scope.can("publication.read"),
+  );
+  const [orderKeyword, setOrderKeyword] = useState(orderPage.query.keyword);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState("");
   const [publicationForm] = Form.useForm<PublicationForm>();
@@ -322,14 +329,8 @@ function BillingWorkspace({
           teamBindingId: scope.teamBindingId,
           brandId: scope.brandId,
         });
-        const [brand, nextOrders, channel, channelPage] = await Promise.all([
+        const [brand, channel, channelPage] = await Promise.all([
           api<Account[]>(`/api/v1/balances?${brandQuery}`, { signal }),
-          view === "orders"
-            ? api<PublicationOrder[]>(
-                `/api/v1/publication-orders?${brandQuery}`,
-                { signal },
-              )
-            : Promise.resolve([]),
           view === "new" && restoredChannelId && !channelInitialized.current
             ? api<Channel>(
                 `/api/v1/publication-channels/${restoredChannelId}`,
@@ -345,7 +346,6 @@ function BillingWorkspace({
         ]);
         if (signal?.aborted || version !== readVersion.current) return;
         setBrandAccounts(brand);
-        setOrders(nextOrders);
         if (channelPage) {
           setChannelOptions((current) => {
             const active =
@@ -551,7 +551,7 @@ function BillingWorkspace({
           brandId: scope.brandId,
         }),
       });
-      await load();
+      await Promise.all([load(), orderPage.refresh()]);
       setMessage("发布订单已取消，发布余额已返还");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "取消发布订单失败");
@@ -576,7 +576,7 @@ function BillingWorkspace({
       });
       setAppealOrderId(undefined);
       appealForm.resetFields();
-      await load();
+      await Promise.all([load(), orderPage.refresh()]);
       setMessage("发布申诉已提交");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "发布申诉提交失败");
@@ -612,6 +612,9 @@ function BillingWorkspace({
           <Typography.Text strong>{item.order.title}</Typography.Text>
           <Typography.Text type="secondary">
             {item.channel.category + " · " + item.channel.name}
+          </Typography.Text>
+          <Typography.Text type="secondary" copyable={{ text: item.order.id }}>
+            订单号 {item.order.id.slice(0, 8)}
           </Typography.Text>
         </Space>
       ),
@@ -788,27 +791,174 @@ function BillingWorkspace({
         <Card
           extra={
             <Button
-              loading={loading}
-              icon={<ReloadOutlined />}
-              onClick={() => void load()}
+              loading={orderPage.loading}
+              icon={<ReloadOutlined aria-hidden="true" />}
+              onClick={() => void orderPage.refresh()}
             >
               刷新
             </Button>
           }
           title="发布订单"
         >
+          <Form
+            layout="vertical"
+            disabled={!scope.brandId || !scope.can("publication.read")}
+          >
+            <Row gutter={[16, 8]}>
+              <Col lg={9} md={12} xs={24}>
+                <Form.Item label="查找订单" htmlFor="publication-order-keyword">
+                  <Input.Search
+                    id="publication-order-keyword"
+                    maxLength={255}
+                    placeholder="文章标题、媒体或订单编号"
+                    value={orderKeyword}
+                    onChange={(event) => setOrderKeyword(event.target.value)}
+                    onSearch={(keyword) =>
+                      orderPage.update({
+                        keyword: keyword.trim(),
+                        page: 1,
+                      })
+                    }
+                    allowClear
+                  />
+                </Form.Item>
+              </Col>
+              <Col lg={5} md={12} xs={24}>
+                <Form.Item label="订单状态" htmlFor="publication-order-status">
+                  <Select
+                    id="publication-order-status"
+                    allowClear
+                    placeholder="全部状态"
+                    value={orderPage.query.status}
+                    options={Object.entries(publicationStatusLabels).map(
+                      ([value, label]) => ({ value, label }),
+                    )}
+                    onChange={(status) => orderPage.update({ status, page: 1 })}
+                  />
+                </Form.Item>
+              </Col>
+              <Col lg={10} md={24} xs={24}>
+                <Form.Item label="提交日期" htmlFor="publication-order-begin">
+                  <DatePicker.RangePicker
+                    id={{
+                      start: "publication-order-begin",
+                      end: "publication-order-end",
+                    }}
+                    placeholder={["开始日期", "结束日期"]}
+                    disabledDate={(date) => date.isAfter(dayjs(), "day")}
+                    value={
+                      orderPage.query.beginDate && orderPage.query.endDate
+                        ? [
+                            dayjs(orderPage.query.beginDate),
+                            dayjs(orderPage.query.endDate),
+                          ]
+                        : null
+                    }
+                    presets={[
+                      {
+                        label: "近 7 天",
+                        value: [dayjs().subtract(6, "day"), dayjs()],
+                      },
+                      {
+                        label: "近 30 天",
+                        value: [dayjs().subtract(29, "day"), dayjs()],
+                      },
+                    ]}
+                    onChange={(range) =>
+                      orderPage.update({
+                        page: 1,
+                        beginDate: range?.[0]?.format("YYYY-MM-DD"),
+                        endDate: range?.[1]?.format("YYYY-MM-DD"),
+                      })
+                    }
+                    style={{ width: "100%" }}
+                  />
+                  <label
+                    htmlFor="publication-order-end"
+                    style={{
+                      position: "absolute",
+                      width: 1,
+                      height: 1,
+                      overflow: "hidden",
+                      clipPath: "inset(50%)",
+                    }}
+                  >
+                    提交结束日期
+                  </label>
+                </Form.Item>
+              </Col>
+            </Row>
+            <Flex
+              justify="space-between"
+              align="center"
+              wrap
+              gap={8}
+              style={{ marginBottom: 16 }}
+            >
+              <Typography.Text type="secondary">
+                {orderPage.query.keyword
+                  ? `关键词：${orderPage.query.keyword} · `
+                  : ""}
+                共 {orderPage.pagination.total} 条订单
+              </Typography.Text>
+              <Button
+                onClick={() => {
+                  setOrderKeyword("");
+                  orderPage.update({
+                    keyword: "",
+                    status: undefined,
+                    beginDate: undefined,
+                    endDate: undefined,
+                    page: 1,
+                  });
+                }}
+              >
+                清除筛选
+              </Button>
+            </Flex>
+          </Form>
+          {orderPage.error ? (
+            <Alert
+              type="error"
+              showIcon
+              message={orderPage.error}
+              action={
+                <Button onClick={() => void orderPage.refresh()}>重试</Button>
+              }
+              style={{ marginBottom: 16 }}
+            />
+          ) : null}
           <AccessibleTable<PublicationOrder>
             columns={orderColumns}
-            dataSource={orders}
+            dataSource={orderPage.list}
+            loading={orderPage.loading}
             locale={{
               emptyText: (
                 <Empty
-                  description="暂无发布订单"
+                  description={
+                    orderPage.query.keyword ||
+                    orderPage.query.status ||
+                    orderPage.query.beginDate
+                      ? "没有符合筛选条件的订单"
+                      : "暂无发布订单"
+                  }
                   image={Empty.PRESENTED_IMAGE_SIMPLE}
                 />
               ),
             }}
-            pagination={false}
+            pagination={{
+              current: orderPage.pagination.page,
+              pageSize: orderPage.pagination.pageSize,
+              total: orderPage.pagination.total,
+              showSizeChanger: true,
+              pageSizeOptions: [10, 20, 50, 100],
+              showTotal: (total) => `共 ${total} 条`,
+              onChange: (page, pageSize) =>
+                orderPage.update({
+                  page: pageSize === orderPage.query.pageSize ? page : 1,
+                  pageSize,
+                }),
+            }}
             rowKey={(item) => item.order.id}
             scroll={{ x: 800 }}
             scrollRegionLabel="发布订单，可横向滚动"

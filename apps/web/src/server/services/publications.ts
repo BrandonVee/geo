@@ -7,6 +7,7 @@ import type {
   CreatePublicationOrderInput,
   PublicationChannelQuery,
   PublicationOrderActionInput,
+  PublicationOrderQuery,
   UpdatePublicationChannelInput,
   UpdatePublicationOrderInput,
 } from "@geo/contracts";
@@ -203,12 +204,8 @@ export const publicationService = {
       ? channel
       : undefined;
   },
-  async list(
-    organizationId: string,
-    teamBindingId: string | undefined,
-    brandId: string | undefined,
-    userId: string,
-  ) {
+  async list(query: PublicationOrderQuery, userId: string) {
+    const { organizationId, teamBindingId, brandId } = query;
     if (brandId)
       await authorizeBrand(
         organizationId,
@@ -223,12 +220,9 @@ export const publicationService = {
         userId,
         "publication.read",
       );
-    let rows = await publicationRepository.orders(organizationId);
-    await syncFrogOrders(
-      brandId ? rows.filter((row) => row.order.brandId === brandId) : rows,
-    );
-    rows = await publicationRepository.orders(organizationId);
-    return brandId ? rows.filter((row) => row.order.brandId === brandId) : rows;
+    const page = await publicationRepository.orderPage({ ...query, userId });
+    if (page.list.length) await syncFrogOrders(page.list);
+    return publicationRepository.orderPage({ ...query, userId });
   },
   async create(
     input: CreatePublicationOrderInput,

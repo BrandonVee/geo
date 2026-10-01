@@ -1273,12 +1273,35 @@ export const publicationOrderQuerySchema = z
     organizationId: z.string().uuid(),
     teamBindingId: z.string().uuid().optional(),
     brandId: z.string().trim().min(1).max(128).optional(),
+    page: queryInteger(1, 1, 100_000),
+    pageSize: queryInteger(20, 1, 100),
+    keyword: z.string().trim().max(255).optional().default(""),
+    status: z
+      .enum(["submitted", "processing", "published", "failed", "cancelled"])
+      .optional(),
+    beginDate: dateSchema.optional(),
+    endDate: dateSchema.optional(),
   })
   .strict()
   .refine(
     (value) => Boolean(value.brandId) === Boolean(value.teamBindingId),
     "品牌订单查询范围不完整",
-  );
+  )
+  .superRefine((value, context) => {
+    if (Boolean(value.beginDate) !== Boolean(value.endDate))
+      context.addIssue({
+        code: "custom",
+        message: "开始与结束日期必须同时提供",
+        path: ["beginDate"],
+      });
+    if (value.beginDate && value.endDate && value.beginDate > value.endDate)
+      context.addIssue({
+        code: "custom",
+        message: "开始日期不能晚于结束日期",
+        path: ["beginDate"],
+      });
+  });
+export type PublicationOrderQuery = z.infer<typeof publicationOrderQuerySchema>;
 export const updatePublicationOrderSchema = z
   .object({
     status: z.enum(["processing", "published", "failed", "cancelled"]),

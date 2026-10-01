@@ -3738,6 +3738,7 @@ paths:
   /v1/publication-orders:
     get:
       summary: 查询企业或品牌发布单
+      description: 默认分页读取 20 条，最多 100 条。按创建时间和订单 ID 倒序排列；越界页码返回实际末页，空列表返回第 1 页。品牌与内部团队绑定须同时提供。当前授权页面同步上游状态后重新读取结果。
       tags:
         - Publications
       security: *id001
@@ -3745,9 +3746,86 @@ paths:
         - *id002
         - *id003
         - *id004
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100000
+            default: 1
+        - name: pageSize
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: keyword
+          in: query
+          description: 标题、媒体名称或订单编号的文字匹配，百分号和下划线按普通字符匹配
+          schema:
+            type: string
+            maxLength: 255
+            default: ""
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [submitted, processing, published, failed, cancelled]
+        - name: beginDate
+          in: query
+          description: 北京时间提交日期起点，须与 endDate 同时提供且不晚于 endDate
+          schema:
+            type: string
+            format: date
+        - name: endDate
+          in: query
+          description: 北京时间提交日期终点，包含当天，须与 beginDate 同时提供
+          schema:
+            type: string
+            format: date
       responses:
         "200":
-          description: 发布单列表
+          description: 当前范围的发布单分页列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, pagination, requestId]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      required: [order, channel]
+                      properties:
+                        order:
+                          type: object
+                        channel:
+                          type: object
+                  pagination:
+                    type: object
+                    required: [page, pageSize, total, pages]
+                    properties:
+                      page:
+                        type: integer
+                        minimum: 1
+                      pageSize:
+                        type: integer
+                        minimum: 1
+                        maximum: 100
+                      total:
+                        type: integer
+                        minimum: 0
+                      pages:
+                        type: integer
+                        minimum: 0
+                  requestId:
+                    type: string
+        "400":
+          description: 范围、页码、状态或日期参数无效
+        "403":
+          description: 无企业或品牌发布查询权限
     post:
       summary: 提交人民币余额计费发布单
       description: 按渠道价格快照从品牌 publication_cny 余额扣减；免费渠道不生成零元流水。相同幂等键返回已有订单；失败或取消时原路返还。

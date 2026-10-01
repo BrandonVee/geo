@@ -23,13 +23,10 @@ export async function GET(request: Request) {
         "发布订单查询参数有误",
         parsed.error.issues,
       );
+    const result = await publicationService.list(parsed.data, user.id);
     return apiJson({
-      data: await publicationService.list(
-        parsed.data.organizationId,
-        parsed.data.teamBindingId,
-        parsed.data.brandId,
-        user.id,
-      ),
+      data: result.list,
+      pagination: result.pagination,
       requestId,
     });
   } catch (error) {

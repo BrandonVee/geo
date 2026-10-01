@@ -97,6 +97,18 @@ try {
     pnpm,
     [
       "--filter",
+      "@geo/db",
+      "exec",
+      "vitest",
+      "run",
+      "src/publication-order-page.integration.test.ts",
+    ],
+    { ORDER_HISTORY_DB_TESTS: "1" },
+  );
+  await run(
+    pnpm,
+    [
+      "--filter",
       "@geo/web",
       "exec",
       "vitest",

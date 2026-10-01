@@ -16,6 +16,7 @@ export function withTenantDbContext<T>(
     brandId?: string;
   },
   run: (tx: DatabaseTransaction) => Promise<T>,
+  options?: Parameters<typeof db.transaction>[1],
 ) {
   return db.transaction(async (tx) => {
     await tx.execute(sql.raw("set local role geo_tenant_app"));
@@ -23,7 +24,7 @@ export function withTenantDbContext<T>(
       sql`select set_config('app.organization_id', ${context.organizationId}, true), set_config('app.user_id', ${context.userId}, true), set_config('app.team_binding_id', ${context.teamBindingId ?? ""}, true), set_config('app.brand_id', ${context.brandId ?? ""}, true)`,
     );
     return run(tx);
-  });
+  }, options);
 }
 
 export function withPlatformDbContext<T>(

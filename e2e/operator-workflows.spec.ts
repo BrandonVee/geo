@@ -608,6 +608,163 @@ test.describe("真实运营操作闭环", () => {
     }
   });
 
+  test("发布订单分页搜索、日期与状态恢复，取消后自动回退末页", async ({
+    page,
+  }) => {
+    const seed = await seedPublicationOrder(0, "processing");
+    const { db, publicationOrders } = database;
+    const { eq } = operators;
+    const [first] = await db
+      .select()
+      .from(publicationOrders)
+      .where(eq(publicationOrders.id, seed.id));
+    const ids = Array.from({ length: 21 }, () => randomUUID());
+    await db.delete(publicationOrders).where(eq(publicationOrders.id, seed.id));
+    await db.insert(publicationOrders).values(
+      ids.map((id, index) => ({
+        id,
+        channelId: first.channelId,
+        organizationId: first.organizationId,
+        brandId: first.brandId,
+        status: "processing" as const,
+        title: `历史批次文章 ${index}`,
+        priceAmount: 0,
+        createdBy: fixture.userId,
+        idempotencyKey: id,
+        createdAt: new Date("2026-09-01T04:00:00Z"),
+      })),
+    );
+    await seedPublicationOrder(0, "published");
+    const other = await seedPublicationOrder(1, "published");
+    await mockBusinessApis(page, (route) => route.continue());
+    await page.goto(scopedPath("/dashboard/publication/orders"));
+    await expect(page.getByText("共 22 条订单", { exact: true })).toBeVisible();
+    await expect(page.locator("tbody tr.ant-table-row")).toHaveCount(20);
+    await page.locator(".ant-pagination-item-2").click();
+    await expect(page).toHaveURL(/page=2/);
+    await expect(page.locator("tbody tr.ant-table-row")).toHaveCount(2);
+    await page.getByLabel("查找订单", { exact: true }).fill("历史批次");
+    await page.getByLabel("查找订单", { exact: true }).press("Enter");
+    await expect(page).toHaveURL(/keyword=/);
+    await expect(page).toHaveURL(/page=1/);
+    await expect(page.getByText("共 21 条订单")).toBeVisible();
+    await page.getByLabel("订单状态", { exact: true }).click();
+    await page
+      .locator(".ant-select-dropdown")
+      .getByText("发布处理中", { exact: true })
+      .click();
+    await expect(page).toHaveURL(/status=processing/);
+    // The server date contract is also exercised by the real page request.
+    const filtered = new URL(page.url());
+    filtered.searchParams.set("beginDate", "2026-09-01");
+    filtered.searchParams.set("endDate", "2026-09-01");
+    filtered.searchParams.set("page", "2");
+    await page.goto(filtered.href);
+    await expect(page.locator("tbody tr.ant-table-row")).toHaveCount(1);
+    await expect(page.getByLabel("提交日期", { exact: true })).toHaveValue(
+      "2026-09-01",
+    );
+    await expect(page.getByLabel("提交结束日期", { exact: true })).toHaveValue(
+      "2026-09-01",
+    );
+    await page.reload();
+    await expect(page.getByLabel("查找订单", { exact: true })).toHaveValue(
+      "历史批次",
+    );
+    await expect(page.locator("tbody tr.ant-table-row")).toHaveCount(1);
+    await page.getByRole("button", { name: /取\s*消/ }).click();
+    await page.getByRole("button", { name: "确认取消", exact: true }).click();
+    await expect(page.getByText("共 20 条订单")).toBeVisible();
+    await expect(page).toHaveURL(/page=1/);
+    await expect(page.locator("tbody tr.ant-table-row")).toHaveCount(20);
+    await page.getByRole("button", { name: "清除筛选", exact: true }).click();
+    await expect(page.getByText("共 22 条订单", { exact: true })).toBeVisible();
+    await page.getByLabel("查找订单", { exact: true }).fill(ids[0]);
+    await page.getByLabel("查找订单", { exact: true }).press("Enter");
+    await expect(page.getByText("共 1 条订单")).toBeVisible();
+    await page
+      .getByRole("combobox", { name: "企业", exact: true })
+      .press("ArrowDown");
+    await page
+      .locator(".ant-select-dropdown")
+      .getByText(fixture.scopes[1].name, { exact: true })
+      .click();
+    await expect(page.getByText(other.title, { exact: true })).toBeVisible();
+    await expect(page.getByLabel("查找订单", { exact: true })).toHaveValue("");
+    await expect(
+      page.getByText("历史批次文章 0", { exact: true }),
+    ).toBeHidden();
+  });
+
+  test("发布订单失败可重试，筛选空态在明暗主题和各宽度可访问", async ({
+    page,
+  }) => {
+    await seedPublicationOrder();
+    await mockBusinessApis(page);
+    let failing = true;
+    await page.route("**/api/v1/publication-orders?**", async (route) => {
+      if (!failing) return route.continue();
+      return route.fulfill({
+        status: 503,
+        json: { error: { message: "订单暂时不可用" } },
+      });
+    });
+    await page.goto(scopedPath("/dashboard/publication/orders"));
+    await expect(
+      page.getByText("订单暂时不可用", { exact: true }),
+    ).toBeVisible();
+    failing = false;
+    await page.getByRole("button", { name: /重\s*试/ }).click();
+    await expect(page.getByText("共 1 条订单", { exact: true })).toBeVisible();
+    await page.getByLabel("查找订单", { exact: true }).fill("不存在的订单");
+    await page.getByLabel("查找订单", { exact: true }).press("Enter");
+    await expect(
+      page.getByText("没有符合筛选条件的订单", { exact: true }),
+    ).toBeVisible();
+    for (const theme of ["light", "dark"]) {
+      if (theme === "dark")
+        await page.getByRole("button", { name: "切换亮暗色模式" }).click();
+      await expect
+        .poll(() => page.locator("html").getAttribute("data-theme"))
+        .toBe(theme);
+      for (const width of [390, 768, 1440]) {
+        await page.setViewportSize({ width, height: 1000 });
+        expect(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth,
+          ),
+        ).toBeTruthy();
+        await page.evaluate(async () => {
+          await Promise.all(
+            document
+              .getAnimations()
+              .filter(
+                (animation) =>
+                  animation.effect?.getComputedTiming().iterations !== Infinity,
+              )
+              .map((animation) => animation.finished.catch(() => {})),
+          );
+        });
+        await page.evaluate(axe.source);
+        const result = await page.evaluate(async () =>
+          (window as unknown as { axe: typeof axe }).axe.run(document, {
+            runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa"] },
+          }),
+        );
+        expect(result.violations).toEqual([]);
+      }
+    }
+    // Reapplying unchanged filters must keep the successful snapshot.
+    await page.getByLabel("查找订单", { exact: true }).press("Enter");
+    await expect(
+      page.getByText("没有符合筛选条件的订单", { exact: true }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "清除筛选", exact: true }).click();
+    await expect(page.getByText("共 1 条订单", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "清除筛选", exact: true }).click();
+    await expect(page.getByText("共 1 条订单", { exact: true })).toBeVisible();
+  });
+
   test("已发布订单一键带入追踪，来源实时校验范围与状态，读取不提交", async ({
     page,
   }) => {
