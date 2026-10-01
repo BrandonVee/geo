@@ -7,8 +7,7 @@ import {
   Card,
   Col,
   Empty,
-  Form,
-  InputNumber,
+  Flex,
   Row,
   Select,
   Space,
@@ -17,6 +16,7 @@ import {
   type TableColumnsType,
 } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { BrandAllocation } from "./brand-allocation";
 import { AccessibleTable } from "../../accessible-table";
 import {
   ScopeFields,
@@ -43,7 +43,8 @@ type Transaction = {
   reason: string;
   createdAt: string;
 };
-type AllocationForm = { asset: Asset; amount: number };
+
+const emptyTransactions: Transaction[] = [];
 
 const money = (amount: number) =>
   new Intl.NumberFormat("zh-CN", {
@@ -60,98 +61,102 @@ async function request<T>(url: string, init?: RequestInit) {
 
 export function BalanceManagementClient({
   organizations,
+  userId,
 }: {
   organizations: ScopeOrganization[];
+  userId: string;
 }) {
   const scope = useAnswerBitScope(organizations);
-  const [organizationAccounts, setOrganizationAccounts] = useState<Account[]>(
-    [],
-  );
-  const [brandAccounts, setBrandAccounts] = useState<Account[]>([]);
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const key = `${scope.organizationId}:${scope.teamBindingId}:${scope.brandId}`;
+  const [snapshot, setSnapshot] = useState<{
+    key: string;
+    organization: Account[];
+    brand: Account[];
+    transactions: Transaction[];
+  }>();
+  const [failure, setFailure] = useState<{ key: string; message: string }>();
   const [transactionUserId, setTransactionUserId] = useState<string>();
-  const [asset, setAsset] = useState<Asset>("answerbit_points");
   const [loading, setLoading] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState("");
-  const [form] = Form.useForm<AllocationForm>();
-  const requestVersion = useRef(0);
-
-  const load = useCallback(
-    async (signal?: AbortSignal) => {
-      if (!scope.organizationId || !scope.teamBindingId || !scope.brandId)
-        return;
-      const version = ++requestVersion.current;
-      setLoading(true);
-      try {
-        const brandQuery = scopeQuery({
-          organizationId: scope.organizationId,
-          teamBindingId: scope.teamBindingId,
-          brandId: scope.brandId,
-        });
-        const [accounts, brand, ledger] = await Promise.all([
-          request<Account[]>(
-            `/api/v1/balances?organizationId=${scope.organizationId}`,
-            { signal },
-          ),
-          request<Account[]>(`/api/v1/balances?${brandQuery}`, { signal }),
-          request<Transaction[]>(
-            `/api/v1/balance-transactions?organizationId=${scope.organizationId}`,
-            { signal },
-          ),
-        ]);
-        if (signal?.aborted || version !== requestVersion.current) return;
-        setOrganizationAccounts(
-          accounts.filter((account) => account.brandId === null),
-        );
-        setBrandAccounts(brand);
-        setTransactions(ledger);
-      } catch (error) {
-        if (!signal?.aborted && version === requestVersion.current)
-          setMessage(error instanceof Error ? error.message : "资产加载失败");
-      } finally {
-        if (!signal?.aborted && version === requestVersion.current)
-          setLoading(false);
-      }
-    },
-    [scope.brandId, scope.organizationId, scope.teamBindingId],
-  );
-
-  useEffect(() => {
+  const controllerRef = useRef<AbortController | undefined>(undefined);
+  const load = useCallback(async () => {
+    controllerRef.current?.abort();
+    if (!scope.organizationId || !scope.teamBindingId || !scope.brandId) return;
     const controller = new AbortController();
-    void load(controller.signal);
-    return () => controller.abort();
-  }, [load]);
-
-  useEffect(() => setTransactionUserId(undefined), [scope.organizationId]);
-
-  async function allocate(values: AllocationForm) {
-    setSubmitting(true);
+    controllerRef.current = controller;
+    setLoading(true);
+    setFailure(undefined);
     try {
-      await request("/api/v1/balance-allocations", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          organizationId: scope.organizationId,
-          brandId: scope.brandId,
-          asset: values.asset,
-          amount:
-            values.asset === "publication_cny"
-              ? Math.round(values.amount * 100)
-              : values.amount,
-          idempotencyKey: crypto.randomUUID(),
-        }),
+      const brandQuery = scopeQuery({
+        organizationId: scope.organizationId,
+        teamBindingId: scope.teamBindingId,
+        brandId: scope.brandId,
       });
-      form.resetFields();
-      form.setFieldValue("asset", asset);
-      await load();
-      setMessage("企业资产已划拨到当前品牌");
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "资产划拨失败");
+      const [accounts, brand, transactions] = await Promise.all([
+        request<Account[]>(
+          `/api/v1/balances?organizationId=${scope.organizationId}`,
+          { signal: controller.signal },
+        ),
+        request<Account[]>(`/api/v1/balances?${brandQuery}`, {
+          signal: controller.signal,
+        }),
+        request<Transaction[]>(
+          `/api/v1/balance-transactions?organizationId=${scope.organizationId}`,
+          { signal: controller.signal },
+        ),
+      ]);
+      if (controller.signal.aborted || controllerRef.current !== controller)
+        return;
+      setSnapshot({
+        key,
+        organization: accounts.filter((a) => a.brandId === null),
+        brand,
+        transactions,
+      });
+    } catch (reason) {
+      if (!controller.signal.aborted && controllerRef.current === controller)
+        setFailure({
+          key,
+          message: reason instanceof Error ? reason.message : "资产读取失败",
+        });
     } finally {
-      setSubmitting(false);
+      if (controllerRef.current === controller) {
+        controllerRef.current = undefined;
+        setLoading(false);
+      }
     }
-  }
+  }, [key, scope.brandId, scope.organizationId, scope.teamBindingId]);
+  useEffect(() => {
+    void load();
+    const poll = () => {
+      if (!document.hidden && navigator.onLine && !controllerRef.current)
+        void load();
+    };
+    const timer = window.setInterval(poll, 60_000);
+    document.addEventListener("visibilitychange", poll);
+    window.addEventListener("online", poll);
+    return () => {
+      controllerRef.current?.abort();
+      controllerRef.current = undefined;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", poll);
+      window.removeEventListener("online", poll);
+    };
+  }, [load]);
+  useEffect(() => setTransactionUserId(undefined), [scope.organizationId]);
+  const readError = failure?.key === key ? failure.message : undefined;
+  const data = !readError && snapshot?.key === key ? snapshot : undefined;
+  const organizationAccounts = data?.organization ?? [],
+    brandAccounts = data?.brand ?? [],
+    transactions = data?.transactions ?? emptyTransactions;
+  const reading = loading || (!data && !readError && !scope.error);
+  const onAllocated = useCallback(
+    async (success: string) => {
+      setMessage(success);
+      await load();
+    },
+    [load],
+  );
 
   const transactionUsers = useMemo(
     () =>
@@ -178,7 +183,19 @@ export function BalanceManagementClient({
       width: 180,
       render: (value: string) => new Date(value).toLocaleString("zh-CN"),
     },
-    { title: "操作", dataIndex: "operation", width: 140 },
+    {
+      title: "操作",
+      dataIndex: "operation",
+      width: 140,
+      render: (value: string) =>
+        ({
+          grant: "平台入账",
+          allocate: "企业向品牌划拨",
+          consume: "业务消耗",
+          restore: "失败返还",
+          adjust: "人工调整",
+        })[value] ?? value,
+    },
     {
       title: "操作用户",
       key: "actor",
@@ -235,46 +252,68 @@ export function BalanceManagementClient({
         <ScopeFields organizations={organizations} scope={scope} />
       </Card>
 
-      {message || scope.error ? (
+      {message ? (
         <Alert
           closable
-          message={message || scope.error}
+          message={message}
           onClose={() => {
             setMessage("");
-            scope.setError("");
           }}
           showIcon
-          type={scope.error ? "error" : "info"}
+          type="success"
+        />
+      ) : null}
+
+      {readError ? (
+        <Alert
+          type="error"
+          showIcon
+          message="资产读取失败"
+          description={readError}
+          action={
+            <Button disabled={loading} onClick={() => void load()}>
+              重试读取资产
+            </Button>
+          }
         />
       ) : null}
 
       <Row gutter={[16, 16]}>
         <Col lg={6} sm={12} xs={24}>
-          <Card loading={loading}>
+          <Card loading={reading}>
             <Statistic
               title="企业可分配积分"
+              formatter={() =>
+                data ? pool("answerbit_points").toLocaleString() : "—"
+              }
               value={pool("answerbit_points")}
             />
           </Card>
         </Col>
         <Col lg={6} sm={12} xs={24}>
-          <Card loading={loading}>
-            <Statistic title="当前品牌积分" value={brand("answerbit_points")} />
+          <Card loading={reading}>
+            <Statistic
+              title="当前品牌积分"
+              value={brand("answerbit_points")}
+              formatter={() =>
+                data ? brand("answerbit_points").toLocaleString() : "—"
+              }
+            />
           </Card>
         </Col>
         <Col lg={6} sm={12} xs={24}>
-          <Card loading={loading}>
+          <Card loading={reading}>
             <Statistic
-              formatter={() => money(pool("publication_cny"))}
+              formatter={() => (data ? money(pool("publication_cny")) : "—")}
               title="企业可分配发布余额"
               value={pool("publication_cny")}
             />
           </Card>
         </Col>
         <Col lg={6} sm={12} xs={24}>
-          <Card loading={loading}>
+          <Card loading={reading}>
             <Statistic
-              formatter={() => money(brand("publication_cny"))}
+              formatter={() => (data ? money(brand("publication_cny")) : "—")}
               title="当前品牌发布余额"
               value={brand("publication_cny")}
             />
@@ -285,91 +324,62 @@ export function BalanceManagementClient({
       <Row align="stretch" gutter={[16, 16]}>
         <Col lg={8} xs={24}>
           <Card
-            title="划拨到当前品牌"
+            title="企业资产划拨"
             extra={<SwapOutlined />}
             style={{ height: "100%" }}
           >
-            <Alert
-              message="这是企业资产管理操作，仅企业管理员可用。划拨后由当前品牌的业务功能或发布订单消费。"
-              showIcon
-              style={{ marginBottom: 20 }}
-              type="info"
+            <BrandAllocation
+              userId={userId}
+              organizationId={scope.organizationId}
+              organizationName={
+                organizations.find((o) => o.id === scope.organizationId)
+                  ?.name ?? ""
+              }
+              brandId={scope.brandId}
+              brandName={scope.brand?.name ?? ""}
+              canAllocate={scope.can("balance.allocate")}
+              pointsExpired={scope.pointsExpired}
+              onAllocated={onAllocated}
             />
-            <Form<AllocationForm>
-              form={form}
-              initialValues={{ asset: "answerbit_points" }}
-              layout="vertical"
-              onFinish={(values) => void allocate(values)}
-            >
-              <Form.Item
-                label="资产类型"
-                name="asset"
-                rules={[{ required: true, message: "请选择资产类型" }]}
-              >
-                <Select
-                  onChange={(value: Asset) => setAsset(value)}
-                  options={[
-                    { label: "腾讯能力积分", value: "answerbit_points" },
-                    { label: "发布人民币余额（元）", value: "publication_cny" },
-                  ]}
-                />
-              </Form.Item>
-              <Form.Item
-                label="划拨数量"
-                name="amount"
-                rules={[{ required: true, message: "请输入划拨数量" }]}
-              >
-                <InputNumber
-                  min={asset === "publication_cny" ? 0.01 : 1}
-                  precision={asset === "publication_cny" ? 2 : 0}
-                  step={asset === "publication_cny" ? 0.01 : 1}
-                  style={{ width: "100%" }}
-                />
-              </Form.Item>
-              <Button
-                block
-                disabled={!scope.brandId}
-                htmlType="submit"
-                loading={submitting}
-                type="primary"
-              >
-                确认划拨
-              </Button>
-            </Form>
           </Card>
         </Col>
         <Col lg={16} xs={24}>
-          <Card
-            extra={
-              <Space>
-                <Select
-                  allowClear
-                  aria-label="按操作用户筛选资产流水"
-                  onChange={setTransactionUserId}
-                  options={transactionUsers}
-                  placeholder="全部用户"
-                  showSearch
-                  style={{ minWidth: 200 }}
-                  value={transactionUserId}
-                />
-                <Button
-                  icon={<ReloadOutlined />}
-                  loading={loading}
-                  onClick={() => void load()}
-                >
-                  刷新
-                </Button>
-              </Space>
-            }
-            title="企业资产流水"
-          >
+          <Card title="企业资产流水">
+            <Flex gap={12} wrap style={{ marginBottom: 20 }}>
+              <Select
+                allowClear
+                aria-label="按操作用户筛选资产流水"
+                onChange={setTransactionUserId}
+                options={transactionUsers}
+                placeholder="全部用户"
+                showSearch
+                optionFilterProp="label"
+                style={{ minWidth: 180, flex: "1 1 200px" }}
+                value={transactionUserId}
+              />
+              <Button
+                aria-label="刷新资产"
+                icon={<ReloadOutlined />}
+                loading={loading}
+                onClick={() => void load()}
+              >
+                刷新资产
+              </Button>
+            </Flex>
             <AccessibleTable<Transaction>
+              loading={reading}
               columns={columns}
               dataSource={visibleTransactions}
               locale={{
                 emptyText: (
                   <Empty
-                    description="暂无资产流水"
+                    description={
+                      <Typography.Text type="secondary">
+                        {readError
+                          ? "资产流水暂不可用，请重试读取"
+                          : "暂无资产流水"}
+                      </Typography.Text>
+                    }
                     image={Empty.PRESENTED_IMAGE_SIMPLE}
                   />
                 ),

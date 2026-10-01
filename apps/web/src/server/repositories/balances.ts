@@ -14,6 +14,7 @@ import {
   balanceAccounts,
   balanceTransactions,
   withPlatformDbContext,
+  withTenantDbContext,
 } from "@geo/db";
 import { and, eq, sql } from "drizzle-orm";
 import { listPlatformOrganizations } from "./organization-directory";
@@ -59,6 +60,41 @@ export const balanceRepository = {
     });
   },
   allocate: allocateBalance,
+  async allocationConfirmation(
+    input: { organizationId: string; brandId: string; idempotencyKey: string },
+    userId: string,
+  ) {
+    return withTenantDbContext({ ...input, userId }, async (tx) => {
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtext(${input.organizationId}), hashtext(${input.idempotencyKey}))`,
+      );
+      const [row] = await tx
+        .select({
+          transaction: balanceTransactions,
+          brandId: balanceAccounts.brandId,
+        })
+        .from(balanceTransactions)
+        .innerJoin(
+          balanceAccounts,
+          and(
+            eq(balanceAccounts.id, balanceTransactions.targetAccountId),
+            eq(balanceAccounts.organizationId, input.organizationId),
+          ),
+        )
+        .where(
+          and(
+            eq(balanceTransactions.organizationId, input.organizationId),
+            eq(balanceTransactions.idempotencyKey, input.idempotencyKey),
+            eq(balanceTransactions.actorUserId, userId),
+            eq(balanceTransactions.operation, "allocate"),
+            eq(balanceTransactions.referenceType, "brand_allocation"),
+            eq(balanceAccounts.brandId, input.brandId),
+          ),
+        )
+        .limit(1);
+      return row ? { ...row.transaction, brandId: row.brandId } : null;
+    });
+  },
   pointCosts: listFeaturePointCosts,
   setPointCost: setFeaturePointCost,
   async brandExists(organizationId: string, brandId: string) {

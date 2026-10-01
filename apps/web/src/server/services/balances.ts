@@ -203,10 +203,29 @@ export const balanceService = {
       ))
     )
       throw new ApiError(404, "BRAND_NOT_FOUND", "品牌不存在");
-    const result = await balanceRepository.allocate({
-      ...input,
-      actorUserId: userId,
-    });
+    const result = await balanceRepository.allocate(
+      {
+        ...input,
+        actorUserId: userId,
+      },
+      async (tx, transaction) =>
+        writeAudit(
+          { ...audit, organizationId: input.organizationId },
+          {
+            operation: "balance.allocate",
+            resourceType: "balance_transaction",
+            resourceId: transaction.id,
+            summary: `向品牌 ${input.brandId} 划分 ${input.asset} ${input.amount}：${input.reason}`,
+          },
+          tx,
+        ),
+    );
+    if (!result.ok && result.code === "IDEMPOTENCY_CONFLICT")
+      throw new ApiError(
+        409,
+        "IDEMPOTENCY_CONFLICT",
+        "重复请求的划拨内容不一致",
+      );
     if (!result.ok && result.code === "AGENT_ANSWERBIT_POINTS_QUOTA_EXCEEDED")
       throw new ApiError(
         422,
@@ -215,16 +234,25 @@ export const balanceService = {
       );
     if (!result.ok)
       throw new ApiError(422, "INSUFFICIENT_BALANCE", "企业可分配余额不足");
-    await writeAudit(
-      { ...audit, organizationId: input.organizationId },
-      {
-        operation: "balance.allocate",
-        resourceType: "balance_transaction",
-        resourceId: result.transaction.id,
-        summary: `向品牌 ${input.brandId} 划分 ${input.asset} ${input.amount}：${input.reason}`,
-      },
-    );
     return result;
+  },
+  async allocationConfirmation(
+    input: { organizationId: string; brandId: string; idempotencyKey: string },
+    userId: string,
+  ) {
+    await organizationService.authorize(
+      input.organizationId,
+      userId,
+      "balance.allocate",
+    );
+    if (
+      !(await balanceRepository.brandExists(
+        input.organizationId,
+        input.brandId,
+      ))
+    )
+      throw new ApiError(404, "BRAND_NOT_FOUND", "品牌不存在");
+    return balanceRepository.allocationConfirmation(input, userId);
   },
   async pointCosts(userId: string) {
     await requirePlatformPermission(userId, "platform.balance.manage");

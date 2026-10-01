@@ -201,6 +201,18 @@ try {
     ],
     { ADMIN_BALANCE_HISTORY_DB_TESTS: "1" },
   );
+  await run(
+    pnpm,
+    [
+      "--filter",
+      "@geo/web",
+      "exec",
+      "vitest",
+      "run",
+      "src/server/services/balance-allocations.integration.test.ts",
+    ],
+    { BALANCE_ALLOCATION_DB_TESTS: "1" },
+  );
   const seed = new Client({ connectionString: databaseUrl.href });
   await seed.connect();
   try {

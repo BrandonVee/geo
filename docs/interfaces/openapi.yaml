@@ -3636,6 +3636,7 @@ paths:
   /v1/balance-allocations:
     post:
       summary: 企业管理员或代理商把企业余额划分到品牌
+      description: 要求 balance.allocate 及目标品牌归属；余额、流水和审计原子提交，成功重放不重复审计或占用额度，同键更改品牌、资产、金额、原因或操作者返回 409。
       tags:
         - Balances
       security: *id001
@@ -3654,8 +3655,38 @@ paths:
           description: 划分成功
         "200":
           description: 幂等重放
+        "409":
+          description: IDEMPOTENCY_CONFLICT；同键内容与原划拨不一致
         "422":
-          description: 企业可分配余额不足
+          description: 企业可分配余额不足或代理商积分额度不足
+  /v1/balance-allocations/confirmation:
+    get:
+      summary: 只读核对本人企业品牌划拨
+      description: 要求 balance.allocate 及企业品牌归属，使用租户角色与原键事务锁等待已开始的划拨完成；只返回当前操作者在指定品牌的 allocate 流水（含 brandId），未找到时返回 null。不重放写入，不查询其他用户或其他操作。
+      tags: [Balances]
+      security: *id001
+      parameters:
+        - in: query
+          name: organizationId
+          required: true
+          schema: { type: string, format: uuid }
+        - in: query
+          name: brandId
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 128 }
+        - in: query
+          name: idempotencyKey
+          required: true
+          schema: { type: string, minLength: 8, maxLength: 128 }
+      responses:
+        "200":
+          description: 原划拨流水（含目标 brandId）或 null
+        "400":
+          description: VALIDATION_ERROR；企业、品牌或原请求键无效
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: ORGANIZATION_NOT_FOUND 或 BRAND_NOT_FOUND
   /v1/admin/balance-grants:
     post:
       summary: 平台管理员给企业人工入账

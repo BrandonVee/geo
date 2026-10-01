@@ -175,15 +175,21 @@ export async function grantBalance(
 }
 
 // @project-doc docs/domains/identity_and_access.md#agent_quotas
-export async function allocateBalance(input: {
-  organizationId: string;
-  brandId: string;
-  asset: BalanceAsset;
-  amount: number;
-  reason: string;
-  idempotencyKey: string;
-  actorUserId: string;
-}) {
+export async function allocateBalance(
+  input: {
+    organizationId: string;
+    brandId: string;
+    asset: BalanceAsset;
+    amount: number;
+    reason: string;
+    idempotencyKey: string;
+    actorUserId: string;
+  },
+  onCommitted?: (
+    tx: DatabaseTransaction,
+    transaction: typeof balanceTransactions.$inferSelect,
+  ) => Promise<void>,
+) {
   return db.transaction(async (tx) => {
     await lockIdempotencyKey(tx, input.organizationId, input.idempotencyKey);
     const [replay] = await tx
@@ -196,17 +202,35 @@ export async function allocateBalance(input: {
         ),
       )
       .limit(1);
-    if (replay)
+    if (replay) {
+      const [source] = await tx
+        .select()
+        .from(balanceAccounts)
+        .where(accountWhere(input.organizationId, input.asset))
+        .limit(1);
+      const [target] = await tx
+        .select()
+        .from(balanceAccounts)
+        .where(accountWhere(input.organizationId, input.asset, input.brandId))
+        .limit(1);
+      if (
+        replay.operation !== "allocate" ||
+        replay.asset !== input.asset ||
+        replay.referenceType !== "brand_allocation" ||
+        replay.referenceId !== input.brandId ||
+        replay.sourceAccountId !== source?.id ||
+        replay.targetAccountId !== target?.id ||
+        replay.amount !== input.amount ||
+        replay.reason !== input.reason ||
+        replay.actorUserId !== input.actorUserId
+      )
+        return { ok: false as const, code: "IDEMPOTENCY_CONFLICT" as const };
       return {
         ok: true as const,
         transaction: replay,
         replayed: true as const,
       };
-    await assertEnterpriseAccess(
-      input.organizationId,
-      input.asset === "answerbit_points",
-      tx,
-    );
+    }
     if (input.asset === "answerbit_points") {
       const [actor] = await tx
         .select({
@@ -237,6 +261,11 @@ export async function allocateBalance(input: {
           };
       }
     }
+    await assertEnterpriseAccess(
+      input.organizationId,
+      input.asset === "answerbit_points",
+      tx,
+    );
     const source = await ensureAccount(tx, input.organizationId, input.asset);
     const target = await ensureAccount(
       tx,
@@ -285,6 +314,7 @@ export async function allocateBalance(input: {
         actorUserId: input.actorUserId,
       })
       .returning();
+    await onCommitted?.(tx, transaction!);
     return {
       ok: true as const,
       transaction: transaction!,

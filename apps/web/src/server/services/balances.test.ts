@@ -9,6 +9,8 @@ const mocks = vi.hoisted(() => ({
   deduct: vi.fn(),
   confirmation: vi.fn(),
   organizationBalances: vi.fn(),
+  allocate: vi.fn(),
+  allocationConfirmation: vi.fn(),
   brandExists: vi.fn(),
   setPointCost: vi.fn(),
   writeAudit: vi.fn(),
@@ -40,6 +42,8 @@ vi.mock("@/server/repositories/balances", () => ({
     deduct: mocks.deduct,
     confirmation: mocks.confirmation,
     organizationBalances: mocks.organizationBalances,
+    allocate: mocks.allocate,
+    allocationConfirmation: mocks.allocationConfirmation,
     brandExists: mocks.brandExists,
     setPointCost: mocks.setPointCost,
   },
@@ -314,6 +318,74 @@ describe("管理员手动扣减", () => {
     await expect(
       balanceService.deduct(input, userId, audit),
     ).resolves.toMatchObject({ replayed: true });
+    expect(mocks.writeAudit).not.toHaveBeenCalled();
+  });
+});
+
+describe("企业品牌划拨授权与结果核对", () => {
+  const input = {
+    organizationId: "org",
+    brandId: "brand",
+    asset: "answerbit_points" as const,
+    amount: 10,
+    reason: "企业向品牌划拨",
+    idempotencyKey: "allocation-key",
+  };
+  beforeEach(() => {
+    vi.resetAllMocks();
+    mocks.brandExists.mockResolvedValue(true);
+  });
+  it("没有划拨权限时不写入也不读取核对结果", async () => {
+    mocks.authorizeOrganization.mockRejectedValue(new Error("forbidden"));
+    await expect(balanceService.allocate(input, userId, audit)).rejects.toThrow(
+      "forbidden",
+    );
+    await expect(
+      balanceService.allocationConfirmation(input, userId),
+    ).rejects.toThrow("forbidden");
+    expect(mocks.allocate).not.toHaveBeenCalled();
+    expect(mocks.allocationConfirmation).not.toHaveBeenCalled();
+    expect(mocks.authorizeOrganization).toHaveBeenCalledWith(
+      "org",
+      userId,
+      "balance.allocate",
+    );
+  });
+  it("跨企业品牌不能写入或核对", async () => {
+    mocks.brandExists.mockResolvedValue(false);
+    await expect(
+      balanceService.allocate(input, userId, audit),
+    ).rejects.toMatchObject({ code: "BRAND_NOT_FOUND" });
+    await expect(
+      balanceService.allocationConfirmation(input, userId),
+    ).rejects.toMatchObject({ code: "BRAND_NOT_FOUND" });
+    expect(mocks.allocate).not.toHaveBeenCalled();
+    expect(mocks.allocationConfirmation).not.toHaveBeenCalled();
+  });
+  it("同键内容冲突与额度、余额不足分别返回明确错误", async () => {
+    for (const [code, status] of [
+      ["IDEMPOTENCY_CONFLICT", 409],
+      ["AGENT_ANSWERBIT_POINTS_QUOTA_EXCEEDED", 422],
+      ["INSUFFICIENT_BALANCE", 422],
+    ] as const) {
+      mocks.allocate.mockResolvedValue({ ok: false, code });
+      await expect(
+        balanceService.allocate(input, userId, audit),
+      ).rejects.toMatchObject({ status, code });
+    }
+    expect(mocks.writeAudit).not.toHaveBeenCalled();
+  });
+  it("成功重放不额外写审计，核对绑定当前操作者", async () => {
+    mocks.allocate.mockResolvedValue({
+      ok: true,
+      replayed: true,
+      transaction: { id: "ledger" },
+    });
+    await expect(
+      balanceService.allocate(input, userId, audit),
+    ).resolves.toMatchObject({ replayed: true });
+    await balanceService.allocationConfirmation(input, userId);
+    expect(mocks.allocationConfirmation).toHaveBeenCalledWith(input, userId);
     expect(mocks.writeAudit).not.toHaveBeenCalled();
   });
 });

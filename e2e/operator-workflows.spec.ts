@@ -158,6 +158,49 @@ async function makePlatformAdministrator() {
     .insert(platformUserRoles)
     .values({ userId: fixture.userId, roleId: role.id });
 }
+async function makeEnterpriseAdministrator() {
+  const {
+    db,
+    roles,
+    users,
+    organizationMembers,
+    memberRoles,
+    balanceAccounts,
+  } = database;
+  const { eq } = operators;
+  await db
+    .update(users)
+    .set({ accountType: "agent", pricingTier: "bronze" })
+    .where(eq(users.id, fixture.userId));
+  const [role] = await db
+    .select()
+    .from(roles)
+    .where(eq(roles.code, "tenant_admin"));
+  const members = await db
+    .select()
+    .from(organizationMembers)
+    .where(eq(organizationMembers.userId, fixture.userId));
+  await db
+    .insert(memberRoles)
+    .values(
+      members.map((member) => ({ memberId: member.id, roleId: role.id })),
+    );
+  await db.insert(balanceAccounts).values(
+    fixture.scopes.flatMap((scope) => [
+      {
+        organizationId: scope.organizationId,
+        asset: "answerbit_points" as const,
+        balance: 100,
+      },
+      {
+        organizationId: scope.organizationId,
+        asset: "publication_cny" as const,
+        balance: 1000,
+      },
+    ]),
+  );
+}
+
 async function mockAdminReads(page: Page) {
   await mockBusinessApis(page);
   await page.route("**/api/v1/admin/**", (route) => route.continue());
@@ -722,6 +765,9 @@ test.describe("真实运营操作闭环", () => {
     await expect(page.getByText("共 20 条订单", { exact: true })).toBeVisible();
     await expect(page).toHaveURL(/orderPage=1/);
     await page.getByLabel("所属企业", { exact: true }).press("ArrowDown");
+    await page
+      .getByLabel("所属企业", { exact: true })
+      .fill(fixture.scopes[1].name);
     await page
       .locator(".ant-select-dropdown")
       .getByText(fixture.scopes[1].name, { exact: true })
@@ -4368,6 +4414,572 @@ test.describe("真实运营操作闭环", () => {
         ).toEqual([]);
       }
     }
+  });
+
+  test("企业划拨校验金额并保留失败输入，响应丢失刷新恢复原品牌，核对不重复划拨", async ({
+    page,
+  }) => {
+    const runtimeErrors: string[] = [];
+    page.on("pageerror", (error) => runtimeErrors.push(error.message));
+    page.on("console", (entry) => {
+      if (
+        entry.type() === "error" &&
+        /content security policy|hydration|validateDOMNesting|Warning:/i.test(
+          entry.text(),
+        )
+      )
+        runtimeErrors.push(entry.text());
+    });
+    await makeEnterpriseAdministrator();
+    await mockBusinessApis(page);
+    await page.route("**/api/v1/balance-transactions?**", (route) =>
+      route.continue(),
+    );
+    let reject = true,
+      confirmationFails = true,
+      readFails = false;
+    const commands: Array<{
+      organizationId: string;
+      brandId: string;
+      amount: number;
+      idempotencyKey: string;
+    }> = [];
+    await page.route("**/api/v1/balance-allocations", async (route) => {
+      commands.push(route.request().postDataJSON());
+      if (reject)
+        return route.fulfill({
+          status: 422,
+          json: {
+            error: {
+              code: "INSUFFICIENT_BALANCE",
+              message: "企业可分配余额不足",
+            },
+          },
+        });
+      const response = await route.fetch();
+      expect(response.ok()).toBeTruthy();
+      await route.abort();
+    });
+    await page.route(
+      "**/api/v1/balance-allocations/confirmation?**",
+      (route) =>
+        confirmationFails
+          ? route.fulfill({
+              status: 503,
+              json: {
+                error: { code: "QA_UNAVAILABLE", message: "核对暂时不可用" },
+              },
+            })
+          : route.continue(),
+    );
+    await page.route("**/api/v1/balances?**", (route) =>
+      readFails
+        ? route.fulfill({
+            status: 503,
+            json: {
+              error: {
+                code: "QA_UNAVAILABLE",
+                message: "划拨已保存但资产暂时无法刷新",
+              },
+            },
+          })
+        : route.continue(),
+    );
+    await page.goto(scopedPath("/dashboard/balances"));
+    const allocation = page
+      .locator(".ant-card")
+      .filter({ has: page.getByText("企业资产划拨", { exact: true }) });
+    const amount = allocation.getByLabel("划拨数量", { exact: true });
+    await amount.fill("1.4");
+    await allocation
+      .getByRole("button", { name: "确认划拨", exact: true })
+      .click();
+    await expect(
+      allocation.getByText("积分须为 1 至 10 亿的整数", { exact: true }),
+    ).toBeVisible();
+    await expect(amount).toHaveValue("1.4");
+    expect(commands).toHaveLength(0);
+    await amount.fill("17");
+    await allocation
+      .getByRole("button", { name: "确认划拨", exact: true })
+      .click();
+    await expect(
+      allocation.getByText("企业可分配余额不足", { exact: true }),
+    ).toBeVisible();
+    await expect(amount).toHaveValue("17");
+    reject = false;
+    await allocation
+      .getByRole("button", { name: "确认划拨", exact: true })
+      .click();
+    await expect(
+      allocation.getByRole("button", { name: "核对操作结果", exact: true }),
+    ).toBeVisible();
+    await expect(
+      allocation.getByRole("button", { name: "确认划拨", exact: true }),
+    ).not.toBeVisible();
+    expect(commands).toHaveLength(2);
+    await page.reload();
+    await expect(
+      allocation.getByText("已恢复上次尚未核实的划拨，请先核对操作结果。", {
+        exact: true,
+      }),
+    ).toBeVisible();
+    await page.goto(scopedPath("/dashboard/balances", 1));
+    await expect(
+      allocation.getByText(fixture.scopes[0].brandId, { exact: true }),
+    ).toBeVisible();
+    for (const theme of ["light", "dark"]) {
+      if ((await page.locator("html").getAttribute("data-theme")) !== theme)
+        await page.getByRole("button", { name: "切换亮暗色模式" }).click();
+      for (const width of [390, 768, 1440]) {
+        await page.setViewportSize({ width, height: 1000 });
+        await expect
+          .poll(() =>
+            page.evaluate(
+              () => document.documentElement.scrollWidth <= innerWidth,
+            ),
+          )
+          .toBeTruthy();
+        await page.evaluate(async () => {
+          await Promise.all(
+            document
+              .getAnimations()
+              .filter(
+                (a) => a.effect?.getComputedTiming().iterations !== Infinity,
+              )
+              .map((a) => a.finished.catch(() => {})),
+          );
+        });
+        await page.evaluate(axe.source);
+        const scan = await page.evaluate(() =>
+          (window as unknown as { axe: typeof axe }).axe.run(document, {
+            runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa"] },
+          }),
+        );
+        expect(
+          scan.violations.map(({ id, nodes }) => ({
+            id,
+            targets: nodes.map((n) => n.target),
+          })),
+        ).toEqual([]);
+        if (width === 390) {
+          await allocation.scrollIntoViewIfNeeded();
+          await page.screenshot({
+            path: test
+              .info()
+              .outputPath(`brand-allocation-pending-${theme}.png`),
+          });
+        }
+      }
+    }
+    confirmationFails = false;
+    readFails = true;
+    await allocation
+      .getByRole("button", { name: "核对操作结果", exact: true })
+      .click();
+    await expect(
+      page.getByText(
+        `${fixture.scopes[0].name}已向${fixture.scopes[0].name}划拨17 积分`,
+        { exact: true },
+      ),
+    ).toBeVisible();
+    await expect(
+      page.getByText("划拨已保存但资产暂时无法刷新", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      allocation.getByRole("button", { name: "核对操作结果", exact: true }),
+    ).not.toBeVisible();
+    const { db, balanceAccounts, balanceTransactions, operationLogs } =
+      database;
+    const { and, eq } = operators;
+    const saved = await db
+      .select()
+      .from(balanceTransactions)
+      .where(
+        and(
+          eq(
+            balanceTransactions.organizationId,
+            fixture.scopes[0].organizationId,
+          ),
+          eq(balanceTransactions.operation, "allocate"),
+        ),
+      );
+    expect(saved).toHaveLength(1);
+    expect(saved[0]).toMatchObject({
+      amount: 17,
+      idempotencyKey: commands[1].idempotencyKey,
+      reason: "企业向品牌划拨",
+    });
+    const accounts = await db
+      .select()
+      .from(balanceAccounts)
+      .where(
+        and(
+          eq(balanceAccounts.organizationId, fixture.scopes[0].organizationId),
+          eq(balanceAccounts.asset, "answerbit_points"),
+        ),
+      );
+    expect(accounts.find((a) => !a.brandId)?.balance).toBe(83);
+    expect(accounts.find((a) => a.brandId)?.balance).toBe(1017);
+    expect(
+      await db
+        .select()
+        .from(operationLogs)
+        .where(eq(operationLogs.resourceId, saved[0].id)),
+    ).toHaveLength(1);
+    expect(commands).toHaveLength(2);
+    readFails = false;
+    await page
+      .getByRole("button", { name: "重试读取资产", exact: true })
+      .click();
+    await expect(
+      page.getByText("资产读取失败", { exact: true }),
+    ).not.toBeVisible();
+    const wrongBrand = await page.request.get(
+      `/api/v1/balance-allocations/confirmation?organizationId=${fixture.scopes[0].organizationId}&brandId=${fixture.scopes[1].brandId}&idempotencyKey=${commands[1].idempotencyKey}`,
+    );
+    expect(wrongBrand.status()).toBe(404);
+    expect(runtimeErrors).toEqual([]);
+  });
+
+  test("人民币划拨拒绝静默舍入，未保存原请求可同键重试，品牌角色不能划拨或核对", async ({
+    page,
+  }) => {
+    await makeEnterpriseAdministrator();
+    await mockBusinessApis(page);
+    await page.route("**/api/v1/balance-transactions?**", (route) =>
+      route.continue(),
+    );
+    await page.route("**/api/v1/balance-allocations/confirmation?**", (route) =>
+      route.continue(),
+    );
+    let interrupted = true;
+    const commands: Array<{ amount: number; idempotencyKey: string }> = [];
+    await page.route("**/api/v1/balance-allocations", async (route) => {
+      commands.push(route.request().postDataJSON());
+      if (interrupted) return route.abort();
+      return route.continue();
+    });
+    await page.goto(scopedPath("/dashboard/balances"));
+    const allocation = page
+      .locator(".ant-card")
+      .filter({ has: page.getByText("企业资产划拨", { exact: true }) });
+    await allocation
+      .getByRole("combobox", { name: "资产类型", exact: true })
+      .press("ArrowDown");
+    await page
+      .getByText("发布人民币余额（元）", { exact: true })
+      .last()
+      .click();
+    await allocation.getByLabel("划拨数量", { exact: true }).fill("1.255");
+    await allocation
+      .getByRole("button", { name: "确认划拨", exact: true })
+      .click();
+    await expect(
+      allocation.getByText("金额须为 0.01 至 1000 万元，最多两位小数", {
+        exact: true,
+      }),
+    ).toBeVisible();
+    expect(commands).toHaveLength(0);
+    await allocation.getByLabel("划拨数量", { exact: true }).fill("1.25");
+    await allocation
+      .getByRole("button", { name: "确认划拨", exact: true })
+      .click();
+    await expect(
+      allocation.getByRole("button", { name: "按原内容重试", exact: true }),
+    ).toBeVisible();
+    await expect(
+      allocation.getByText("1.25 元", { exact: true }),
+    ).toBeVisible();
+    await page.reload();
+    await allocation
+      .getByRole("button", { name: "核对操作结果", exact: true })
+      .click();
+    interrupted = false;
+    await allocation
+      .getByRole("button", { name: "按原内容重试", exact: true })
+      .click();
+    await expect(
+      page.getByText(
+        `${fixture.scopes[0].name}已向${fixture.scopes[0].name}划拨1.25 元`,
+        { exact: true },
+      ),
+    ).toBeVisible();
+    expect(commands).toHaveLength(2);
+    expect(commands[1]).toEqual(commands[0]);
+    expect(commands[0].amount).toBe(125);
+    const {
+        db,
+        balanceAccounts,
+        balanceTransactions,
+        organizationMembers,
+        memberRoles,
+      } = database,
+      { eq, and } = operators;
+    const accounts = await db
+      .select()
+      .from(balanceAccounts)
+      .where(
+        and(
+          eq(balanceAccounts.organizationId, fixture.scopes[0].organizationId),
+          eq(balanceAccounts.asset, "publication_cny"),
+        ),
+      );
+    expect(accounts.find((a) => !a.brandId)?.balance).toBe(875);
+    expect(accounts.find((a) => a.brandId)?.balance).toBe(10125);
+    expect(
+      await db
+        .select()
+        .from(balanceTransactions)
+        .where(
+          and(
+            eq(
+              balanceTransactions.organizationId,
+              fixture.scopes[0].organizationId,
+            ),
+            eq(balanceTransactions.operation, "allocate"),
+          ),
+        ),
+    ).toHaveLength(1);
+    const members = await db
+      .select()
+      .from(organizationMembers)
+      .where(eq(organizationMembers.userId, fixture.userId));
+    await db.delete(memberRoles).where(
+      operators.inArray(
+        memberRoles.memberId,
+        members.map((m) => m.id),
+      ),
+    );
+    const input = {
+      organizationId: fixture.scopes[0].organizationId,
+      brandId: fixture.scopes[0].brandId,
+      asset: "publication_cny",
+      amount: 125,
+      idempotencyKey: commands[0].idempotencyKey,
+    };
+    expect(
+      (
+        await page.request.post("/api/v1/balance-allocations", { data: input })
+      ).status(),
+    ).toBe(403);
+    expect(
+      (
+        await page.request.get(
+          `/api/v1/balance-allocations/confirmation?${new URLSearchParams({ organizationId: input.organizationId, brandId: input.brandId, idempotencyKey: input.idempotencyKey })}`,
+        )
+      ).status(),
+    ).toBe(403);
+  });
+
+  test("资产划拨切换企业不显示旧余额，迟到读取隔离，失败保留金额并在明暗主题与多尺寸重试", async ({
+    page,
+  }) => {
+    const runtimeErrors: string[] = [];
+    page.on("pageerror", (error) => runtimeErrors.push(error.message));
+    page.on("console", (entry) => {
+      if (
+        entry.type() === "error" &&
+        /content security policy|hydration|validateDOMNesting|Warning:/i.test(
+          entry.text(),
+        )
+      )
+        runtimeErrors.push(entry.text());
+    });
+    await makeEnterpriseAdministrator();
+    await mockBusinessApis(page);
+    await page.route("**/api/v1/balance-transactions?**", (route) =>
+      route.continue(),
+    );
+    const [first, second] = fixture.scopes;
+    await database.db
+      .update(database.balanceAccounts)
+      .set({ balance: 111 })
+      .where(
+        operators.and(
+          operators.eq(
+            database.balanceAccounts.organizationId,
+            first.organizationId,
+          ),
+          operators.isNull(database.balanceAccounts.brandId),
+          operators.eq(database.balanceAccounts.asset, "answerbit_points"),
+        ),
+      );
+    await database.db
+      .update(database.balanceAccounts)
+      .set({ balance: 222 })
+      .where(
+        operators.and(
+          operators.eq(
+            database.balanceAccounts.organizationId,
+            second.organizationId,
+          ),
+          operators.isNull(database.balanceAccounts.brandId),
+          operators.eq(database.balanceAccounts.asset, "answerbit_points"),
+        ),
+      );
+    let fail = false,
+      held = false,
+      release!: () => void,
+      reached!: () => void,
+      done!: () => void;
+    const gate = new Promise<void>((r) => {
+        release = r;
+      }),
+      arrived = new Promise<void>((r) => {
+        reached = r;
+      }),
+      completed = new Promise<void>((r) => {
+        done = r;
+      });
+    await page.route("**/api/v1/balances?**", async (route) => {
+      if (fail)
+        return route.fulfill({
+          status: 503,
+          json: {
+            error: { code: "QA_UNAVAILABLE", message: "余额读取暂时失败" },
+          },
+        });
+      if (
+        !held &&
+        new URL(route.request().url()).searchParams.get("organizationId") ===
+          first.organizationId
+      ) {
+        held = true;
+        const response = await route.fetch();
+        reached();
+        await gate;
+        await route.fulfill({ response }).catch(() => {});
+        done();
+        return;
+      }
+      return route.continue();
+    });
+    await page.goto(scopedPath("/dashboard/balances"));
+    await arrived;
+    await page
+      .getByRole("combobox", { name: "企业", exact: true })
+      .press("ArrowDown");
+    await page
+      .locator(".ant-select-item-option")
+      .filter({ hasText: second.name })
+      .click();
+    await expect(
+      page.locator(".ant-statistic-content").filter({ hasText: "222" }),
+    ).toBeVisible();
+    release();
+    await completed;
+    await expect(
+      page.locator(".ant-statistic-content").filter({ hasText: "111" }),
+    ).not.toBeVisible();
+    const allocation = page
+      .locator(".ant-card")
+      .filter({ has: page.getByText("企业资产划拨", { exact: true }) });
+    await allocation.getByLabel("划拨数量", { exact: true }).fill("23");
+    fail = true;
+    await page.getByRole("button", { name: "刷新资产", exact: true }).click();
+    await expect(
+      page.getByText("余额读取暂时失败", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      allocation.getByLabel("划拨数量", { exact: true }),
+    ).toHaveValue("23");
+    expect(
+      await page.locator(".ant-statistic-content").allTextContents(),
+    ).toEqual(["—", "—", "—", "—"]);
+    for (const theme of ["light", "dark"]) {
+      if ((await page.locator("html").getAttribute("data-theme")) !== theme)
+        await page.getByRole("button", { name: "切换亮暗色模式" }).click();
+      for (const width of [390, 768, 1440]) {
+        await page.setViewportSize({ width, height: 1000 });
+        await expect
+          .poll(() =>
+            page.evaluate(
+              () => document.documentElement.scrollWidth <= innerWidth,
+            ),
+          )
+          .toBeTruthy();
+        const overflowState = await page.evaluate(() => ({
+          viewport: innerWidth,
+          document: document.documentElement.scrollWidth,
+          elements: [...document.querySelectorAll<HTMLElement>("body *")]
+            .filter(
+              (element) =>
+                element.getBoundingClientRect().right > innerWidth + 1 &&
+                element.clientWidth > 0,
+            )
+            .slice(0, 15)
+            .map((element) => ({
+              tag: element.tagName,
+              class: element.className,
+              right: element.getBoundingClientRect().right,
+              width: element.clientWidth,
+            })),
+        }));
+        expect(
+          overflowState.document,
+          JSON.stringify(overflowState),
+        ).toBeLessThanOrEqual(overflowState.viewport);
+        await page.evaluate(async () => {
+          await Promise.all(
+            document
+              .getAnimations()
+              .filter(
+                (a) => a.effect?.getComputedTiming().iterations !== Infinity,
+              )
+              .map((a) => a.finished.catch(() => {})),
+          );
+        });
+        await page.evaluate(axe.source);
+        const scan = await page.evaluate(() =>
+          (window as unknown as { axe: typeof axe }).axe.run(document, {
+            runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa"] },
+          }),
+        );
+        expect(
+          scan.violations.map(({ id, nodes }) => ({
+            id,
+            targets: nodes.map((n) => n.target),
+          })),
+        ).toEqual([]);
+        if (width === 390) {
+          await allocation.scrollIntoViewIfNeeded();
+          await page.screenshot({
+            path: test.info().outputPath(`brand-allocation-${theme}.png`),
+            fullPage: true,
+          });
+        }
+      }
+    }
+    fail = false;
+    await page
+      .getByRole("button", { name: "重试读取资产", exact: true })
+      .click();
+    await expect(
+      page.locator(".ant-statistic-content").filter({ hasText: "222" }),
+    ).toBeVisible();
+    await database.db
+      .update(database.organizations)
+      .set({ pointsExpiresAt: new Date("2020-01-01") })
+      .where(operators.eq(database.organizations.id, second.organizationId));
+    await page.goto(scopedPath("/dashboard/balances", 1));
+    await expect(
+      page.getByText("企业积分已到期", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      allocation.getByRole("button", { name: "确认划拨", exact: true }),
+    ).toBeDisabled();
+    await allocation
+      .getByRole("combobox", { name: "资产类型", exact: true })
+      .press("ArrowDown");
+    await page
+      .getByText("发布人民币余额（元）", { exact: true })
+      .last()
+      .click();
+    await expect(
+      allocation.getByRole("button", { name: "确认划拨", exact: true }),
+    ).toBeEnabled();
+    expect(runtimeErrors).toEqual([]);
   });
 
   test("企业管理员查看整体消耗并切换品牌，品牌角色无法越权，明暗主题与多尺寸可用", async ({

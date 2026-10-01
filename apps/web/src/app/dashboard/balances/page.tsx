@@ -28,6 +28,7 @@ export default async function BalanceManagementPage() {
       />
       {organizations.length ? (
         <BalanceManagementClient
+          userId={session.user.id}
           organizations={organizations.map(
             ({ id, name, role, teamBindingId }) => ({
               id,

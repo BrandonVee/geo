@@ -1221,6 +1221,12 @@ export const allocateBrandBalanceSchema = z
     idempotencyKey: idempotencyKeySchema,
   })
   .strict();
+export const balanceAllocationConfirmationQuerySchema =
+  allocateBrandBalanceSchema.pick({
+    organizationId: true,
+    brandId: true,
+    idempotencyKey: true,
+  });
 export const featurePointCostSchema = z
   .object({
     featureCode: z

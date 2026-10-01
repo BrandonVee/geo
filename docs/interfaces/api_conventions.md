@@ -42,6 +42,8 @@ JSON 请求使用 `Content-Type: application/json`；允许标准的 `applicatio
 
 ## 响应格式
 
+`POST /v1/balance-allocations` 要求 `balance.allocate` 及目标企业品牌归属，余额、流水、审计原子提交。相同键更改品牌、资产、金额、原因、操作者或操作类型返回 `409 IDEMPOTENCY_CONFLICT`；成功重放返回 200，不重复写审计或占代理商额度。`GET /v1/balance-allocations/confirmation` 接受 `organizationId`、`brandId` 和 `idempotencyKey`，要求相同划拨权限，使用租户数据库角色与同键事务锁，只返回当前操作者在指定品牌的原划拨（含 `brandId`）或 `null`，不返回其他用户或其他操作的流水。
+
 `GET /v1/admin/balance-transactions/confirmation` 接受企业 UUID 与原幂等键，要求 `platform.balance.manage`，只读返回原流水（含账户 BrandID）或 `null`。平台入账和扣减的余额、流水与审计在同一事务提交；相同键的账户、资产、金额、原因、操作或操作者发生变化时返回 `409 IDEMPOTENCY_CONFLICT`，重放成功不重复审计。
 
 成功响应：
