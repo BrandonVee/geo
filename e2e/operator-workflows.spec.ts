@@ -5411,6 +5411,10 @@ test.describe("真实运营操作闭环", () => {
     await page.getByPlaceholder("问题、文章或域名").fill("旧企业条件");
     await page.getByRole("button", { name: /查\s*看/ }).click();
     await expect.poll(() => detailRequested).toBeTruthy();
+    await page
+      .getByRole("dialog")
+      .getByRole("button", { name: /close|关闭/i })
+      .click();
     await page.locator("#answerbit-scope-organization").focus();
     await page.locator("#answerbit-scope-organization").press("ArrowDown");
     await page.getByTitle("流程测试企业 B", { exact: true }).click();
@@ -7939,5 +7943,419 @@ test.describe("真实运营操作闭环", () => {
     );
     expect(authorizedShape.status()).toBe(403);
     expect((await authorizedShape.json()).error.code).toBe("PERMISSION_DENIED");
+  });
+  test("回答证据独立读取和完整分页，失败不显示旧条件，关键词回车立即查询", async ({
+    page,
+  }) => {
+    await mockBusinessApis(page);
+    await mockAnswerReads(page);
+    const reads = { answers: 0, domains: 0, articles: 0 };
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let fail = false,
+      heldInitial = true,
+      shrink = false,
+      failModels = true;
+    await page.route("**/api/v1/answerbit/dashboard/platforms**", (route) =>
+      failModels
+        ? route.fulfill({
+            status: 503,
+            json: { error: { message: "模型证据独立失败" } },
+          })
+        : fulfill(route, { deepseek: "DeepSeek" }),
+    );
+    await page.route("**/api/v1/answerbit/answers?**", async (route) => {
+      reads.answers++;
+      const url = new URL(route.request().url());
+      if (heldInitial) {
+        heldInitial = false;
+        await held;
+      }
+      if (fail)
+        return route.fulfill({
+          status: 503,
+          json: { error: { message: "回答证据读取失败" } },
+        });
+      const current = Number(url.searchParams.get("page"));
+      const label = url.searchParams.get("prompt") || "初始条件";
+      return fulfill(route, {
+        total: 45,
+        scores: [
+          {
+            task_id: `answer-${current}`,
+            query_id: "prompt-1",
+            query_str: `${label} 第${current}页回答`,
+            platform: "deepseek",
+            date: "2026-09-23",
+            score: 50,
+            avg_rank: 1,
+            exposure: 1,
+            trace_article_cnt: 0,
+            title_name: "产品",
+            language: "zh",
+            zone: "cn",
+          },
+        ],
+      });
+    });
+    await page.route("**/api/v1/answerbit/citations/**", (route) => {
+      const url = new URL(route.request().url());
+      const isDomain = url.pathname.endsWith("/domains");
+      reads[isDomain ? "domains" : "articles"]++;
+      const current = Number(url.searchParams.get("page"));
+      const size = Number(url.searchParams.get("pageSize"));
+      expect(size).toBe(10);
+      const total = shrink ? 4 : 25;
+      const reference_count = Array.from(
+        { length: Math.max(0, Math.min(size, total - (current - 1) * size)) },
+        (_, n) => {
+          const i = (current - 1) * size + n;
+          return isDomain
+            ? { domain: `domain-${i}.example`, count: 30 - i, is_own: false }
+            : {
+                article: `引用证据文章 ${i}`,
+                url: `https://example.com/${i}`,
+                domain: "example.com",
+                count: 30 - i,
+                source: 1,
+                article_id: `article-${i}`,
+              };
+        },
+      );
+      return fulfill(route, { total, reference_count });
+    });
+    await page.goto(scopedPath("/dashboard/answers"));
+    await expect(
+      page.getByText("引用证据文章 9", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("domain-9.example", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("模型目录：模型证据独立失败", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("初始条件 第1页回答", { exact: true }),
+    ).toHaveCount(0);
+    release();
+    await expect(
+      page.getByText("初始条件 第1页回答", { exact: true }),
+    ).toBeVisible();
+    const counts = { ...reads };
+    await page
+      .getByLabel("引用文章分页", { exact: true })
+      .getByTitle("2", { exact: true })
+      .click();
+    await expect(
+      page.getByText("引用证据文章 19", { exact: true }),
+    ).toBeVisible();
+    expect(reads.answers).toBe(counts.answers);
+    expect(reads.domains).toBe(counts.domains);
+    await page
+      .getByLabel("回答分页", { exact: true })
+      .getByTitle("2", { exact: true })
+      .click();
+    await expect(
+      page.getByText("初始条件 第2页回答", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("引用证据文章 19", { exact: true }),
+    ).toBeVisible();
+    await page
+      .getByLabel("引用域名分页", { exact: true })
+      .getByTitle("3", { exact: true })
+      .click();
+    await expect(
+      page.getByText("domain-24.example", { exact: true }),
+    ).toBeVisible();
+    fail = true;
+    await page
+      .getByRole("button", { name: "查询回答与引用", exact: true })
+      .click();
+    await expect(
+      page.getByText("回答：回答证据读取失败", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("初始条件 第2页回答", { exact: true }),
+    ).toBeVisible();
+    await page.getByLabel("关键词", { exact: true }).fill("新的关键词");
+    await page.getByLabel("关键词", { exact: true }).press("Enter");
+    await expect(
+      page.getByText("回答：回答证据读取失败", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("初始条件 第2页回答", { exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByText("引用证据文章 9", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("domain-9.example", { exact: true }),
+    ).toBeVisible();
+    fail = false;
+    const beforeRetry = { ...reads };
+    await page.getByRole("button", { name: "重试回答", exact: true }).click();
+    await expect(
+      page.getByText("新的关键词 第1页回答", { exact: true }),
+    ).toBeVisible();
+    expect(reads.domains).toBe(beforeRetry.domains);
+    expect(reads.articles).toBe(beforeRetry.articles);
+    failModels = false;
+    await page
+      .getByRole("button", { name: "重试模型目录", exact: true })
+      .click();
+    await expect(
+      page.getByText("模型目录：模型证据独立失败", { exact: true }),
+    ).toHaveCount(0);
+    await page
+      .getByLabel("引用文章分页", { exact: true })
+      .getByTitle("3", { exact: true })
+      .click();
+    await expect(
+      page.getByText("引用证据文章 24", { exact: true }),
+    ).toBeVisible();
+    shrink = true;
+    await page
+      .getByRole("button", { name: "查询回答与引用", exact: true })
+      .click();
+    await expect(
+      page.getByText("引用证据文章 3", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("引用证据文章 24", { exact: true }),
+    ).toHaveCount(0);
+    for (const theme of ["light", "dark"]) {
+      await page.evaluate(
+        (value) => localStorage.setItem("ab-theme", value),
+        theme,
+      );
+      await page.reload();
+      await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
+      await expect(
+        page.getByText("引用证据文章 3", { exact: true }),
+      ).toBeVisible();
+      if (theme === "light") {
+        fail = true;
+        await page
+          .getByLabel("关键词", { exact: true })
+          .fill("不可读取的新条件");
+        await page.getByLabel("关键词", { exact: true }).press("Enter");
+        await expect(
+          page.getByText("回答尚未加载，请重试", { exact: true }),
+        ).toBeVisible();
+      }
+      for (const width of [390, 768, 1440]) {
+        await page.setViewportSize({ width, height: 1000 });
+        await page.evaluate(async () => {
+          await Promise.all(
+            document
+              .getAnimations()
+              .filter(
+                (a) => a.effect?.getComputedTiming().iterations !== Infinity,
+              )
+              .map((a) => a.finished.catch(() => {})),
+          );
+        });
+        await expect
+          .poll(() =>
+            page.evaluate(
+              () => document.documentElement.scrollWidth <= window.innerWidth,
+            ),
+          )
+          .toBeTruthy();
+        await page.evaluate(axe.source);
+        const result = await page.evaluate(() =>
+          (window as unknown as { axe: typeof axe }).axe.run(document, {
+            runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa"] },
+          }),
+        );
+        expect(
+          result.violations.map(({ id, nodes }) => ({
+            id,
+            targets: nodes.map(({ target }) => target),
+          })),
+        ).toEqual([]);
+        if (width === 390 || width === 1440) {
+          await page
+            .getByText("引用文章", { exact: true })
+            .scrollIntoViewIfNeeded();
+          await page.screenshot({
+            path: `/tmp/geo-answer-evidence-${theme}-${width}.png`,
+            fullPage: true,
+          });
+        }
+      }
+      fail = false;
+    }
+  });
+
+  test("回答详情失败在抽屉重试，关闭迟到读取不重开，明暗多尺寸可访问", async ({
+    page,
+  }) => {
+    const runtime: string[] = [];
+    page.on("pageerror", (error) => runtime.push(error.message));
+    await mockBusinessApis(page);
+    let mode: "failed" | "held" | "ready" = "failed",
+      requested = 0;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await mockAnswerReads(page, async (route) => {
+      requested++;
+      if (mode === "failed")
+        return route.fulfill({
+          status: 503,
+          json: { error: { message: "详情证据读取失败" } },
+        });
+      if (mode === "held") await held;
+      return fulfill(route, {
+        query: "当前回答证据",
+        query_id: "q-1",
+        llm_output: "可以确认的回答正文",
+        links: [
+          {
+            index: 1,
+            url: "https://example.com/evidence",
+            title: "公开引用证据",
+            source: 1,
+            article_id: "a-1",
+          },
+        ],
+        platform: "deepseek",
+        date: "2026-09-23",
+        score: 50,
+        rank: 1,
+        exposure_cnt: 2,
+        language: "zh",
+        zone: "cn",
+        title_name: "产品",
+      }).catch(() => {});
+    });
+    await page.goto(scopedPath("/dashboard/answers"));
+    await page
+      .getByRole("button", {
+        name: "查看回答：流程测试企业 A 的回答",
+        exact: true,
+      })
+      .click();
+    const drawer = page.getByRole("dialog");
+    await expect(
+      drawer.getByText("详情证据读取失败", { exact: true }),
+    ).toBeVisible();
+    mode = "ready";
+    await drawer
+      .getByRole("button", { name: "重试回答详情", exact: true })
+      .click();
+    await expect(
+      drawer.getByText("可以确认的回答正文", { exact: true }),
+    ).toBeVisible();
+    await drawer.getByRole("button", { name: /close|关闭/i }).click();
+    mode = "held";
+    await page
+      .getByRole("button", {
+        name: "查看回答：流程测试企业 A 的回答",
+        exact: true,
+      })
+      .click();
+    await expect.poll(() => requested).toBe(3);
+    await expect(
+      drawer.getByText("可以确认的回答正文", { exact: true }),
+    ).toHaveCount(0);
+    await drawer.getByRole("button", { name: /close|关闭/i }).click();
+    release();
+    await expect(drawer).not.toBeVisible();
+    mode = "ready";
+    for (const theme of ["light", "dark"]) {
+      await page.evaluate(
+        (value) => localStorage.setItem("ab-theme", value),
+        theme,
+      );
+      await page.reload();
+      await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
+      for (const width of [390, 768, 1440]) {
+        await page.setViewportSize({ width, height: 1000 });
+        await page
+          .getByRole("button", {
+            name: "查看回答：流程测试企业 A 的回答",
+            exact: true,
+          })
+          .click();
+        await expect(
+          drawer.getByText("可以确认的回答正文", { exact: true }),
+        ).toBeVisible();
+        await page.evaluate(async () => {
+          await Promise.all(
+            document
+              .getAnimations()
+              .filter(
+                (a) => a.effect?.getComputedTiming().iterations !== Infinity,
+              )
+              .map((a) => a.finished.catch(() => {})),
+          );
+        });
+        await expect
+          .poll(() =>
+            page.evaluate(
+              () => document.documentElement.scrollWidth <= window.innerWidth,
+            ),
+          )
+          .toBeTruthy();
+        await page.evaluate(axe.source);
+        const result = await page.evaluate(() =>
+          (window as unknown as { axe: typeof axe }).axe.run(document, {
+            runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa"] },
+          }),
+        );
+        expect(
+          result.violations.map(({ id, nodes }) => ({
+            id,
+            targets: nodes.map(({ target }) => target),
+          })),
+        ).toEqual([]);
+        if (width === 390 || width === 1440)
+          await page.screenshot({
+            path: `/tmp/geo-answer-detail-${theme}-${width}.png`,
+            fullPage: true,
+          });
+        await drawer.getByRole("button", { name: /close|关闭/i }).click();
+      }
+    }
+    expect(runtime).toEqual([]);
+  });
+  test.describe("回答日期按当地日历", () => {
+    test.use({ timezoneId: "Asia/Shanghai" });
+    test("回答本地日期在北京时间凌晨仍查询今天和近七天", async ({ page }) => {
+      await mockBusinessApis(page);
+      await mockAnswerReads(page);
+      await page.clock.install({ time: new Date("2026-10-01T16:30:00Z") });
+      const ranges: string[][] = [];
+      await page.route("**/api/v1/answerbit/answers?**", async (route) => {
+        const url = new URL(route.request().url());
+        ranges.push([
+          url.searchParams.get("beginDate")!,
+          url.searchParams.get("endDate")!,
+        ]);
+        await route.fallback();
+      });
+      await page.goto(scopedPath("/dashboard/answers"));
+      await expect(
+        page.getByText("流程测试企业 A 的回答", { exact: true }),
+      ).toBeVisible();
+      await expect(page.getByLabel("日期范围", { exact: true })).toHaveValue(
+        "2026-09-26",
+      );
+      await expect(page.getByLabel("结束日期", { exact: true })).toHaveValue(
+        "2026-10-02",
+      );
+      expect(ranges.length).toBeGreaterThan(0);
+      expect(
+        ranges.every(
+          ([begin, end]) => begin === "2026-09-26" && end === "2026-10-02",
+        ),
+      ).toBe(true);
+    });
   });
 });

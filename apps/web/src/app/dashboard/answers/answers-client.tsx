@@ -13,6 +13,7 @@ import {
   Col,
   DatePicker,
   Descriptions,
+  Spin,
   Drawer,
   Empty,
   Flex,
@@ -34,6 +35,7 @@ import dayjs from "dayjs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { answersSavedViewFiltersSchema } from "@geo/contracts";
 import { ReportAttempt } from "./report-attempt";
+import { useDirectoryRead } from "../directory-read";
 import {
   ReportHistory,
   useReportHistory,
@@ -107,12 +109,10 @@ async function readData<T>(url: string, signal?: AbortSignal): Promise<T> {
   return body.data;
 }
 const dates = () => {
-  const end = new Date();
-  const begin = new Date(end);
-  begin.setUTCDate(begin.getUTCDate() - 6);
+  const end = dayjs();
   return {
-    begin: begin.toISOString().slice(0, 10),
-    end: end.toISOString().slice(0, 10),
+    begin: end.subtract(6, "day").format("YYYY-MM-DD"),
+    end: end.format("YYYY-MM-DD"),
   };
 };
 export function AnswersClient({
@@ -132,6 +132,7 @@ export function AnswersClient({
     />
   );
 }
+// @project-doc docs/domains/geo_operations.md#answer_evidence_workflow
 function AnswersWorkspace({
   organizations,
   scope,
@@ -148,14 +149,12 @@ function AnswersWorkspace({
   const [keywordQuery, setKeywordQuery] = useState("");
   const [mentionBrand, setMentionBrand] = useState("-1");
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>([]);
-  const [platforms, setPlatforms] = useState<Record<string, string>>({});
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const [total, setTotal] = useState(0);
-  const [domains, setDomains] = useState<Domain[]>([]);
-  const [articles, setArticles] = useState<Article[]>([]);
+  const [domainPage, setDomainPage] = useState(1);
+  const [articlePage, setArticlePage] = useState(1);
+  const [detailTaskId, setDetailTaskId] = useState("");
+  const [detailError, setDetailError] = useState("");
   const [detail, setDetail] = useState<Detail | null>(null);
   const [page, setPage] = useState(1);
-  const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [views, setViews] = useState<SavedView[]>([]);
   const [submittedReport, setSubmittedReport] = useState<ExportJob>();
@@ -169,7 +168,6 @@ function AnswersWorkspace({
   const [editingView, setEditingView] = useState<SavedView | null>(null);
   const [detailLoading, setDetailLoading] = useState("");
   const reads = useRef<{
-    data?: AbortController;
     tools?: AbortController;
     detail?: AbortController;
   }>({});
@@ -198,19 +196,12 @@ function AnswersWorkspace({
     const timer = window.setTimeout(() => setKeywordQuery(keyword.trim()), 300);
     return () => window.clearTimeout(timer);
   }, [keyword]);
-  useEffect(() => {
-    if (!scope.teamBindingId || !canRead) return;
-    const controller = new AbortController();
-    void readData<Record<string, string>>(
-      `/api/v1/answerbit/dashboard/platforms?${scopeQuery({ organizationId: scope.organizationId, teamBindingId: scope.teamBindingId })}`,
-      controller.signal,
-    )
-      .then((data) => {
-        if (!controller.signal.aborted) setPlatforms(data ?? {});
-      })
-      .catch(() => {});
-    return () => controller.abort();
-  }, [scope.organizationId, scope.teamBindingId, canRead]);
+  const platformRead = useDirectoryRead<Record<string, string>>(
+    scope.teamBindingId && canRead
+      ? `/api/v1/answerbit/dashboard/platforms?${scopeQuery({ organizationId: scope.organizationId, teamBindingId: scope.teamBindingId })}`
+      : null,
+  );
+  const platforms = platformRead.data ?? {};
   const loadTools = useCallback(async () => {
     if (!scope.organizationId) return;
     reads.current.tools?.abort();
@@ -237,92 +228,116 @@ function AnswersWorkspace({
   useEffect(() => {
     void loadTools();
   }, [loadTools]);
-  const load = useCallback(async () => {
-    if (!scope.brandId || !canRead) return;
-    reads.current.data?.abort();
-    const controller = new AbortController();
-    reads.current.data = controller;
-    setLoading(true);
-    setMessage("");
-    const base: Record<string, string> = {
-      organizationId: scope.organizationId,
-      teamBindingId: scope.teamBindingId,
-      brandId: scope.brandId,
-      beginDate,
-      endDate,
-      page: String(page),
-      pageSize: "20",
-    };
-    if (selectedPlatforms.length) base.platforms = selectedPlatforms.join(",");
-    const [taskResult, domainResult, articleResult] = await Promise.allSettled([
-      readData<{ scores: Task[]; total: number }>(
-        `/api/v1/answerbit/answers?${scopeQuery({ ...base, mentionBrand, ...(keywordQuery ? { prompt: keywordQuery } : {}) })}`,
-        controller.signal,
-      ),
-      readData<{ reference_count: Domain[] }>(
-        `/api/v1/answerbit/citations/domains?${scopeQuery({ ...base, ...(keywordQuery ? { keyword: keywordQuery } : {}) })}`,
-        controller.signal,
-      ),
-      readData<{ reference_count: Article[] }>(
-        `/api/v1/answerbit/citations/articles?${scopeQuery({ ...base, ...(keywordQuery ? { keyword: keywordQuery } : {}) })}`,
-        controller.signal,
-      ),
-    ]);
-    if (controller.signal.aborted || !mounted.current) return;
-    if (taskResult.status === "fulfilled") {
-      setTasks(taskResult.value.scores ?? []);
-      setTotal(taskResult.value.total ?? 0);
-    }
-    if (domainResult.status === "fulfilled")
-      setDomains(domainResult.value.reference_count ?? []);
-    if (articleResult.status === "fulfilled")
-      setArticles(articleResult.value.reference_count ?? []);
-    const errors = [taskResult, domainResult, articleResult].flatMap(
-      (result, index) =>
-        result.status === "rejected"
-          ? [
-              `${["回答", "引用域名", "引用文章"][index]}：${result.reason instanceof Error ? result.reason.message : "加载失败"}`,
-            ]
-          : [],
-    );
-    setMessage(errors.join("；"));
-    setMessageType("error");
-    setLoading(false);
-  }, [
-    scope.organizationId,
-    scope.teamBindingId,
-    scope.brandId,
+  const base: Record<string, string> = {
+    organizationId: scope.organizationId,
+    teamBindingId: scope.teamBindingId,
+    brandId: scope.brandId,
     beginDate,
     endDate,
-    page,
-    selectedPlatforms,
-    keywordQuery,
-    mentionBrand,
-    canRead,
-  ]);
+    ...(selectedPlatforms.length
+      ? { platforms: selectedPlatforms.join(",") }
+      : {}),
+  };
+  const readable = Boolean(scope.brandId && canRead);
+  const taskRead = useDirectoryRead<{ scores: Task[]; total: number }>(
+    readable
+      ? `/api/v1/answerbit/answers?${scopeQuery({ ...base, page: String(page), pageSize: "20", mentionBrand, ...(keywordQuery ? { prompt: keywordQuery } : {}) })}`
+      : null,
+  );
+  const domainRead = useDirectoryRead<{
+    reference_count: Domain[];
+    total: number;
+  }>(
+    readable
+      ? `/api/v1/answerbit/citations/domains?${scopeQuery({ ...base, page: String(domainPage), pageSize: "10", ...(keywordQuery ? { keyword: keywordQuery } : {}) })}`
+      : null,
+  );
+  const articleRead = useDirectoryRead<{
+    reference_count: Article[];
+    total: number;
+  }>(
+    readable
+      ? `/api/v1/answerbit/citations/articles?${scopeQuery({ ...base, page: String(articlePage), pageSize: "10", ...(keywordQuery ? { keyword: keywordQuery } : {}) })}`
+      : null,
+  );
+  const tasks = taskRead.data?.scores ?? [];
+  const total = taskRead.data?.total;
+  const domains = domainRead.data?.reference_count ?? [];
+  const articles = articleRead.data?.reference_count ?? [];
+  const loading = taskRead.loading || domainRead.loading || articleRead.loading;
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (taskRead.data)
+      setPage((current) =>
+        Math.min(current, Math.max(1, Math.ceil(taskRead.data!.total / 20))),
+      );
+  }, [taskRead.data]);
+  useEffect(() => {
+    if (domainRead.data)
+      setDomainPage((current) =>
+        Math.min(current, Math.max(1, Math.ceil(domainRead.data!.total / 10))),
+      );
+  }, [domainRead.data]);
+  useEffect(() => {
+    if (articleRead.data)
+      setArticlePage((current) =>
+        Math.min(current, Math.max(1, Math.ceil(articleRead.data!.total / 10))),
+      );
+  }, [articleRead.data]);
+  function load() {
+    return Promise.all([
+      taskRead.reload(),
+      domainRead.reload(),
+      articleRead.reload(),
+    ]);
+  }
+  function resetPages() {
+    setPage(1);
+    setDomainPage(1);
+    setArticlePage(1);
+  }
+  function readError(
+    label: string,
+    read: { error: string; loading: boolean; reload: () => Promise<boolean> },
+  ) {
+    return read.error ? (
+      <Alert
+        showIcon
+        type="error"
+        message={`${label}：${read.error}`}
+        style={{ marginBottom: 16 }}
+        action={
+          <Button
+            aria-label={`重试${label}`}
+            loading={read.loading}
+            onClick={() => void read.reload()}
+          >
+            重试
+          </Button>
+        }
+      />
+    ) : null;
+  }
   async function openDetail(taskId: string) {
     reads.current.detail?.abort();
     const controller = new AbortController();
     reads.current.detail = controller;
+    setDetailTaskId(taskId);
+    setDetail(null);
+    setDetailError("");
     setDetailLoading(taskId);
     try {
       const data = await readData<Detail>(
         `/api/v1/answerbit/answers/${taskId}?${scopeQuery({ organizationId: scope.organizationId, teamBindingId: scope.teamBindingId, brandId: scope.brandId })}`,
         controller.signal,
       );
-      if (!controller.signal.aborted) setDetail(data);
+      if (!controller.signal.aborted && mounted.current) setDetail(data);
     } catch (error) {
-      if (!controller.signal.aborted) {
-        setMessageType("error");
-        setMessage(
+      if (!controller.signal.aborted && mounted.current)
+        setDetailError(
           error instanceof Error ? error.message : "详情加载失败，请重试",
         );
-      }
     } finally {
-      if (!controller.signal.aborted) setDetailLoading("");
+      if (!controller.signal.aborted && mounted.current) setDetailLoading("");
     }
   }
   async function saveView() {
@@ -403,7 +418,7 @@ function AnswersWorkspace({
     setKeyword(filter.keyword);
     setKeywordQuery(filter.keyword);
     setMentionBrand(filter.mentionBrand);
-    setPage(1);
+    resetPages();
     setMessage("");
   }
   async function deleteView(view: SavedView) {
@@ -592,6 +607,7 @@ function AnswersWorkspace({
       width: 90,
       render: (_, item) => (
         <Button
+          aria-label={`查看回答：${item.query_str}`}
           loading={detailLoading === item.task_id}
           icon={<EyeOutlined />}
           onClick={() => void openDetail(item.task_id)}
@@ -640,14 +656,18 @@ function AnswersWorkspace({
       <Row gutter={[16, 16]}>
         <Col lg={6} sm={12} xs={24}>
           <Card>
-            <Statistic title="回答记录" value={total} />
+            <Statistic title="回答记录" value={total ?? "—"} />
           </Card>
         </Col>
         <Col lg={6} sm={12} xs={24}>
           <Card>
             <Statistic
               title="本页已提及"
-              value={tasks.filter((item) => item.exposure === 1).length}
+              value={
+                taskRead.data
+                  ? tasks.filter((item) => item.exposure === 1).length
+                  : "—"
+              }
             />
           </Card>
         </Col>
@@ -657,17 +677,19 @@ function AnswersWorkspace({
               precision={1}
               title="本页平均分"
               value={
-                tasks.length
-                  ? tasks.reduce((sum, item) => sum + item.score, 0) /
-                    tasks.length
-                  : 0
+                !taskRead.data
+                  ? "—"
+                  : tasks.length
+                    ? tasks.reduce((sum, item) => sum + item.score, 0) /
+                      tasks.length
+                    : 0
               }
             />
           </Card>
         </Col>
         <Col lg={6} sm={12} xs={24}>
           <Card>
-            <Statistic title="引用域名" value={domains.length} />
+            <Statistic title="引用域名" value={domainRead.data?.total ?? "—"} />
           </Card>
         </Col>
       </Row>
@@ -675,6 +697,7 @@ function AnswersWorkspace({
       <Card
         extra={
           <Button
+            aria-label="查询回答与引用"
             disabled={!scope.brandId || !canRead}
             icon={<ReloadOutlined />}
             loading={loading}
@@ -689,14 +712,30 @@ function AnswersWorkspace({
         <ScopeFields organizations={organizations} scope={scope} />
         <Row gutter={[12, 12]} style={{ marginTop: 16 }}>
           <Col lg={7} md={12} xs={24}>
-            <Typography.Text type="secondary">日期范围</Typography.Text>
+            <label htmlFor="answers-begin-date">
+              <Typography.Text type="secondary">日期范围</Typography.Text>
+            </label>
+            <label
+              htmlFor="answers-end-date"
+              style={{
+                position: "absolute",
+                width: 1,
+                height: 1,
+                margin: -1,
+                overflow: "hidden",
+                clip: "rect(0, 0, 0, 0)",
+              }}
+            >
+              结束日期
+            </label>
             <DatePicker.RangePicker
+              id={{ start: "answers-begin-date", end: "answers-end-date" }}
               disabled={!canRead || !scope.brandId}
               allowClear={false}
               disabledDate={(date) => date.isAfter(dayjs(), "day")}
               onChange={(values) => {
                 if (!values?.[0] || !values[1]) return;
-                setPage(1);
+                resetPages();
                 setBeginDate(values[0].format("YYYY-MM-DD"));
                 setEndDate(values[1].format("YYYY-MM-DD"));
               }}
@@ -724,7 +763,7 @@ function AnswersWorkspace({
               maxTagCount="responsive"
               mode="multiple"
               onChange={(value) => {
-                setPage(1);
+                resetPages();
                 setSelectedPlatforms(value);
               }}
               optionFilterProp="searchText"
@@ -756,21 +795,33 @@ function AnswersWorkspace({
             />
           </Col>
           <Col lg={7} md={18} xs={24}>
-            <Typography.Text type="secondary">关键词</Typography.Text>
+            <label htmlFor="answers-keyword">
+              <Typography.Text type="secondary">关键词</Typography.Text>
+            </label>
             <Input.Search
+              id="answers-keyword"
               disabled={!canRead || !scope.brandId}
               allowClear
               onChange={(event) => {
-                setPage(1);
+                resetPages();
                 setKeyword(event.target.value);
               }}
-              onSearch={() => void load()}
+              onSearch={(value) => {
+                const next = value.trim();
+                if (next === keywordQuery) void load();
+                else {
+                  resetPages();
+                  setKeywordQuery(next);
+                }
+              }}
               placeholder="问题、文章或域名"
               value={keyword}
             />
           </Col>
         </Row>
       </Card>
+
+      {readError("模型目录", platformRead)}
 
       {message ? (
         <Alert
@@ -788,29 +839,38 @@ function AnswersWorkspace({
         extra={<Typography.Text type="secondary">第 {page} 页</Typography.Text>}
         title="大模型回答记录"
       >
+        {readError("回答", taskRead)}
         <Table<Task>
           columns={taskColumns}
           dataSource={tasks}
           locale={{
             emptyText: (
               <Empty
-                description="暂无回答记录"
+                description={
+                  <Typography.Text tabIndex={0}>
+                    {taskRead.error && !taskRead.data
+                      ? "回答尚未加载，请重试"
+                      : "暂无回答记录"}
+                  </Typography.Text>
+                }
                 image={Empty.PRESENTED_IMAGE_SIMPLE}
               />
             ),
           }}
           pagination={false}
-          loading={loading}
+          loading={taskRead.loading}
           rowKey="task_id"
           scroll={{ x: 860 }}
         />
         <Flex justify="flex-end" style={{ marginTop: 16 }}>
           <Pagination
+            aria-label="回答分页"
             current={page}
             onChange={setPage}
             pageSize={20}
             showSizeChanger={false}
-            total={total}
+            total={total ?? 0}
+            disabled={!taskRead.data}
           />
         </Flex>
       </Card>
@@ -940,40 +1000,77 @@ function AnswersWorkspace({
       <Row gutter={[16, 16]}>
         <Col lg={10} xs={24}>
           <Card title="引用域名">
+            {readError("引用域名", domainRead)}
             <Table<Domain>
+              onRow={(_, index) => ({ tabIndex: index === 0 ? 0 : undefined })}
+              loading={domainRead.loading}
               columns={domainColumns}
               dataSource={domains}
               locale={{
                 emptyText: (
                   <Empty
-                    description="暂无引用域名"
+                    description={
+                      domainRead.error && !domainRead.data
+                        ? "引用域名尚未加载，请重试"
+                        : "暂无引用域名"
+                    }
                     image={Empty.PRESENTED_IMAGE_SIMPLE}
                   />
                 ),
               }}
               pagination={false}
+              scroll={domains.length ? { x: 360 } : undefined}
               rowKey="domain"
               size="small"
             />
+            <Flex justify="flex-end" style={{ marginTop: 16 }}>
+              <Pagination
+                aria-label="引用域名分页"
+                current={domainPage}
+                onChange={setDomainPage}
+                pageSize={10}
+                showSizeChanger={false}
+                total={domainRead.data?.total ?? 0}
+                disabled={!domainRead.data}
+              />
+            </Flex>
           </Card>
         </Col>
         <Col lg={14} xs={24}>
           <Card title="引用文章">
+            {readError("引用文章", articleRead)}
             <Table<Article>
+              loading={articleRead.loading}
               columns={articleColumns}
-              dataSource={articles.slice(0, 8)}
+              dataSource={articles}
               locale={{
                 emptyText: (
                   <Empty
-                    description="暂无引用文章"
+                    description={
+                      articleRead.error && !articleRead.data
+                        ? "引用文章尚未加载，请重试"
+                        : "暂无引用文章"
+                    }
                     image={Empty.PRESENTED_IMAGE_SIMPLE}
                   />
                 ),
               }}
               pagination={false}
+              scroll={articles.length ? { x: 560 } : undefined}
               rowKey={(item) => item.url}
               size="small"
             />
+            <Flex justify="flex-end" style={{ marginTop: 16 }}>
+              <Pagination
+                aria-label="引用文章分页"
+                current={articlePage}
+                onChange={setArticlePage}
+                pageSize={10}
+                showSizeChanger={false}
+                total={articleRead.data?.total ?? 0}
+                disabled={!articleRead.data}
+              />
+            </Flex>
           </Card>
         </Col>
       </Row>
@@ -1014,15 +1111,37 @@ function AnswersWorkspace({
           reads.current.detail?.abort();
           setDetailLoading("");
           setDetail(null);
+          setDetailTaskId("");
+          setDetailError("");
         }}
-        open={Boolean(detail)}
+        open={Boolean(detailTaskId)}
         title={detail?.query ?? "回答详情"}
         width={720}
       >
+        {detailLoading ? (
+          <Flex justify="center" style={{ padding: 32 }}>
+            <Spin aria-label="正在读取回答详情" />
+          </Flex>
+        ) : null}
+        {detailError ? (
+          <Alert
+            type="error"
+            showIcon
+            message={detailError}
+            action={
+              <Button
+                aria-label="重试回答详情"
+                onClick={() => void openDetail(detailTaskId)}
+              >
+                重试详情
+              </Button>
+            }
+          />
+        ) : null}
         {detail ? (
           <Space direction="vertical" size="large" style={{ width: "100%" }}>
             <Descriptions
-              column={3}
+              column={{ xs: 1, sm: 2, md: 3 }}
               items={[
                 {
                   key: "platform",

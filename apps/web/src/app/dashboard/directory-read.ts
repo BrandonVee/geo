@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 // @project-doc docs/domains/geo_operations.md#monitoring_workflow
 // @project-doc docs/domains/geo_operations.md#competitor_workflow
+// @project-doc docs/domains/geo_operations.md#answer_evidence_workflow
 export function useDirectoryRead<T>(url: string | null) {
   const [snapshot, setSnapshot] = useState<{
     url: string;
