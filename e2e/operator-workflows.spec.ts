@@ -10713,6 +10713,178 @@ test.describe("真实运营操作闭环", () => {
     expect(response.status()).toBe(403);
   });
 
+  test("积分查账条件和页码刷新可恢复，越界回退、失败重试和范围切换保持正确", async ({
+    page,
+  }) => {
+    const target = fixture.scopes[0];
+    const { eq, and } = operators;
+    const [member] = await database.db
+      .select()
+      .from(database.organizationMembers)
+      .where(
+        and(
+          eq(
+            database.organizationMembers.organizationId,
+            target.organizationId,
+          ),
+          eq(database.organizationMembers.userId, fixture.userId),
+        ),
+      );
+    const [role] = await database.db
+      .select()
+      .from(database.roles)
+      .where(eq(database.roles.code, "tenant_admin"));
+    await database.db
+      .insert(database.memberRoles)
+      .values({ memberId: member.id, roleId: role.id });
+    const common = {
+      organizationId: target.organizationId,
+      brandId: target.brandId,
+      asset: "answerbit_points" as const,
+      referenceType: "feature_usage",
+      reason: "分页积分消耗",
+      actorUserId: fixture.userId,
+    };
+    for (let i = 0; i < 25; i++)
+      await database.consumeBalance({
+        ...common,
+        amount: 1,
+        referenceId: `point-history-${i}`,
+        idempotencyKey: randomUUID(),
+      });
+    await database.restoreBalance({
+      ...common,
+      amount: 2,
+      referenceType: "feature_usage_failed",
+      referenceId: "point-history-refund",
+      reason: "分页失败返还",
+      idempotencyKey: randomUUID(),
+    });
+    await mockBusinessApis(page);
+    const endDate = new Date().toLocaleDateString("en-CA", {
+      timeZone: "Asia/Shanghai",
+    });
+    const params = new URLSearchParams({
+      organizationId: target.organizationId,
+      brandId: target.brandId,
+      usageOrganizationId: target.organizationId,
+      usageBrandId: "",
+      usageView: "organization",
+      usageBeginDate: "2020-01-01",
+      usageEndDate: endDate,
+      usagePage: "999",
+      usagePageSize: "10",
+    });
+    await page.goto(`/dashboard/metering?${params}`);
+    await expect(
+      page.getByText("周期净消耗 23 积分", { exact: true }),
+    ).toBeVisible();
+    await expect(page.locator(".ant-pagination-item-active")).toHaveText("3");
+    await expect(page.getByText("分页积分消耗", { exact: true })).toHaveCount(
+      6,
+    );
+    await page
+      .getByRole("combobox", { name: "记录类型", exact: true })
+      .press("ArrowDown");
+    await page.getByText("仅看消耗", { exact: true }).last().click();
+    await expect(page.locator(".ant-pagination-item-active")).toHaveText("1");
+    await expect(page.getByText("分页失败返还", { exact: true })).toHaveCount(
+      0,
+    );
+    await expect(
+      page.getByText("周期净消耗 23 积分", { exact: true }),
+    ).toBeVisible();
+    await page.getByTitle("2", { exact: true }).click();
+    await expect
+      .poll(() => new URL(page.url()).searchParams.get("usagePage"))
+      .toBe("2");
+    await page.reload();
+    await expect(page.locator(".ant-pagination-item-active")).toHaveText("2");
+    await expect(
+      page.getByRole("combobox", { name: "记录类型", exact: true }),
+    ).toBeVisible();
+    expect(new URL(page.url()).searchParams.get("usageOperation")).toBe(
+      "consume",
+    );
+    expect(new URL(page.url()).searchParams.get("usageBeginDate")).toBe(
+      "2020-01-01",
+    );
+    expect(new URL(page.url()).searchParams.get("usageEndDate")).toBe(endDate);
+    let fail = true;
+    await page.route("**/api/v1/point-usage?**", (route) =>
+      fail
+        ? route.fulfill({
+            status: 503,
+            json: {
+              error: { code: "TEST_UNAVAILABLE", message: "积分读取暂时失败" },
+              requestId: "point-history-test",
+            },
+          })
+        : route.continue(),
+    );
+    await page.getByRole("button", { name: "刷新数据", exact: true }).click();
+    await expect(
+      page.getByRole("button", { name: "重试积分用量", exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("积分记录读取失败，请重试", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("当前范围内暂无积分消耗记录", { exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByText("周期净消耗 23 积分", { exact: true }),
+    ).toHaveCount(0);
+    await expect(page.getByText("共 0 条", { exact: true })).toHaveCount(0);
+    fail = false;
+    await page
+      .getByRole("button", { name: "重试积分用量", exact: true })
+      .click();
+    await expect(
+      page.getByText("周期净消耗 23 积分", { exact: true }),
+    ).toBeVisible();
+    await expect(page.locator(".ant-pagination-item-active")).toHaveText("2");
+    await page.getByText("当前品牌", { exact: true }).click();
+    await expect(page.locator(".ant-pagination-item-active")).toHaveText("1");
+    expect(new URL(page.url()).searchParams.get("usageOperation")).toBe(
+      "consume",
+    );
+    expect(new URL(page.url()).searchParams.get("usageBeginDate")).toBe(
+      "2020-01-01",
+    );
+    await page
+      .getByRole("combobox", { name: "企业", exact: true })
+      .press("ArrowDown");
+    await page.getByTitle(fixture.scopes[1].name, { exact: true }).click();
+    await expect(page.locator(".ant-statistic-content").first()).toContainText(
+      "1,000",
+    );
+    await expect(page.getByText("分页积分消耗", { exact: true })).toHaveCount(
+      0,
+    );
+    expect(new URL(page.url()).searchParams.get("usageOperation")).toBeNull();
+    const invalid = new URL(page.url());
+    invalid.searchParams.set(
+      "usageOrganizationId",
+      fixture.scopes[1].organizationId,
+    );
+    invalid.searchParams.set("usageBrandId", fixture.scopes[1].brandId);
+    invalid.searchParams.set("usagePage", "0");
+    await page.goto(invalid.href);
+    await expect(
+      page.getByText("积分筛选参数无效，请重新选择或清除筛选", { exact: true }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "清除筛选", exact: true }).click();
+    await expect(
+      page.getByText("积分筛选参数无效，请重新选择或清除筛选", { exact: true }),
+    ).toHaveCount(0);
+    expect(new URL(page.url()).searchParams.get("usagePage")).toBe("1");
+    expect(new URL(page.url()).searchParams.get("usagePageSize")).toBe("20");
+    await expect(
+      page.getByText("当前品牌可用积分", { exact: true }),
+    ).toBeVisible();
+  });
+
   test("企业和品牌积分统计视图独立保存，刷新不改变统计范围", async ({
     page,
   }) => {

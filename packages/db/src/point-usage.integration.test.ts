@@ -149,6 +149,39 @@ describe.skipIf(process.env.POINT_USAGE_DB_TESTS !== "1")(
         ).list[0].id,
       ).toBe(first.list[0].id);
     });
+    it("超界页码返回实际末页；筛选为空时回到第一页", async () => {
+      const last = await getPointUsage({
+        ...input,
+        operation: "consume",
+        page: 100_000,
+        pageSize: 1,
+      });
+      const third = await getPointUsage({
+        ...input,
+        operation: "consume",
+        page: 3,
+        pageSize: 1,
+      });
+      expect(last.pagination).toEqual({
+        page: 3,
+        pageSize: 1,
+        total: 3,
+        pages: 3,
+      });
+      expect(last.list).toHaveLength(1);
+      expect(last.list[0].id).toBe(third.list[0].id);
+      expect(last.summary).toMatchObject({
+        consumed: 3_000_000_000,
+        restored: 10,
+      });
+      const empty = await getPointUsage({
+        ...input,
+        brandId: "missing",
+        page: 100_000,
+      });
+      expect(empty.pagination).toMatchObject({ page: 1, total: 0, pages: 0 });
+      expect(empty.list).toEqual([]);
+    });
     it("没有积分账户的企业或品牌返回空统计", async () => {
       expect(
         await getPointUsage({ ...input, brandId: "missing" }),

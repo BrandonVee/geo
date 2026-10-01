@@ -28,6 +28,7 @@ import {
   type TableColumnsType,
 } from "antd";
 import { useSearchParams } from "next/navigation";
+import { pointUsageQuerySchema, type PointUsageQuery } from "@geo/contracts";
 import dayjs, { type Dayjs } from "dayjs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AccessibleTable } from "../../accessible-table";
@@ -71,6 +72,18 @@ type PointUsage = {
   };
 };
 
+const queryKeys = {
+  beginDate: "usageBeginDate",
+  endDate: "usageEndDate",
+  operation: "usageOperation",
+  page: "usagePage",
+  pageSize: "usagePageSize",
+} as const;
+const resetQueryKeys = [
+  "usageOrganizationId",
+  "usageBrandId",
+  ...Object.values(queryKeys),
+];
 const number = new Intl.NumberFormat("zh-CN");
 const defaultRange = (): [Dayjs, Dayjs] => [
   dayjs().subtract(29, "day").startOf("day"),
@@ -99,7 +112,7 @@ export function PointUsageClient({
 }: {
   organizations: ScopeOrganization[];
 }) {
-  const scope = useAnswerBitScope(organizations);
+  const scope = useAnswerBitScope(organizations, resetQueryKeys);
   const { token } = theme.useToken();
   const searchParams = useSearchParams();
   const requestedView = searchParams.get("usageView");
@@ -137,81 +150,106 @@ export function PointUsageClient({
     view,
   ]);
 
-  const [range, setRange] = useState<[Dayjs, Dayjs]>(defaultRange);
-  const [operation, setOperation] = useState<"all" | UsageOperation>("all");
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
+  const scopeReady =
+    scope.scopeRestored &&
+    Boolean(scope.organizationId) &&
+    (enterpriseView || Boolean(scope.teamBindingId && scope.brandId));
+  const initialRange = useMemo(defaultRange, []);
+  const baseQuery = {
+    organizationId:
+      scope.organizationId || "11111111-1111-4111-8111-111111111111",
+    ...(!enterpriseView
+      ? {
+          teamBindingId:
+            scope.teamBindingId || "11111111-1111-4111-8111-111111111111",
+          brandId: scope.brandId || "pending",
+        }
+      : {}),
+    beginDate: initialRange[0].format("YYYY-MM-DD"),
+    endDate: initialRange[1].format("YYYY-MM-DD"),
+  };
+  const raw: Record<string, unknown> = { ...baseQuery };
+  if (
+    searchParams.get("usageOrganizationId") === scope.organizationId &&
+    (searchParams.get("usageBrandId") ?? "") ===
+      (enterpriseView ? "" : scope.brandId)
+  )
+    for (const [field, key] of Object.entries(queryKeys)) {
+      const value = searchParams.get(key);
+      if (value !== null) raw[field] = value;
+    }
+  const parsed = pointUsageQuerySchema.safeParse(raw);
+  const query = parsed.success
+    ? parsed.data
+    : pointUsageQuerySchema.parse(baseQuery);
+  const range: [Dayjs, Dayjs] = [dayjs(query.beginDate), dayjs(query.endDate)];
+  const operation = query.operation ?? "all";
+  function change(
+    patch: Partial<PointUsageQuery>,
+    nextView = enterpriseView ? "organization" : "brand",
+  ) {
+    const next = { ...query, page: 1, ...patch };
+    const url = new URL(window.location.href);
+    url.searchParams.set("organizationId", scope.organizationId);
+    if (scope.brandId) url.searchParams.set("brandId", scope.brandId);
+    url.searchParams.set("usageView", nextView);
+    url.searchParams.set("usageOrganizationId", scope.organizationId);
+    url.searchParams.set(
+      "usageBrandId",
+      nextView === "organization" ? "" : scope.brandId,
+    );
+    for (const [field, key] of Object.entries(queryKeys)) {
+      const value = next[field as keyof typeof queryKeys];
+      if (value !== undefined) url.searchParams.set(key, String(value));
+      else url.searchParams.delete(key);
+    }
+    window.history.replaceState(null, "", url);
+  }
   const [result, setResult] = useState<{
     key: string;
     data: PointUsage;
   } | null>(null);
-  const dataKey = JSON.stringify([
-    scope.organizationId,
-    enterpriseView ? null : scope.brandId,
-    range.map((value) => value.format("YYYY-MM-DD")),
-    operation,
-    page,
-    pageSize,
-  ]);
-  const data = result?.key === dataKey ? result.data : null;
+  const params = new URLSearchParams(
+    Object.entries(query).map(([key, value]) => [key, String(value)]),
+  );
+  const dataKey = `${params.toString()}`;
+  const [failure, setFailure] = useState<{ key: string; message: string }>();
+  const error = failure?.key === dataKey ? failure.message : "";
+  const data = !error && result?.key === dataKey ? result.data : null;
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
   const requestVersion = useRef(0);
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
       const version = ++requestVersion.current;
-      if (
-        !scope.organizationId ||
-        (!enterpriseView && (!scope.teamBindingId || !scope.brandId))
-      ) {
+      if (!scopeReady) {
         setResult(null);
         setLoading(false);
-        setError("");
+        setFailure(undefined);
         return;
       }
       setLoading(true);
-      setError("");
-      const params = new URLSearchParams({
-        organizationId: scope.organizationId,
-      });
-      if (!enterpriseView) {
-        params.set("teamBindingId", scope.teamBindingId);
-        params.set("brandId", scope.brandId);
-      }
-      params.set("beginDate", range[0].format("YYYY-MM-DD"));
-      params.set("endDate", range[1].format("YYYY-MM-DD"));
-      params.set("page", String(page));
-      params.set("pageSize", String(pageSize));
-      if (operation !== "all") params.set("operation", operation);
+      setFailure(undefined);
       try {
         const next = await request<PointUsage>(
-          `/api/v1/point-usage?${params.toString()}`,
+          `/api/v1/point-usage?${dataKey}`,
           signal,
         );
         if (!signal?.aborted && version === requestVersion.current)
           setResult({ key: dataKey, data: next });
       } catch (reason) {
         if (!signal?.aborted && version === requestVersion.current)
-          setError(
-            reason instanceof Error ? reason.message : "积分用量加载失败",
-          );
+          setFailure({
+            key: dataKey,
+            message:
+              reason instanceof Error ? reason.message : "积分用量加载失败",
+          });
       } finally {
         if (!signal?.aborted && version === requestVersion.current)
           setLoading(false);
       }
     },
-    [
-      dataKey,
-      enterpriseView,
-      operation,
-      page,
-      pageSize,
-      range,
-      scope.brandId,
-      scope.organizationId,
-      scope.teamBindingId,
-    ],
+    [dataKey, scopeReady],
   );
 
   useEffect(() => {
@@ -222,10 +260,6 @@ export function PointUsageClient({
       requestVersion.current += 1;
     };
   }, [load]);
-
-  useEffect(() => {
-    setPage(1);
-  }, [operation, range, scope.brandId, scope.organizationId, enterpriseView]);
 
   const columns = useMemo<TableColumnsType<UsageTransaction>>(
     () => [
@@ -289,6 +323,7 @@ export function PointUsageClient({
       {
         title: "业务说明",
         key: "reason",
+        width: 280,
         render: (_, item) => (
           <Space direction="vertical" size={0}>
             <Typography.Text>{item.reason}</Typography.Text>
@@ -416,8 +451,10 @@ export function PointUsageClient({
         title="积分消耗明细"
         extra={
           <Button
+            aria-label="刷新数据"
             icon={<ReloadOutlined />}
             loading={loading}
+            disabled={!scopeReady}
             onClick={() => void load()}
           >
             刷新数据
@@ -427,17 +464,25 @@ export function PointUsageClient({
         {canViewOrganization ? (
           <Segmented
             aria-label="积分统计范围"
+            disabled={!scope.brandId}
             value={view}
             onChange={(value) => {
-              const url = new URL(window.location.href);
-              url.searchParams.set("usageView", String(value));
-              window.history.replaceState(null, "", url);
-              setView(value as "organization" | "brand");
+              const nextView = value as "organization" | "brand";
+              change({}, nextView);
+              setView(nextView);
             }}
             options={[
               { label: "企业整体", value: "organization" },
               { label: "当前品牌", value: "brand" },
             ]}
+            style={{ marginBottom: 16 }}
+          />
+        ) : null}
+        {!parsed.success ? (
+          <Alert
+            type="warning"
+            showIcon
+            message="积分筛选参数无效，请重新选择或清除筛选"
             style={{ marginBottom: 16 }}
           />
         ) : null}
@@ -454,11 +499,16 @@ export function PointUsageClient({
               <Typography.Text type="secondary">统计周期</Typography.Text>
             </label>
             <DatePicker.RangePicker
+              disabled={!scopeReady}
               allowClear={false}
               disabledDate={(current) => current.isAfter(dayjs(), "day")}
               id="point-usage-date-range"
               onChange={(value) => {
-                if (value?.[0] && value[1]) setRange([value[0], value[1]]);
+                if (value?.[0] && value[1])
+                  change({
+                    beginDate: value[0].format("YYYY-MM-DD"),
+                    endDate: value[1].format("YYYY-MM-DD"),
+                  });
               }}
               presets={[
                 {
@@ -479,23 +529,46 @@ export function PointUsageClient({
             <label htmlFor="point-usage-operation">
               <Typography.Text type="secondary">记录类型</Typography.Text>
             </label>
-            <Select
+            <Select<"all" | UsageOperation>
               id="point-usage-operation"
-              onChange={setOperation}
+              disabled={!scopeReady}
+              onChange={(value) =>
+                change({ operation: value === "all" ? undefined : value })
+              }
               options={[...operationOptions]}
               value={operation}
             />
           </Flex>
+          <Button
+            disabled={!scopeReady}
+            onClick={() => {
+              const [begin, end] = defaultRange();
+              change({
+                beginDate: begin.format("YYYY-MM-DD"),
+                endDate: end.format("YYYY-MM-DD"),
+                operation: undefined,
+                pageSize: 20,
+              });
+            }}
+          >
+            清除筛选
+          </Button>
         </Flex>
 
         {error || scope.error ? (
           <Alert
-            closable
             message={error || scope.error}
-            onClose={() => {
-              setError("");
-              scope.setError("");
-            }}
+            action={
+              error ? (
+                <Button
+                  aria-label="重试积分用量"
+                  loading={loading}
+                  onClick={() => void load()}
+                >
+                  重试
+                </Button>
+              ) : undefined
+            }
             showIcon
             style={{ marginTop: 16 }}
             type="error"
@@ -514,7 +587,7 @@ export function PointUsageClient({
             <Typography.Text type="secondary">{periodLabel}</Typography.Text>
           </Space>
           <Typography.Text type="secondary">
-            当前筛选共 {number.format(data?.pagination.total ?? 0)} 条
+            当前筛选共 {data ? number.format(data.pagination.total) : "—"} 条
           </Typography.Text>
         </Flex>
         <AccessibleTable<UsageTransaction>
@@ -524,24 +597,40 @@ export function PointUsageClient({
           locale={{
             emptyText: (
               <Empty
-                description="当前范围内暂无积分消耗记录"
+                description={
+                  error || scope.error
+                    ? "积分记录读取失败，请重试"
+                    : loading
+                      ? "正在读取积分明细"
+                      : "当前范围内暂无积分消耗记录"
+                }
                 image={Empty.PRESENTED_IMAGE_SIMPLE}
               />
             ),
           }}
           onChange={(pagination) => {
-            setPage(pagination.current ?? 1);
-            setPageSize(pagination.pageSize ?? 20);
+            change({
+              page:
+                pagination.pageSize !== query.pageSize
+                  ? 1
+                  : (pagination.current ?? 1),
+              pageSize: pagination.pageSize ?? 20,
+            });
           }}
-          pagination={{
-            current: page,
-            pageSize,
-            showSizeChanger: true,
-            showTotal: (total) => `共 ${total} 条`,
-            total: data?.pagination.total ?? 0,
-          }}
+          pagination={
+            data
+              ? {
+                  current: data.pagination.page,
+                  pageSize: query.pageSize,
+                  pageSizeOptions: [10, 20, 50, 100],
+                  showSizeChanger: true,
+                  showTotal: (total) => `共 ${total} 条`,
+                  total: data.pagination.total,
+                }
+              : false
+          }
           rowKey="id"
-          scroll={{ x: 920 }}
+          scroll={{ x: enterpriseView ? 1200 : 1040 }}
           scrollRegionLabel="积分消耗明细，可横向滚动"
         />
       </Card>

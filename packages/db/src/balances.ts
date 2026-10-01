@@ -745,6 +745,14 @@ export async function getPointUsage(input: PointUsageFilters) {
         .from(balanceTransactions)
         .innerJoin(balanceAccounts, eq(balanceAccounts.id, usageAccount))
         .where(periodWhere);
+      const [count] = await tx
+        .select({ value: sql<number>`count(*)::int` })
+        .from(balanceTransactions)
+        .innerJoin(balanceAccounts, eq(balanceAccounts.id, usageAccount))
+        .where(listWhere);
+      const total = count?.value ?? 0,
+        pages = Math.ceil(total / input.pageSize),
+        page = Math.min(input.page, Math.max(1, pages));
       const list = await tx
         .select({
           ...balanceTransactionSelection,
@@ -771,23 +779,17 @@ export async function getPointUsage(input: PointUsageFilters) {
           desc(balanceTransactions.id),
         )
         .limit(input.pageSize)
-        .offset((input.page - 1) * input.pageSize);
-      const [count] = await tx
-        .select({ value: sql<number>`count(*)::int` })
-        .from(balanceTransactions)
-        .innerJoin(balanceAccounts, eq(balanceAccounts.id, usageAccount))
-        .where(listWhere);
-      const total = count?.value ?? 0;
+        .offset((page - 1) * input.pageSize);
       return {
         balance: balances?.balance ?? 0,
         organizationBalance: balances?.organizationBalance ?? 0,
         summary: summary ?? { consumed: 0, restored: 0, transactionCount: 0 },
         list,
         pagination: {
-          page: input.page,
+          page,
           pageSize: input.pageSize,
           total,
-          pages: Math.ceil(total / input.pageSize),
+          pages,
         },
       };
     },
