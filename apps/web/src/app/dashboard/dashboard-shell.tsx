@@ -36,7 +36,11 @@ import {
 import { useRouter, useSearchParams } from "next/navigation";
 import type { Permission } from "@geo/core";
 import { useWorkspaceAccess, workspacePermission } from "./workspace-access";
-import { readStoredOrganizationId, selectScopeId } from "./scope-storage";
+import {
+  readStoredOrganizationId,
+  selectScopeId,
+  scopedDashboardPath,
+} from "./scope-storage";
 import { useEffect, useState, type ReactNode } from "react";
 import { ThemeToggle } from "../theme-toggle";
 import { SignOutButton } from "./sign-out-button";
@@ -201,6 +205,16 @@ export function DashboardShell({
     );
   }
 
+  // @project-doc docs/domains/geo_operations.md#workspace_scope
+  const scopePath = (path: string) =>
+    scopedDashboardPath(
+      path,
+      selectedOrganizationId,
+      !requestedOrganizationId ||
+        requestedOrganizationId === selectedOrganizationId
+        ? (searchParams.get("brandId") ?? undefined)
+        : undefined,
+    );
   const navigation = (
     <Menu
       className="dashboard-navigation"
@@ -218,7 +232,7 @@ export function DashboardShell({
         const item = items.find((candidate) => candidate.key === key);
         if (!item) return;
         setDrawerOpen(false);
-        router.push(item.path);
+        router.push(scopePath(item.path));
       }}
       selectedKeys={[active]}
       style={{ borderInlineEnd: 0 }}
@@ -275,7 +289,7 @@ export function DashboardShell({
           <Tooltip title="通知中心">
             <Button
               aria-label="打开通知中心"
-              href="/dashboard/notifications"
+              href={scopePath("/dashboard/notifications")}
               icon={
                 <Badge dot>
                   <BellOutlined />
@@ -334,7 +348,7 @@ export function DashboardShell({
             <Space size={2}>
               <Button
                 aria-label="打开通知中心"
-                href="/dashboard/notifications"
+                href={scopePath("/dashboard/notifications")}
                 icon={
                   <Badge dot>
                     <BellOutlined />

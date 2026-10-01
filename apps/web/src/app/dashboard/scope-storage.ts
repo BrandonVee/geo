@@ -49,3 +49,32 @@ export function selectScopeId(
       ? stored
       : (availableIds[0] ?? "");
 }
+
+// @project-doc docs/domains/geo_operations.md#workspace_scope
+export function scopedDashboardPath(
+  path: string,
+  organizationId: string,
+  brandId?: string,
+  resetQueryKeys: readonly string[] = [],
+) {
+  if (!organizationId) return path;
+  const url = new URL(path, "https://workspace.invalid");
+  const previousOrganization = url.searchParams.get("organizationId");
+  const previousBrand = url.searchParams.get("brandId");
+  if (
+    (previousOrganization && previousOrganization !== organizationId) ||
+    (previousBrand && brandId && previousBrand !== brandId)
+  ) {
+    for (const key of [
+      "promptId",
+      "promptText",
+      "publicationOrderId",
+      ...resetQueryKeys,
+    ])
+      url.searchParams.delete(key);
+  }
+  url.searchParams.set("organizationId", organizationId);
+  if (brandId) url.searchParams.set("brandId", brandId);
+  else url.searchParams.delete("brandId");
+  return `${url.pathname}${url.search}${url.hash}`;
+}

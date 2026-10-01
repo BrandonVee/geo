@@ -322,7 +322,7 @@ export function OverviewClient({
       if (url.searchParams.get("organizationId") !== nextOrganizationId)
         url.searchParams.delete("brandId");
       url.searchParams.set("organizationId", nextOrganizationId);
-      window.history.replaceState(window.history.state, "", url);
+      window.history.replaceState(null, "", url);
       analyticsRequestIdRef.current += 1;
       setOrganizationIdState(nextOrganizationId);
       setBrandId("");
@@ -398,7 +398,16 @@ export function OverviewClient({
       : null,
   );
   useEffect(() => {
-    if (!brandRead.data) return;
+    if (!brandRead.data) {
+      if (brandRead.error) {
+        analyticsRequestIdRef.current += 1;
+        setBrands([]);
+        setBrandId("");
+        setBrandScopeKey("");
+        clearAnalytics();
+      }
+      return;
+    }
     const nextBrands = brandRead.data;
     setBrands(nextBrands);
     setBrandId((current) =>
@@ -414,7 +423,14 @@ export function OverviewClient({
       ),
     );
     setBrandScopeKey(currentScopeKey);
-  }, [brandRead.data, currentScopeKey, organizationId, requestedBrandId]);
+  }, [
+    brandRead.data,
+    brandRead.error,
+    currentScopeKey,
+    organizationId,
+    requestedBrandId,
+    clearAnalytics,
+  ]);
   useEffect(() => {
     setPlatforms(platformRead.data ?? {});
   }, [platformRead.data]);
@@ -429,7 +445,7 @@ export function OverviewClient({
       ) {
         url.searchParams.set("organizationId", organizationId);
         url.searchParams.set("brandId", brandId);
-        window.history.replaceState(window.history.state, "", url);
+        window.history.replaceState(null, "", url);
       }
     }
   }, [organizationId, brandId, scopeReady]);

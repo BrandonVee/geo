@@ -102,13 +102,40 @@ export function PointUsageClient({
   const scope = useAnswerBitScope(organizations);
   const { token } = theme.useToken();
   const searchParams = useSearchParams();
+  const requestedView = searchParams.get("usageView");
   const [view, setView] = useState<"organization" | "brand">(() =>
-    searchParams.get("brandId") ? "brand" : "organization",
+    requestedView === "organization" || requestedView === "brand"
+      ? requestedView
+      : searchParams.get("brandId")
+        ? "brand"
+        : "organization",
   );
   const canViewOrganization =
     organizations.find((item) => item.id === scope.organizationId)?.role ===
     "tenant_admin";
   const enterpriseView = canViewOrganization && view === "organization";
+  // @project-doc docs/domains/balance_and_publication.md#point_usage
+  useEffect(() => {
+    if (!scope.brandId) return;
+    const url = new URL(window.location.href);
+    const requested = url.searchParams.get("usageView");
+    const next = !canViewOrganization
+      ? "brand"
+      : requested === "brand" || requested === "organization"
+        ? requested
+        : view;
+    if (next !== view) setView(next);
+    if (requested !== next) {
+      url.searchParams.set("usageView", next);
+      window.history.replaceState(null, "", url);
+    }
+  }, [
+    requestedView,
+    scope.brandId,
+    scope.organizationId,
+    canViewOrganization,
+    view,
+  ]);
 
   const [range, setRange] = useState<[Dayjs, Dayjs]>(defaultRange);
   const [operation, setOperation] = useState<"all" | UsageOperation>("all");
@@ -401,7 +428,12 @@ export function PointUsageClient({
           <Segmented
             aria-label="积分统计范围"
             value={view}
-            onChange={(value) => setView(value as "organization" | "brand")}
+            onChange={(value) => {
+              const url = new URL(window.location.href);
+              url.searchParams.set("usageView", String(value));
+              window.history.replaceState(null, "", url);
+              setView(value as "organization" | "brand");
+            }}
             options={[
               { label: "企业整体", value: "organization" },
               { label: "当前品牌", value: "brand" },

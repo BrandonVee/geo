@@ -1556,9 +1556,12 @@ test.describe("真实运营操作闭环", () => {
     await page.locator("#answerbit-scope-organization").focus();
     await page.locator("#answerbit-scope-organization").press("ArrowDown");
     await page.getByTitle("流程测试企业 B", { exact: true }).click();
+    await expect
+      .poll(() => new URL(page.url()).searchParams.has("publicationOrderId"))
+      .toBe(false);
     await expect(
-      page.getByText("请在订单对应的企业与品牌加入效果追踪", { exact: true }),
-    ).toBeVisible();
+      page.getByText("已发布内容待追踪", { exact: true }),
+    ).toHaveCount(0);
     releaseSource();
     await page
       .getByRole("button", { name: "新增文章追踪", exact: true })
@@ -8357,5 +8360,298 @@ test.describe("真实运营操作闭环", () => {
         ),
       ).toBe(true);
     });
+  });
+  test("共享范围切换后刷新与侧栏跳转保留企业，禁止浏览器存储仍可恢复", async ({
+    page,
+  }) => {
+    await page.addInitScript(() => {
+      const read = Storage.prototype.getItem,
+        write = Storage.prototype.setItem;
+      Storage.prototype.getItem = function (key: string) {
+        if (this === window.localStorage && key.startsWith("geo."))
+          throw new Error("QA scope storage unavailable");
+        return read.call(this, key);
+      };
+      Storage.prototype.setItem = function (key: string, value: string) {
+        if (this === window.localStorage && key.startsWith("geo."))
+          throw new Error("QA scope storage unavailable");
+        return write.call(this, key, value);
+      };
+    });
+    await mockBusinessApis(page);
+    await mockAnswerReads(page);
+    const pairs: string[][] = [];
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (
+        url.pathname.startsWith("/api/v1/answerbit/") &&
+        url.searchParams.has("brandId")
+      )
+        pairs.push([
+          url.searchParams.get("organizationId")!,
+          url.searchParams.get("brandId")!,
+        ]);
+    });
+    await page.goto(`${scopedPath("/dashboard/answers")}&viewMarker=keep`);
+    await expect(
+      page.getByText("流程测试企业 A 的回答", { exact: true }),
+    ).toBeVisible();
+    await page.locator("#answerbit-scope-organization").focus();
+    await page.locator("#answerbit-scope-organization").press("ArrowDown");
+    await page.getByTitle("流程测试企业 B", { exact: true }).click();
+    await expect(
+      page.getByText("流程测试企业 B 的回答", { exact: true }),
+    ).toBeVisible();
+    const target = fixture.scopes[1];
+    await expect
+      .poll(() => new URL(page.url()).searchParams.get("organizationId"))
+      .toBe(target.organizationId);
+    await expect
+      .poll(() => new URL(page.url()).searchParams.get("brandId"))
+      .toBe(target.brandId);
+    expect(new URL(page.url()).searchParams.get("viewMarker")).toBe("keep");
+    await page.reload();
+    await expect(
+      page.getByText("流程测试企业 B 的回答", { exact: true }),
+    ).toBeVisible();
+    await page.getByRole("menuitem", { name: /AI 内容生成/ }).click();
+    await expect(page.getByLabel("补充资料", { exact: true })).toBeVisible();
+    expect(new URL(page.url()).searchParams.get("organizationId")).toBe(
+      target.organizationId,
+    );
+    expect(new URL(page.url()).searchParams.get("brandId")).toBe(
+      target.brandId,
+    );
+    await page.getByRole("menuitem", { name: /回答与引用/ }).click();
+    await expect(
+      page.getByText("流程测试企业 B 的回答", { exact: true }),
+    ).toBeVisible();
+    const notification = page.getByRole("link", {
+      name: "打开通知中心",
+      exact: true,
+    });
+    const href = new URL(
+      (await notification.getAttribute("href"))!,
+      page.url(),
+    );
+    expect(href.searchParams.get("organizationId")).toBe(target.organizationId);
+    expect(href.searchParams.get("brandId")).toBe(target.brandId);
+    expect(pairs.length).toBeGreaterThan(0);
+    expect(
+      pairs.every(([organization, brand]) =>
+        fixture.scopes.some(
+          (item) =>
+            item.organizationId === organization && item.brandId === brand,
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  test("共享品牌目录刷新与失败重试保留输入，其他参数不重复读取，失去品牌后停止旧范围", async ({
+    page,
+  }) => {
+    await mockBusinessApis(page);
+    await mockAnswerReads(page);
+    let reads = 0,
+      fail = false,
+      empty = false,
+      forbidden = false;
+    await page.route("**/api/v1/answerbit/brands?**", (route) => {
+      reads++;
+      if (forbidden)
+        return route.fulfill({
+          status: 403,
+          json: { error: { message: "无权访问此企业" } },
+        });
+      if (fail)
+        return route.fulfill({
+          status: 503,
+          json: { error: { message: "品牌范围暂不可用" } },
+        });
+      if (empty) return fulfill(route, []);
+      return route.continue();
+    });
+    await page.goto(scopedPath("/dashboard/answers"));
+    await expect(
+      page.getByText("流程测试企业 A 的回答", { exact: true }),
+    ).toBeVisible();
+    const keyword = page.getByLabel("关键词", { exact: true });
+    await keyword.fill("目录重试仍保留的输入");
+    await keyword.press("Enter");
+    await expect(
+      page.getByText("流程测试企业 A 的回答", { exact: true }),
+    ).toBeVisible();
+    const initialReads = reads;
+    await page.evaluate(() => {
+      const url = new URL(location.href);
+      url.searchParams.set("viewMarker", "keep");
+      url.searchParams.delete("brandId");
+      history.pushState(null, "", url);
+    });
+    await expect
+      .poll(() => new URL(page.url()).searchParams.get("brandId"))
+      .toBe(fixture.scopes[0].brandId);
+    await expect(keyword).toHaveValue("目录重试仍保留的输入");
+    expect(reads).toBe(initialReads);
+    fail = true;
+    await page
+      .getByRole("button", { name: "刷新品牌范围", exact: true })
+      .click();
+    await expect(
+      page.getByText("品牌范围暂不可用", { exact: true }),
+    ).toBeVisible();
+    await expect(keyword).toHaveValue("目录重试仍保留的输入");
+    await expect(
+      page.getByText("流程测试企业 A 的回答", { exact: true }),
+    ).toBeVisible();
+    fail = false;
+    await page
+      .getByRole("button", { name: "重试加载品牌", exact: true })
+      .click();
+    await expect(
+      page.getByText("品牌范围暂不可用", { exact: true }),
+    ).toHaveCount(0);
+    await expect(keyword).toHaveValue("目录重试仍保留的输入");
+    expect(reads).toBe(initialReads + 2);
+    empty = true;
+    await page
+      .getByRole("button", { name: "刷新品牌范围", exact: true })
+      .click();
+    await expect(
+      page.getByText("当前企业没有可访问品牌", { exact: true }),
+    ).toBeVisible();
+    await expect(keyword).toBeDisabled();
+    await expect(
+      page.getByText("流程测试企业 A 的回答", { exact: true }),
+    ).toHaveCount(0);
+    expect(new URL(page.url()).searchParams.has("brandId")).toBe(false);
+    empty = false;
+    await page
+      .getByRole("button", { name: "刷新品牌范围", exact: true })
+      .click();
+    await expect(
+      page.getByText("流程测试企业 A 的回答", { exact: true }),
+    ).toBeVisible();
+    await expect(keyword).toHaveValue("");
+    forbidden = true;
+    await page
+      .getByRole("button", { name: "刷新品牌范围", exact: true })
+      .click();
+    await expect(
+      page.getByText("无权访问此企业", { exact: true }),
+    ).toBeVisible();
+    await expect(keyword).toBeDisabled();
+    await expect(
+      page.getByText("流程测试企业 A 的回答", { exact: true }),
+    ).toHaveCount(0);
+  });
+
+  test("共享品牌刷新立即反映角色降级，企业切换移除旧问题和发布来源", async ({
+    page,
+  }) => {
+    await mockBusinessApis(page);
+    await page.goto(
+      `${scopedPath("/dashboard/content")}&stage=generate&promptId=prompt-1&promptText=old-question`,
+    );
+    const supplement = page.getByLabel("补充资料", { exact: true });
+    await expect(supplement).toBeVisible();
+    await supplement.fill("原企业尚未提交的素材");
+    await page
+      .getByRole("button", { name: "刷新品牌范围", exact: true })
+      .click();
+    await expect(supplement).toHaveValue("原企业尚未提交的素材");
+    await page.locator("#answerbit-scope-organization").focus();
+    await page.locator("#answerbit-scope-organization").press("ArrowDown");
+    await page.getByTitle("流程测试企业 B", { exact: true }).click();
+    await expect(supplement).toHaveValue("");
+    await expect
+      .poll(() => new URL(page.url()).searchParams.get("brandId"))
+      .toBe(fixture.scopes[1].brandId);
+    expect(new URL(page.url()).searchParams.has("promptId")).toBe(false);
+    expect(new URL(page.url()).searchParams.has("promptText")).toBe(false);
+    expect(new URL(page.url()).searchParams.get("stage")).toBe("generate");
+    const { eq, and } = operators;
+    await database.db
+      .update(database.brandAccess)
+      .set({ role: "brand_viewer" })
+      .where(
+        and(
+          eq(
+            database.brandAccess.organizationId,
+            fixture.scopes[1].organizationId,
+          ),
+          eq(database.brandAccess.userId, fixture.userId),
+        ),
+      );
+    await page
+      .getByRole("button", { name: "刷新品牌范围", exact: true })
+      .click();
+    await expect(supplement).not.toBeVisible();
+    await expect(page.getByText("内容目录", { exact: true })).toBeVisible();
+    const response = await page.request.post("/api/v1/answerbit/competitors", {
+      data: {
+        organizationId: fixture.scopes[1].organizationId,
+        teamBindingId: fixture.scopes[1].teamBindingId,
+        brandId: fixture.scopes[1].brandId,
+        competitorName: "不可写入",
+        competitorAlias: "",
+      },
+    });
+    expect(response.status()).toBe(403);
+  });
+
+  test("企业和品牌积分统计视图独立保存，刷新不改变统计范围", async ({
+    page,
+  }) => {
+    const { eq, and } = operators;
+    const [member] = await database.db
+      .select()
+      .from(database.organizationMembers)
+      .where(
+        and(
+          eq(
+            database.organizationMembers.organizationId,
+            fixture.scopes[0].organizationId,
+          ),
+          eq(database.organizationMembers.userId, fixture.userId),
+        ),
+      );
+    const [role] = await database.db
+      .select()
+      .from(database.roles)
+      .where(eq(database.roles.code, "tenant_admin"));
+    await database.db
+      .insert(database.memberRoles)
+      .values({ memberId: member.id, roleId: role.id });
+    await mockBusinessApis(page);
+    await page.goto(
+      `/dashboard/metering?organizationId=${fixture.scopes[0].organizationId}`,
+    );
+    await expect(
+      page.getByText("企业品牌可用积分合计", { exact: true }),
+    ).toBeVisible();
+    await expect
+      .poll(() => new URL(page.url()).searchParams.get("usageView"))
+      .toBe("organization");
+    await page.reload();
+    await expect(
+      page.getByText("企业品牌可用积分合计", { exact: true }),
+    ).toBeVisible();
+    await page.getByText("当前品牌", { exact: true }).click();
+    await expect(
+      page.getByText("当前品牌可用积分", { exact: true }),
+    ).toBeVisible();
+    await expect
+      .poll(() => new URL(page.url()).searchParams.get("usageView"))
+      .toBe("brand");
+    await page.reload();
+    await expect(
+      page.getByText("当前品牌可用积分", { exact: true }),
+    ).toBeVisible();
+    await page.getByText("企业整体", { exact: true }).click();
+    await page.reload();
+    await expect(
+      page.getByText("企业品牌可用积分合计", { exact: true }),
+    ).toBeVisible();
   });
 });

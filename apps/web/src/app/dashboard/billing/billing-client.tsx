@@ -125,7 +125,12 @@ type BillingProps = {
   };
 };
 export function BillingClient(props: BillingProps) {
-  const scope = useAnswerBitScope(props.organizations);
+  const scope = useAnswerBitScope(
+    props.organizations,
+    props.view === "orders"
+      ? ["page", "pageSize", "keyword", "status", "beginDate", "endDate"]
+      : [],
+  );
   const incomingMatches =
     (!props.initialPublication.organizationId ||
       props.initialPublication.organizationId === scope.organizationId) &&

@@ -1,5 +1,6 @@
 "use client";
 import { Alert, Button, Flex, Select, Typography } from "antd";
+import { ReloadOutlined } from "@ant-design/icons";
 import { useSearchParams } from "next/navigation";
 import type { Permission, OrganizationFeature } from "@geo/core";
 import { useWorkspaceAccess, workspacePermission } from "./workspace-access";
@@ -10,7 +11,9 @@ import {
   storeBrandId,
   storeOrganizationId,
   selectScopeId,
+  scopedDashboardPath,
 } from "./scope-storage";
+import { useDirectoryRead } from "./directory-read";
 export type ScopeOrganization = {
   id: string;
   name: string;
@@ -24,7 +27,12 @@ export type ScopeBrand = {
 };
 const query = (input: Record<string, string>) =>
   new URLSearchParams(input).toString();
-export function useAnswerBitScope(organizations: ScopeOrganization[]) {
+const emptyBrands: ScopeBrand[] = [];
+// @project-doc docs/domains/geo_operations.md#workspace_scope
+export function useAnswerBitScope(
+  organizations: ScopeOrganization[],
+  resetQueryKeys: readonly string[] = [],
+) {
   const workspace = useWorkspaceAccess();
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -43,26 +51,67 @@ export function useAnswerBitScope(organizations: ScopeOrganization[]) {
     organizations[0]?.id ?? "",
   );
   const organizationIdRef = useRef(organizationId);
-  const [brandId, setBrandId] = useState("");
-  const [brands, setBrands] = useState<ScopeBrand[]>([]);
+  const [selection, setSelection] = useState<{
+    key: string;
+    id: string;
+  } | null>(null);
   const [error, setError] = useState("");
   const [scopeRestored, setScopeRestored] = useState(false);
-  const [brandLoadVersion, setBrandLoadVersion] = useState(0);
-  const setOrganizationId = useCallback((nextOrganizationId: string) => {
-    if (organizationIdRef.current === nextOrganizationId) return;
-    organizationIdRef.current = nextOrganizationId;
-    setBrands([]);
-    setBrandId("");
-    setError("");
-    setOrganizationIdState(nextOrganizationId);
-  }, []);
   const teamBindingId =
     organizations.find((item) => item.id === organizationId)?.teamBindingId ??
     "";
-  const reloadBrands = useCallback(() => {
+  const scopeKey = `${organizationId}:${teamBindingId}`;
+  const brandRead = useDirectoryRead<ScopeBrand[]>(
+    scopeRestored && teamBindingId
+      ? `/api/v1/answerbit/brands?${query({ organizationId, teamBindingId })}`
+      : null,
+  );
+  const brands = brandRead.data ?? emptyBrands;
+  const brandId =
+    selection?.key === scopeKey &&
+    brands.some((item) => item.id === selection.id)
+      ? selection.id
+      : "";
+  function replaceScopeUrl(nextOrganizationId: string, nextBrandId?: string) {
+    const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    const next = scopedDashboardPath(
+      current,
+      nextOrganizationId,
+      nextBrandId,
+      resetQueryKeys,
+    );
+    if (next !== current) window.history.replaceState(null, "", next);
+  }
+  const setOrganizationId = useCallback(
+    (nextOrganizationId: string) => {
+      if (organizationIdRef.current === nextOrganizationId) return;
+      if (
+        nextOrganizationId &&
+        !organizations.some((item) => item.id === nextOrganizationId)
+      )
+        return;
+      organizationIdRef.current = nextOrganizationId;
+      setSelection(null);
+      setError("");
+      setOrganizationIdState(nextOrganizationId);
+    },
+    [organizations],
+  );
+  function chooseOrganization(nextOrganizationId: string) {
+    if (nextOrganizationId === organizationId) return;
+    if (!organizations.some((item) => item.id === nextOrganizationId)) return;
+    replaceScopeUrl(nextOrganizationId);
+    setOrganizationId(nextOrganizationId);
+  }
+  function setBrandId(nextBrandId: string) {
+    if (!brands.some((item) => item.id === nextBrandId)) return;
+    replaceScopeUrl(organizationId, nextBrandId);
+    setSelection({ key: scopeKey, id: nextBrandId });
+  }
+  function reloadBrands() {
     setError("");
-    setBrandLoadVersion((current) => current + 1);
-  }, []);
+    void brandRead.reload();
+  }
   useEffect(() => {
     const availableIds = organizations.map((item) => item.id);
     setOrganizationId(
@@ -75,62 +124,63 @@ export function useAnswerBitScope(organizations: ScopeOrganization[]) {
     setScopeRestored(true);
   }, [organizations, requestedOrganizationId, setOrganizationId]);
   useEffect(() => {
-    if (!scopeRestored) return;
-    if (!organizationId) {
-      setBrands([]);
-      setBrandId("");
-      return;
-    }
-    storeOrganizationId(organizationId);
-  }, [organizationId, scopeRestored]);
+    setError(brandRead.error);
+  }, [brandRead.error, brandRead.failures, brandRead.successVersion]);
   useEffect(() => {
-    if (!scopeRestored || !teamBindingId) {
-      setBrands([]);
-      setBrandId("");
-      return;
-    }
-    const controller = new AbortController();
-    setError("");
-    setBrands([]);
-    setBrandId("");
-    fetch(
-      `/api/v1/answerbit/brands?${query({ organizationId, teamBindingId })}`,
-      { signal: controller.signal },
-    )
-      .then(async (response) => {
-        const body = await response.json();
-        if (!response.ok) throw new Error(body.error?.message);
-        if (controller.signal.aborted) return;
-        const next = body.data ?? [];
-        setBrands(next);
-        const availableIds = next.map((item: ScopeBrand) => item.id);
-        setBrandId(
-          selectScopeId(
-            !requestedOrganizationId ||
-              requestedOrganizationId === organizationId
-              ? requestedBrandId
-              : null,
-            readStoredBrandId(organizationId, availableIds),
-            availableIds,
-          ),
-        );
-      })
-      .catch((reason) => {
-        if (controller.signal.aborted) return;
-        setError(reason instanceof Error ? reason.message : "品牌加载失败");
-      });
-    return () => controller.abort();
+    if (!brandRead.data) return;
+    const availableIds = brandRead.data.map((item) => item.id);
+    setSelection((current) => {
+      const selected = selectScopeId(
+        !requestedOrganizationId || requestedOrganizationId === organizationId
+          ? requestedBrandId
+          : null,
+        current?.key === scopeKey && availableIds.includes(current.id)
+          ? current.id
+          : readStoredBrandId(organizationId, availableIds),
+        availableIds,
+      );
+      return current?.key === scopeKey && current.id === selected
+        ? current
+        : { key: scopeKey, id: selected };
+    });
   }, [
-    brandLoadVersion,
+    brandRead.data,
     organizationId,
-    scopeRestored,
-    teamBindingId,
+    scopeKey,
     requestedOrganizationId,
     requestedBrandId,
   ]);
   useEffect(() => {
-    if (organizationId && brandId) storeBrandId(organizationId, brandId);
-  }, [organizationId, brandId]);
+    if (scopeRestored && organizationId) storeOrganizationId(organizationId);
+  }, [organizationId, scopeRestored]);
+  useEffect(() => {
+    if (!scopeRestored || !organizationId) return;
+    if (
+      requestedOrganizationId &&
+      requestedOrganizationId !== organizationId &&
+      organizations.some((item) => item.id === requestedOrganizationId)
+    )
+      return;
+    if (
+      requestedBrandId &&
+      requestedBrandId !== brandId &&
+      brands.some((item) => item.id === requestedBrandId)
+    )
+      return;
+    if (brandId) {
+      storeBrandId(organizationId, brandId);
+      replaceScopeUrl(organizationId, brandId);
+    } else if (brandRead.data?.length === 0) replaceScopeUrl(organizationId);
+  }, [
+    organizationId,
+    brandId,
+    scopeRestored,
+    requestedOrganizationId,
+    requestedBrandId,
+    organizations,
+    brands,
+    brandRead.data,
+  ]);
   const brand = brands.find((item) => item.id === brandId);
   const organization = workspace.organizations.find(
     (item) => item.id === organizationId,
@@ -152,7 +202,7 @@ export function useAnswerBitScope(organizations: ScopeOrganization[]) {
   const canDelete = Boolean(can("resource.delete"));
   return {
     organizationId,
-    setOrganizationId,
+    setOrganizationId: chooseOrganization,
     teamBindingId,
     brandId,
     setBrandId,
@@ -165,9 +215,11 @@ export function useAnswerBitScope(organizations: ScopeOrganization[]) {
     serviceExpired,
     pointsExpired,
     serviceUnavailable,
-    error,
+    error: error ? brandRead.error : "",
     setError,
     reloadBrands,
+    brandsLoading: brandRead.loading,
+    brandsLoaded: Boolean(brandRead.data),
   };
 }
 export function ScopeFields({
@@ -219,6 +271,20 @@ export function ScopeFields({
           action={<Button onClick={scope.reloadBrands}>重试加载品牌</Button>}
         />
       ) : null}
+      {showBrand &&
+      scope.teamBindingId &&
+      scope.brandsLoaded &&
+      !scope.brandsLoading &&
+      !scope.error &&
+      !scope.brands.length ? (
+        <Alert
+          type="info"
+          showIcon
+          style={{ width: "100%" }}
+          message="当前企业没有可访问品牌"
+          description="请联系企业管理员确认品牌授权，或切换到其他已授权企业。"
+        />
+      ) : null}
       <Flex style={{ flex: "1 1 200px", minWidth: 180 }} vertical>
         <label htmlFor="answerbit-scope-organization">
           <Typography.Text type="secondary">企业</Typography.Text>
@@ -242,17 +308,29 @@ export function ScopeFields({
           <label htmlFor="answerbit-scope-brand">
             <Typography.Text type="secondary">品牌</Typography.Text>
           </label>
-          <Select
-            disabled={!scope.teamBindingId || !scope.brands.length}
-            id="answerbit-scope-brand"
-            onChange={scope.setBrandId}
-            options={scope.brands.map((item) => ({
-              label: item.name,
-              value: item.id,
-            }))}
-            placeholder="选择品牌"
-            value={scope.brandId || undefined}
-          />
+          <Flex align="center" gap={8}>
+            <Select
+              style={{ flex: 1, minWidth: 0 }}
+              disabled={!scope.teamBindingId || !scope.brands.length}
+              id="answerbit-scope-brand"
+              loading={scope.brandsLoading}
+              onChange={scope.setBrandId}
+              options={scope.brands.map((item) => ({
+                label: item.name,
+                value: item.id,
+              }))}
+              placeholder="选择品牌"
+              value={scope.brandId || undefined}
+            />
+            <Button
+              aria-label="刷新品牌范围"
+              title="重新读取可访问品牌"
+              disabled={!scope.teamBindingId}
+              loading={scope.brandsLoading}
+              icon={<ReloadOutlined />}
+              onClick={scope.reloadBrands}
+            />
+          </Flex>
         </Flex>
       ) : null}
     </Flex>

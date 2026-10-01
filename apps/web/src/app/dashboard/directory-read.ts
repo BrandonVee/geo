@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 // @project-doc docs/domains/geo_operations.md#monitoring_workflow
 // @project-doc docs/domains/geo_operations.md#competitor_workflow
 // @project-doc docs/domains/geo_operations.md#answer_evidence_workflow
+// @project-doc docs/domains/geo_operations.md#workspace_scope
 export function useDirectoryRead<T>(url: string | null) {
   const [snapshot, setSnapshot] = useState<{
     url: string;
@@ -34,8 +35,11 @@ export function useDirectoryRead<T>(url: string | null) {
       mountedRef.current &&
       !controller.signal.aborted &&
       run === runRef.current;
+    let authorizationRejected = false;
     try {
       const response = await fetch(url, { signal: controller.signal });
+      authorizationRejected =
+        response.status === 401 || response.status === 403;
       const body = await response.json();
       if (!response.ok)
         throw new Error(body.error?.message ?? "请求失败，请重试");
@@ -52,7 +56,10 @@ export function useDirectoryRead<T>(url: string | null) {
       if (!current()) return false;
       setSnapshot((previous) => ({
         url,
-        data: previous?.url === url ? previous.data : undefined,
+        data:
+          previous?.url === url && !authorizationRejected
+            ? previous.data
+            : undefined,
         error: error instanceof Error ? error.message : "请求失败，请重试",
         failures: (previous?.url === url ? previous.failures : 0) + 1,
         successVersion: previous?.url === url ? previous.successVersion : 0,
@@ -71,7 +78,7 @@ export function useDirectoryRead<T>(url: string | null) {
     data: current?.data,
     error: current?.error ?? "",
     failures: current?.failures ?? 0,
-    loading,
+    loading: Boolean(url) && loading,
     successVersion: current?.successVersion ?? 0,
     reload,
   };
