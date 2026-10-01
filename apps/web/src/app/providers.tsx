@@ -107,6 +107,7 @@ export function Providers({
           },
           components: {
             Button: {
+              dangerColor: mode === "dark" ? "#171d2a" : "#ffffff",
               contentFontSize: 14,
               contentFontSizeLG: 14,
               controlHeight: 32,

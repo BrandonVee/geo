@@ -67,6 +67,10 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { EnterpriseValidity } from "./enterprise-validity";
 import { EnterpriseStatus } from "./enterprise-status";
+import {
+  AdminOrganizationDirectory,
+  type AdminOrganization,
+} from "./admin-organization-directory";
 import type { EnterpriseSettings } from "./enterprise-command";
 import { AdminDocumentLibrary } from "./admin-document-library";
 import { AdminAccountStatusAction } from "./admin-account-status";
@@ -147,18 +151,7 @@ const runtimeTaskStatusMeta = {
   stale: { color: "warning", label: "超时" },
   missing: { color: "default", label: "未上报" },
 } as const;
-type Organization = {
-  serviceExpiresAt: string | null;
-  pointsExpiresAt: string | null;
-  id: string;
-  name: string;
-  slug: string;
-  status: string;
-  memberCount: number;
-  answerbitBrandId: string | null;
-  answerbitBrandName: string | null;
-  createdAt: string;
-};
+type Organization = AdminOrganization;
 type User = {
   id: string;
   name: string;
@@ -668,7 +661,6 @@ export function AdminClient({
   const [userForm] = Form.useForm<UserForm>();
   const [userAccessForm] = Form.useForm<UserAccessForm>();
   const [grantForm] = Form.useForm<GrantForm>();
-  const grantOperation = Form.useWatch("operation", grantForm);
   const grantKey = useRef(crypto.randomUUID());
   const [validityOrganization, setValidityOrganization] =
     useState<EnterpriseSettings | null>(null);
@@ -757,6 +749,8 @@ export function AdminClient({
     setPublicationProviderConfiguration,
   ] = useState<PublicationProviderConfiguration | null>(null);
   const [publicationOrderRefresh, setPublicationOrderRefresh] = useState(0);
+  const [organizationDirectoryRefresh, setOrganizationDirectoryRefresh] =
+    useState(0);
   const [audits, setAudits] = useState<AuditRow[]>([]);
   const [auditPage, setAuditPage] = useState(1);
   const [auditPageSize, setAuditPageSize] = useState(20);
@@ -776,11 +770,6 @@ export function AdminClient({
   );
   const [userAccountType, setUserAccountType] = useState<
     "all" | User["accountType"]
-  >("all");
-  const [organizationQueryDraft, setOrganizationQueryDraft] = useState("");
-  const [organizationQuery, setOrganizationQuery] = useState("");
-  const [organizationStatus, setOrganizationStatus] = useState<
-    "all" | "active" | "suspended"
   >("all");
   const [auditQueryDraft, setAuditQueryDraft] = useState("");
   const [auditQuery, setAuditQuery] = useState("");
@@ -1070,27 +1059,8 @@ export function AdminClient({
         setCalls(recentCalls.list);
         setCallTotal(recentCalls.pagination.total);
       }
-      if (tab === "organizations") {
-        const organizationParams = new URLSearchParams({
-          page: String(page),
-          pageSize: String(pageSize),
-        });
-        if (organizationQuery) organizationParams.set("q", organizationQuery);
-        if (organizationStatus !== "all")
-          organizationParams.set("status", organizationStatus);
-        const [result, userDirectory] = await Promise.all([
-          api<PageData<Organization>>(
-            `/api/v1/admin/organizations?${organizationParams.toString()}`,
-          ),
-          api<PageData<User>>(
-            "/api/v1/admin/users?page=1&pageSize=100&status=active",
-          ),
-        ]);
-        if (runId !== loadRunRef.current) return;
-        setOrganizations(result.list);
-        setTotal(result.pagination.total);
-        setDirectoryUsers(userDirectory.list);
-      }
+      if (tab === "organizations")
+        setOrganizationDirectoryRefresh((version) => version + 1);
       if (tab === "users") {
         const params = new URLSearchParams({
           page: String(page),
@@ -1226,8 +1196,6 @@ export function AdminClient({
     callPageSize,
     callQuery,
     callStatus,
-    organizationQuery,
-    organizationStatus,
     loadPublicationChannels,
     router,
     tab,
@@ -1261,20 +1229,6 @@ export function AdminClient({
       window.removeEventListener("online", refresh);
     };
   }, [refreshRuntimeHealth, tab]);
-  useEffect(() => {
-    if (tab !== "organizations") return;
-    const refresh = () => {
-      if (!document.hidden && navigator.onLine) void load();
-    };
-    const timer = window.setInterval(refresh, 60_000);
-    document.addEventListener("visibilitychange", refresh);
-    window.addEventListener("online", refresh);
-    return () => {
-      window.clearInterval(timer);
-      document.removeEventListener("visibilitychange", refresh);
-      window.removeEventListener("online", refresh);
-    };
-  }, [load, tab]);
   useEffect(() => {
     if (tab !== "integration" || !platformConfiguration) return;
     platformCredentialForm.setFieldsValue({
@@ -1982,25 +1936,23 @@ export function AdminClient({
     {
       title: "状态",
       dataIndex: "status",
-      width: 110,
-      render: (value: string, item) => (
-        <Badge
-          status={
-            value === "active" &&
-            (!item.serviceExpiresAt ||
-              dayjs(item.serviceExpiresAt).isAfter(dayjs()))
-              ? "success"
-              : "warning"
-          }
-          text={
-            value !== "active"
-              ? "已冻结"
-              : item.serviceExpiresAt &&
-                  !dayjs(item.serviceExpiresAt).isAfter(dayjs())
-                ? "到期冻结"
-                : "正常"
-          }
-        />
+      width: 130,
+      render: (_, item) => (
+        <Space direction="vertical" size={4}>
+          <Badge
+            status={item.accessState === "active" ? "success" : "warning"}
+            text={
+              item.accessState === "suspended"
+                ? "已冻结"
+                : item.accessState === "expired"
+                  ? "到期冻结"
+                  : "正常"
+            }
+          />
+          {item.pointsExpired ? (
+            <Typography.Text type="warning">积分已到期</Typography.Text>
+          ) : null}
+        </Space>
       ),
     },
     {
@@ -3010,78 +2962,11 @@ export function AdminClient({
                   }
                   title="腾讯企业目录"
                 >
-                  <Flex
-                    gap={12}
-                    justify="space-between"
-                    style={{ marginBottom: 20 }}
-                    wrap
-                  >
-                    <Input.Search
-                      allowClear
-                      enterButton="搜索"
-                      onChange={(event) => {
-                        const value = event.target.value;
-                        setOrganizationQueryDraft(value);
-                        if (!value && organizationQuery) {
-                          setPage(1);
-                          setOrganizationQuery("");
-                        }
-                      }}
-                      onSearch={(value) => {
-                        setPage(1);
-                        setOrganizationQuery(value.trim());
-                      }}
-                      placeholder="搜索企业名称或内部标识"
-                      style={{ maxWidth: 420, minWidth: mobile ? "100%" : 320 }}
-                      value={organizationQueryDraft}
-                    />
-                    <Space wrap>
-                      <Select
-                        aria-label="筛选企业状态"
-                        onChange={(value) => {
-                          setPage(1);
-                          setOrganizationStatus(value);
-                        }}
-                        options={[
-                          { label: "全部状态", value: "all" },
-                          { label: "正常", value: "active" },
-                          { label: "已冻结", value: "suspended" },
-                        ]}
-                        style={{ width: 128 }}
-                        value={organizationStatus}
-                      />
-                      {organizationQuery || organizationStatus !== "all" ? (
-                        <Button
-                          onClick={() => {
-                            setPage(1);
-                            setOrganizationQueryDraft("");
-                            setOrganizationQuery("");
-                            setOrganizationStatus("all");
-                          }}
-                          type="text"
-                        >
-                          重置筛选
-                        </Button>
-                      ) : null}
-                    </Space>
-                  </Flex>
-                  <Table<Organization>
+                  <AdminOrganizationDirectory
                     columns={organizationColumns}
-                    dataSource={organizations}
-                    onChange={(pagination) => {
-                      setPage(pagination.current ?? 1);
-                      setPageSize(pagination.pageSize ?? 20);
-                    }}
-                    pagination={{
-                      current: page,
-                      pageSize,
-                      showSizeChanger: true,
-                      showTotal: (value) => `共 ${value} 家腾讯企业`,
-                      total,
-                    }}
-                    rowKey="id"
-                    onHeaderRow={focusableTableHeaderRow}
-                    scroll={{ x: compactTable ? 900 : 1060 }}
+                    refreshVersion={organizationDirectoryRefresh}
+                    compact={compactTable}
+                    mobile={mobile}
                   />
                 </Card>
               ) : null}
@@ -6305,7 +6190,6 @@ export function AdminClient({
         onCancel={() => setGrantOrganization(null)}
         open={Boolean(grantOrganization)}
         title={(grantOrganization?.name ?? "") + " · 资产调整"}
-        forceRender
         width={680}
       >
         <Alert
@@ -6316,6 +6200,11 @@ export function AdminClient({
         />
         <Form<GrantForm>
           form={grantForm}
+          initialValues={{
+            asset: "answerbit_points",
+            operation: "grant",
+            account: "enterprise",
+          }}
           disabled={Boolean(
             grantOrganization && busy === `grant-${grantOrganization.id}`,
           )}
@@ -6334,24 +6223,33 @@ export function AdminClient({
               ]}
             />
           </Form.Item>
-          {grantOperation === "deduct" ? (
-            <Form.Item
-              label="扣减账户"
-              name="account"
-              rules={[{ required: true }]}
-            >
-              <Radio.Group
-                options={[
-                  { label: "企业资金池", value: "enterprise" },
-                  {
-                    label: "品牌账户",
-                    value: "brand",
-                    disabled: !grantOrganization?.answerbitBrandId,
-                  },
-                ]}
-              />
-            </Form.Item>
-          ) : null}
+          <Form.Item
+            noStyle
+            shouldUpdate={(previous, next) =>
+              previous.operation !== next.operation
+            }
+          >
+            {({ getFieldValue }) =>
+              getFieldValue("operation") === "deduct" ? (
+                <Form.Item
+                  label="扣减账户"
+                  name="account"
+                  rules={[{ required: true }]}
+                >
+                  <Radio.Group
+                    options={[
+                      { label: "企业资金池", value: "enterprise" },
+                      {
+                        label: "品牌账户",
+                        value: "brand",
+                        disabled: !grantOrganization?.answerbitBrandId,
+                      },
+                    ]}
+                  />
+                </Form.Item>
+              ) : null
+            }
+          </Form.Item>
           <Form.Item label="资产" name="asset" rules={[{ required: true }]}>
             <Select
               options={[
@@ -6380,16 +6278,27 @@ export function AdminClient({
           >
             <Input />
           </Form.Item>
-          <Button
-            block
-            htmlType="submit"
-            loading={Boolean(
-              grantOrganization && busy === "grant-" + grantOrganization.id,
-            )}
-            type="primary"
+          <Form.Item
+            noStyle
+            shouldUpdate={(previous, next) =>
+              previous.operation !== next.operation
+            }
           >
-            {grantOperation === "deduct" ? "确认手动扣减" : "确认入账"}
-          </Button>
+            {({ getFieldValue }) => (
+              <Button
+                block
+                htmlType="submit"
+                loading={Boolean(
+                  grantOrganization && busy === "grant-" + grantOrganization.id,
+                )}
+                type="primary"
+              >
+                {getFieldValue("operation") === "deduct"
+                  ? "确认手动扣减"
+                  : "确认入账"}
+              </Button>
+            )}
+          </Form.Item>
         </Form>
       </Modal>
 

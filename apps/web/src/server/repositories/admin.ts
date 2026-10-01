@@ -18,6 +18,7 @@ import {
   runtimeTaskStatuses,
   sessions,
   users,
+  withPlatformDbContext,
 } from "@geo/db";
 import { and, desc, eq, ilike, inArray, ne, or, sql } from "drizzle-orm";
 import {
@@ -240,63 +241,99 @@ export const adminRepository = {
         (articleJobHealth?.stale ?? 0) + (reportJobHealth?.stale ?? 0),
     };
   },
-  async listOrganizations(input: Page) {
+  // @project-doc docs/architecture/platform_administration.md#enterprise_directory
+  async listOrganizations(
+    input: Page & { accessState?: "active" | "suspended" | "expired" },
+    userId: string,
+  ) {
     const pattern = search(input.q);
     const where = and(
       input.status
         ? eq(organizations.status, input.status as "active" | "suspended")
         : undefined,
       ne(organizations.status, "closed"),
+      input.accessState === "suspended"
+        ? eq(organizations.status, "suspended")
+        : input.accessState === "active"
+          ? and(
+              eq(organizations.status, "active"),
+              sql`(${organizations.serviceExpiresAt} is null or ${organizations.serviceExpiresAt} > now())`,
+            )
+          : input.accessState === "expired"
+            ? and(
+                eq(organizations.status, "active"),
+                sql`${organizations.serviceExpiresAt} <= now()`,
+              )
+            : undefined,
       pattern
         ? or(
             ilike(organizations.name, pattern),
             ilike(organizations.slug, pattern),
+            ilike(sql`${organizations.id}::text`, pattern),
+            ilike(answerbitBrandMappings.brandId, pattern),
+            ilike(answerbitBrandMappings.brandName, pattern),
           )
         : undefined,
     );
-    const [list, [count]] = await Promise.all([
-      db
-        .select({
-          id: organizations.id,
-          name: organizations.name,
-          slug: organizations.slug,
-          serviceExpiresAt: organizations.serviceExpiresAt,
-          pointsExpiresAt: organizations.pointsExpiresAt,
-          status: organizations.status,
-          planCode: organizations.planCode,
-          createdAt: organizations.createdAt,
-          memberCount: sql<number>`count(distinct ${organizationMembers.id})::int`,
-          answerbitBrandId: sql<
-            string | null
-          >`max(${answerbitBrandMappings.brandId})`,
-          answerbitBrandName: sql<
-            string | null
-          >`max(${answerbitBrandMappings.brandName})`,
-        })
-        .from(organizations)
-        .innerJoin(
-          answerbitBrandMappings,
-          eq(answerbitBrandMappings.organizationId, organizations.id),
-        )
-        .leftJoin(
-          organizationMembers,
-          eq(organizationMembers.organizationId, organizations.id),
-        )
-        .where(where)
-        .groupBy(organizations.id)
-        .orderBy(desc(organizations.createdAt))
-        .limit(input.pageSize)
-        .offset((input.page - 1) * input.pageSize),
-      db
-        .select({ value: sql<number>`count(*)::int` })
-        .from(organizations)
-        .innerJoin(
-          answerbitBrandMappings,
-          eq(answerbitBrandMappings.organizationId, organizations.id),
-        )
-        .where(where),
-    ]);
-    return { list, pagination: pageMeta(input, count?.value ?? 0) };
+    return withPlatformDbContext(
+      { userId },
+      async (tx) => {
+        const [count] = await tx
+          .select({
+            value: sql<number>`count(distinct ${organizations.id})::int`,
+          })
+          .from(organizations)
+          .innerJoin(
+            answerbitBrandMappings,
+            eq(answerbitBrandMappings.organizationId, organizations.id),
+          )
+          .where(where);
+        const total = count?.value ?? 0;
+        const pages = Math.ceil(total / input.pageSize);
+        const page = Math.min(input.page, Math.max(pages, 1));
+        const list = await tx
+          .select({
+            id: organizations.id,
+            name: organizations.name,
+            slug: organizations.slug,
+            serviceExpiresAt: organizations.serviceExpiresAt,
+            pointsExpiresAt: organizations.pointsExpiresAt,
+            status: organizations.status,
+            accessState: sql<
+              "active" | "suspended" | "expired"
+            >`case when ${organizations.status} = 'suspended' then 'suspended' when ${organizations.serviceExpiresAt} <= now() then 'expired' else 'active' end`,
+            pointsExpired: sql<boolean>`coalesce(${organizations.pointsExpiresAt} <= now(), false)`,
+            planCode: organizations.planCode,
+            createdAt: organizations.createdAt,
+            memberCount: sql<number>`count(distinct ${organizationMembers.id})::int`,
+            answerbitBrandId: sql<
+              string | null
+            >`max(${answerbitBrandMappings.brandId})`,
+            answerbitBrandName: sql<
+              string | null
+            >`max(${answerbitBrandMappings.brandName})`,
+          })
+          .from(organizations)
+          .innerJoin(
+            answerbitBrandMappings,
+            eq(answerbitBrandMappings.organizationId, organizations.id),
+          )
+          .leftJoin(
+            organizationMembers,
+            eq(organizationMembers.organizationId, organizations.id),
+          )
+          .where(where)
+          .groupBy(organizations.id)
+          .orderBy(desc(organizations.createdAt), desc(organizations.id))
+          .limit(input.pageSize)
+          .offset((page - 1) * input.pageSize);
+        return {
+          list,
+          pagination: { page, pageSize: input.pageSize, total, pages },
+        };
+      },
+      { isolationLevel: "repeatable read", accessMode: "read only" },
+    );
   },
   // @project-doc docs/domains/identity_and_access.md#enterprise_validity
   updateOrganization(

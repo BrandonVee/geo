@@ -11,6 +11,7 @@ import {
   adminUpdateAnswerBitBrandSchema,
   adminUpdateUserSchema,
   adminUpdateOrganizationSchema,
+  adminOrganizationPageQuerySchema,
   adminUserPageQuerySchema,
   balanceTransactionQuerySchema,
   pointUsageQuerySchema,
@@ -119,6 +120,39 @@ describe("发布订单查询契约", () => {
 });
 
 describe("平台资源管理契约", () => {
+  it("企业目录分页、文字搜索和实际服务状态独立于原始状态", () => {
+    expect(adminOrganizationPageQuerySchema.parse({})).toEqual({
+      page: 1,
+      pageSize: 20,
+    });
+    expect(
+      adminOrganizationPageQuerySchema.parse({
+        page: "2",
+        pageSize: "10",
+        q: "  BrandID  ",
+        accessState: "expired",
+        status: "active",
+      }),
+    ).toEqual({
+      page: 2,
+      pageSize: 10,
+      q: "BrandID",
+      accessState: "expired",
+      status: "active",
+    });
+  });
+  it.each([
+    { accessState: "closed" },
+    { status: "expired" },
+    { page: "0" },
+    { pageSize: "101" },
+    { q: "a".repeat(201) },
+    { unexpected: true },
+  ])("企业目录拒绝非法筛选 %j", (value) => {
+    expect(adminOrganizationPageQuerySchema.safeParse(value).success).toBe(
+      false,
+    );
+  });
   it("企业只更新指定字段，原值支持历史空期限与额外状态校验", () => {
     expect(
       adminUpdateOrganizationSchema.parse({

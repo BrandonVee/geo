@@ -835,6 +835,15 @@ export const adminPageQuerySchema = z
 export const adminUserPageQuerySchema = adminPageQuerySchema
   .extend({ accountType: z.enum(["admin", "agent", "customer"]).optional() })
   .strict();
+export const adminOrganizationPageQuerySchema = adminPageQuerySchema
+  .extend({
+    status: z.enum(["active", "suspended"]).optional(),
+    accessState: z.enum(["active", "suspended", "expired"]).optional(),
+  })
+  .strict();
+export type AdminOrganizationPageQuery = z.infer<
+  typeof adminOrganizationPageQuerySchema
+>;
 export const pricingTierSchema = z.enum(["retail", "bronze", "silver", "gold"]);
 export const adminUpdateOrganizationSchema = z
   .object({

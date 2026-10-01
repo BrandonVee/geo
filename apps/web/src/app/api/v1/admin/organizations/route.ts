@@ -1,7 +1,7 @@
 import { createRequestId } from "@geo/core";
 import { requireUser } from "@/server/auth/session";
 import { errorResponse } from "@/server/http/errors";
-import { parseAdminPage } from "@/server/http/admin-request";
+import { parseAdminOrganizationPage } from "@/server/http/admin-request";
 import { adminService } from "@/server/services/admin";
 import { apiJson, emptyResponse } from "@/server/http/response";
 export async function GET(request: Request) {
@@ -9,7 +9,10 @@ export async function GET(request: Request) {
   try {
     const user = await requireUser(request);
     return apiJson({
-      data: await adminService.organizations(parseAdminPage(request), user.id),
+      data: await adminService.organizations(
+        parseAdminOrganizationPage(request),
+        user.id,
+      ),
       requestId,
     });
   } catch (error) {

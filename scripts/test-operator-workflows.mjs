@@ -165,6 +165,18 @@ try {
     ],
     { ENTERPRISE_LIFECYCLE_DB_TESTS: "1" },
   );
+  await run(
+    pnpm,
+    [
+      "--filter",
+      "@geo/web",
+      "exec",
+      "vitest",
+      "run",
+      "src/server/repositories/organization-directory.integration.test.ts",
+    ],
+    { ORGANIZATION_DIRECTORY_DB_TESTS: "1" },
+  );
   const seed = new Client({ connectionString: databaseUrl.href });
   await seed.connect();
   try {

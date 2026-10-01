@@ -1718,6 +1718,452 @@ test.describe("真实运营操作闭环", () => {
     ).toHaveCount(0);
   });
 
+  test("企业目录按 BrandID 查找并恢复筛选页码，冻结末页后回退，服务与积分到期分别显示", async ({
+    page,
+  }) => {
+    await makePlatformAdministrator();
+    await mockAdminReads(page);
+    const {
+      db,
+      organizations,
+      answerbitConnections,
+      answerbitTeamBindings,
+      answerbitBrandMappings,
+    } = database;
+    const { eq } = operators;
+    const marker = `目录-${randomUUID().slice(0, 8)}`;
+    const fixedTime = new Date("2026-01-01T00:00:00Z");
+    const future = new Date("2038-01-01T00:00:00Z"),
+      past = new Date("2020-01-01T00:00:00Z");
+    const batch: typeof fixture.scopes = [];
+    for (let index = 0; index < 21; index++) {
+      const organizationId = randomUUID(),
+        teamBindingId = randomUUID(),
+        brandId = `${marker}-brand-${index}-${randomUUID().slice(0, 8)}`,
+        name = `${marker}企业 ${index}`;
+      await db.insert(organizations).values({
+        id: organizationId,
+        name,
+        slug: organizationId,
+        serviceExpiresAt: future,
+        pointsExpiresAt: future,
+        createdAt: fixedTime,
+      });
+      const [connection] = await db
+        .insert(answerbitConnections)
+        .values({
+          organizationId,
+          encryptedApiKey: "qa-unused",
+          apiKeyFingerprint: randomUUID(),
+          apiKeyHint: "qa",
+          createdBy: fixture.userId,
+          managedByPlatform: true,
+        })
+        .returning();
+      await db.insert(answerbitTeamBindings).values({
+        id: teamBindingId,
+        organizationId,
+        connectionId: connection.id,
+        teamId: "qa-team",
+        status: "active",
+      });
+      await db
+        .insert(answerbitBrandMappings)
+        .values({ organizationId, teamBindingId, brandId, brandName: name });
+      const scope = { organizationId, teamBindingId, brandId, name };
+      batch.push(scope);
+      fixture.scopes.push(scope);
+    }
+    const target = [...batch].sort((a, b) =>
+      a.organizationId.localeCompare(b.organizationId),
+    )[0];
+    await db
+      .update(organizations)
+      .set({ pointsExpiresAt: past })
+      .where(eq(organizations.id, target.organizationId));
+    await db
+      .update(organizations)
+      .set({
+        name: `${marker}服务到期`,
+        serviceExpiresAt: past,
+        pointsExpiresAt: future,
+      })
+      .where(eq(organizations.id, fixture.scopes[0].organizationId));
+    await db
+      .update(organizations)
+      .set({
+        name: `${marker}手动冻结`,
+        status: "suspended",
+        serviceExpiresAt: future,
+        pointsExpiresAt: future,
+      })
+      .where(eq(organizations.id, fixture.scopes[1].organizationId));
+    await page.goto(
+      `/admin?section=organizations&orgKeyword=${encodeURIComponent(marker)}&orgAccessState=active&orgPage=3&orgPageSize=10`,
+    );
+    const targetRow = page.locator("tr").filter({ hasText: target.brandId });
+    await expect(targetRow).toBeVisible();
+    await expect(targetRow.getByText("正常", { exact: true })).toBeVisible();
+    await expect(
+      targetRow.getByText("积分已到期", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("共 21 家腾讯企业", { exact: true }),
+    ).toBeVisible();
+    await expect(page.locator(".ant-pagination-item-active")).toHaveAttribute(
+      "title",
+      "3",
+    );
+    for (const selectedTheme of ["light", "dark"]) {
+      if (
+        (await page.locator("html").getAttribute("data-theme")) !==
+        selectedTheme
+      )
+        await page.getByRole("button", { name: "切换亮暗色模式" }).click();
+      await expect(page.locator("html")).toHaveAttribute(
+        "data-theme",
+        selectedTheme,
+      );
+      for (const width of [390, 768, 1440]) {
+        await page.setViewportSize({ width, height: 1000 });
+        expect(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth,
+          ),
+        ).toBeTruthy();
+        await page.evaluate(async () => {
+          await Promise.all(
+            document
+              .getAnimations()
+              .filter(
+                (animation) =>
+                  animation.effect?.getComputedTiming().iterations !== Infinity,
+              )
+              .map((animation) => animation.finished.catch(() => {})),
+          );
+        });
+        await page.evaluate(axe.source);
+        const scan = await page.evaluate(() =>
+          (window as unknown as { axe: typeof axe }).axe.run(document, {
+            runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa"] },
+          }),
+        );
+        expect(scan.violations.map(({ id }) => id)).toEqual([]);
+        if (width === 390)
+          await page.screenshot({
+            path: test
+              .info()
+              .outputPath(`enterprise-directory-expiry-${selectedTheme}.png`),
+          });
+      }
+    }
+    await page.reload();
+    await expect(targetRow).toBeVisible();
+    await expect(page.locator(".ant-pagination-item-active")).toHaveAttribute(
+      "title",
+      "3",
+    );
+    await page
+      .getByLabel("搜索企业或品牌", { exact: true })
+      .fill(target.brandId);
+    await page.getByLabel("搜索企业或品牌", { exact: true }).press("Enter");
+    await expect(
+      page.getByText("共 1 家腾讯企业", { exact: true }),
+    ).toBeVisible();
+    await expect(targetRow).toBeVisible();
+    await page.reload();
+    await expect(
+      page.getByLabel("搜索企业或品牌", { exact: true }),
+    ).toHaveValue(target.brandId);
+    await expect(
+      page.getByText("共 1 家腾讯企业", { exact: true }),
+    ).toBeVisible();
+    await page.getByLabel("搜索企业或品牌", { exact: true }).fill(marker);
+    await page.getByLabel("搜索企业或品牌", { exact: true }).press("Enter");
+    await expect(
+      page.getByText("共 21 家腾讯企业", { exact: true }),
+    ).toBeVisible();
+    await page.locator(".ant-pagination-item-3").click();
+    await expect(targetRow).toBeVisible();
+    await page.getByRole("menuitem", { name: /客户与代理/ }).click();
+    await page.getByRole("menuitem", { name: /企业与品牌/ }).click();
+    await expect(targetRow).toBeVisible();
+    await expect(page.locator(".ant-pagination-item-active")).toHaveAttribute(
+      "title",
+      "3",
+    );
+    await targetRow
+      .getByRole("button", { name: `冻结企业 ${target.name}`, exact: true })
+      .click();
+    await page
+      .getByRole("dialog", { name: "冻结此企业？" })
+      .getByRole("button", { name: "确认冻结", exact: true })
+      .click();
+    await expect(page).toHaveURL(/orgPage=2/);
+    await expect(
+      page.getByText("共 20 家腾讯企业", { exact: true }),
+    ).toBeVisible();
+    await expect(targetRow).not.toBeVisible();
+    const setState = async (label: string) => {
+      await page
+        .getByRole("combobox", { name: "筛选企业状态", exact: true })
+        .press("ArrowDown");
+      await page
+        .locator(".ant-select-item-option")
+        .filter({ hasText: new RegExp(`^${label}$`) })
+        .click();
+    };
+    await setState("到期冻结");
+    await expect(
+      page.getByText("共 1 家腾讯企业", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page
+        .locator("tr")
+        .filter({ hasText: fixture.scopes[0].brandId })
+        .getByText("到期冻结", { exact: true }),
+    ).toBeVisible();
+    await setState("手动冻结");
+    await expect(
+      page.getByText("共 2 家腾讯企业", { exact: true }),
+    ).toBeVisible();
+    await targetRow
+      .getByRole("button", { name: `恢复企业 ${target.name}`, exact: true })
+      .click();
+    await page
+      .getByRole("dialog", { name: "恢复此企业？" })
+      .getByRole("button", { name: "确认恢复", exact: true })
+      .click();
+    await expect(
+      page.getByText("共 1 家腾讯企业", { exact: true }),
+    ).toBeVisible();
+    await expect(targetRow).not.toBeVisible();
+    await setState("正常");
+    await expect(
+      page.getByText("共 21 家腾讯企业", { exact: true }),
+    ).toBeVisible();
+    const lastPage = await page.request.get(
+      `/api/v1/admin/organizations?q=${encodeURIComponent(marker)}&accessState=active&page=999&pageSize=10`,
+    );
+    expect(lastPage.ok()).toBeTruthy();
+    expect((await lastPage.json()).data.pagination).toMatchObject({
+      page: 3,
+      total: 21,
+    });
+    const invalid = await page.request.get(
+      "/api/v1/admin/organizations?accessState=unknown",
+    );
+    expect(invalid.status()).toBe(400);
+  });
+
+  test("企业目录新条件隐藏旧企业，迟到搜索不覆盖，读取失败只重试当前条件，明暗主题与各宽度可访问", async ({
+    page,
+  }) => {
+    await makePlatformAdministrator();
+    await mockAdminReads(page);
+    const first = fixture.scopes[0],
+      second = fixture.scopes[1];
+    let holdFirst = false,
+      readsFail = false,
+      writes = 0;
+    let release!: () => void, announce!: () => void, complete!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const announced = new Promise<void>((resolve) => {
+      announce = resolve;
+    });
+    const completed = new Promise<void>((resolve) => {
+      complete = resolve;
+    });
+    const runtimeErrors: string[] = [];
+    page.on("pageerror", (error) => runtimeErrors.push(error.message));
+    page.on("console", (message) => {
+      if (
+        message.type() === "error" &&
+        /hydration|validateDOMNesting|duplicate|Warning:/i.test(message.text())
+      )
+        runtimeErrors.push(message.text());
+    });
+    await page.route("**/api/v1/admin/organizations?**", async (route) => {
+      if (route.request().method() !== "GET") {
+        writes++;
+        return route.continue();
+      }
+      const q = new URL(route.request().url()).searchParams.get("q");
+      if (readsFail)
+        return route.fulfill({
+          status: 503,
+          json: { error: { message: "企业目录临时读取失败" } },
+        });
+      if (holdFirst && q === first.brandId) {
+        const response = await route.fetch();
+        expect(response.ok()).toBeTruthy();
+        announce();
+        await gate;
+        try {
+          await route.fulfill({ response });
+        } finally {
+          complete();
+        }
+        return;
+      }
+      return route.continue();
+    });
+    await page.goto("/admin?section=organizations");
+    await expect(
+      page.locator("tr").filter({ hasText: first.brandId }),
+    ).toBeVisible();
+    holdFirst = true;
+    await page
+      .getByLabel("搜索企业或品牌", { exact: true })
+      .fill(first.brandId);
+    await page.getByLabel("搜索企业或品牌", { exact: true }).press("Enter");
+    try {
+      await announced;
+      await expect(
+        page.locator("tr").filter({ hasText: second.brandId }),
+      ).not.toBeVisible();
+      await page
+        .getByLabel("搜索企业或品牌", { exact: true })
+        .fill(second.brandId);
+      await page.getByLabel("搜索企业或品牌", { exact: true }).press("Enter");
+      await expect(
+        page.locator("tr").filter({ hasText: second.brandId }),
+      ).toBeVisible();
+      release();
+      await completed;
+      await expect(
+        page.locator("tr").filter({ hasText: first.brandId }),
+      ).not.toBeVisible();
+      await expect(
+        page.getByText("共 1 家腾讯企业", { exact: true }),
+      ).toBeVisible();
+    } finally {
+      release();
+    }
+    readsFail = true;
+    await page
+      .getByRole("button", { name: "刷新当前模块", exact: true })
+      .click();
+    await expect(
+      page.getByText("企业目录读取失败", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.locator("tr").filter({ hasText: second.brandId }),
+    ).not.toBeVisible();
+    await expect(
+      page.getByLabel("搜索企业或品牌", { exact: true }),
+    ).toHaveValue(second.brandId);
+    for (const selectedTheme of ["light", "dark"]) {
+      if (
+        (await page.locator("html").getAttribute("data-theme")) !==
+        selectedTheme
+      )
+        await page.getByRole("button", { name: "切换亮暗色模式" }).click();
+      await expect(page.locator("html")).toHaveAttribute(
+        "data-theme",
+        selectedTheme,
+      );
+      for (const width of [390, 768, 1440]) {
+        await page.setViewportSize({ width, height: 1000 });
+        expect(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth,
+          ),
+        ).toBeTruthy();
+        await page.evaluate(async () => {
+          await Promise.all(
+            document
+              .getAnimations()
+              .filter(
+                (animation) =>
+                  animation.effect?.getComputedTiming().iterations !== Infinity,
+              )
+              .map((animation) => animation.finished.catch(() => {})),
+          );
+        });
+        await page.evaluate(axe.source);
+        const scan = await page.evaluate(() =>
+          (window as unknown as { axe: typeof axe }).axe.run(document, {
+            runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa"] },
+          }),
+        );
+        expect(scan.violations.map(({ id }) => id)).toEqual([]);
+        if (width === 390)
+          await page.screenshot({
+            path: test
+              .info()
+              .outputPath(`enterprise-directory-error-${selectedTheme}.png`),
+          });
+      }
+    }
+    readsFail = false;
+    await page
+      .getByRole("button", { name: "重试读取企业目录", exact: true })
+      .click();
+    await expect(
+      page.locator("tr").filter({ hasText: second.brandId }),
+    ).toBeVisible();
+    await page
+      .getByLabel("搜索企业或品牌", { exact: true })
+      .fill(`missing-${randomUUID()}`);
+    await page.getByLabel("搜索企业或品牌", { exact: true }).press("Enter");
+    await expect(
+      page.getByText("没有符合条件的企业", { exact: true }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "重置筛选", exact: true }).click();
+    await expect(
+      page.locator("tr").filter({ hasText: first.brandId }),
+    ).toBeVisible();
+    await expect(
+      page.locator("tr").filter({ hasText: second.brandId }),
+    ).toBeVisible();
+    // Opening and switching the existing asset form must not pre-render a portal during SSR.
+    const uniqueName = `目录表单-${randomUUID().slice(0, 8)}`;
+    await database.db
+      .update(database.organizations)
+      .set({ name: uniqueName })
+      .where(operators.eq(database.organizations.id, first.organizationId));
+    await page.getByRole("menuitem", { name: /资产与计费/ }).click();
+    const assetRow = page.locator("tr").filter({ hasText: uniqueName });
+    await assetRow
+      .getByRole("button", { name: "入账 / 扣减", exact: true })
+      .click();
+    const assetForm = page.getByRole("dialog", {
+      name: `${uniqueName} · 资产调整`,
+      exact: true,
+    });
+    await expect(
+      assetForm.getByRole("radio", { name: "入账", exact: true }),
+    ).toBeChecked();
+    await expect(
+      assetForm.getByRole("button", { name: "确认入账", exact: true }),
+    ).toBeVisible();
+    await assetForm
+      .getByRole("radio", { name: "手动扣减", exact: true })
+      .click();
+    await expect(
+      assetForm.getByRole("radio", { name: "企业资金池", exact: true }),
+    ).toBeChecked();
+    await expect(
+      assetForm.getByRole("button", { name: "确认手动扣减", exact: true }),
+    ).toBeVisible();
+    await assetForm.getByLabel("数量", { exact: true }).fill("17");
+    await page.keyboard.press("Escape");
+    await expect(assetForm).not.toBeVisible();
+    await assetRow
+      .getByRole("button", { name: "入账 / 扣减", exact: true })
+      .click();
+    await expect(
+      assetForm.getByRole("radio", { name: "入账", exact: true }),
+    ).toBeChecked();
+    await expect(assetForm.getByLabel("数量", { exact: true })).toHaveValue("");
+    await page.keyboard.press("Escape");
+    expect(writes).toBe(0);
+    expect(runtimeErrors).toEqual([]);
+  });
+
   test("企业续期保留空积分期限，失败保留输入，冻结与续期响应丢失只读核对一次写入", async ({
     page,
   }) => {

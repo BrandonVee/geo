@@ -3,6 +3,7 @@ import type {
   AdminCreateUserInput,
   AdminUpdateUserInput,
   AdminUpdateOrganizationInput,
+  AdminOrganizationPageQuery,
 } from "@geo/contracts";
 import type { Permission } from "@geo/core";
 import type { AuditContext } from "@/server/audit/write-audit";
@@ -41,11 +42,11 @@ export const adminService = {
     await allowed(userId, "platform.tenant.read");
     return adminRepository.overview();
   },
-  async organizations(input: Page, userId: string) {
+  async organizations(input: AdminOrganizationPageQuery, userId: string) {
     await allowed(userId, "platform.tenant.read");
     if (input.status && !["active", "suspended"].includes(input.status))
       throw new ApiError(400, "VALIDATION_ERROR", "企业状态筛选无效");
-    return adminRepository.listOrganizations(input);
+    return adminRepository.listOrganizations(input, userId);
   },
   async organization(id: string, userId: string) {
     await allowed(userId, "platform.tenant.read");
