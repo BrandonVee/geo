@@ -177,6 +177,18 @@ try {
     ],
     { ORGANIZATION_DIRECTORY_DB_TESTS: "1" },
   );
+  await run(
+    pnpm,
+    [
+      "--filter",
+      "@geo/web",
+      "exec",
+      "vitest",
+      "run",
+      "src/server/services/balance-adjustments.integration.test.ts",
+    ],
+    { BALANCE_ADJUSTMENT_DB_TESTS: "1" },
+  );
   const seed = new Client({ connectionString: databaseUrl.href });
   await seed.connect();
   try {

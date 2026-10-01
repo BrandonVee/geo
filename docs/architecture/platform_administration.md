@@ -99,6 +99,8 @@
 
 ## 权限与写入规则
 
+资产调整弹窗分别校验整数积分和人民币分精度，原弹窗保留失败输入；结果不确定时保留原请求，只读核对或按原键重试。余额、流水与审计原子提交，流程规则见[账本不变量](../domains/balance_and_publication.md#balance_invariants)。
+
 - 所有 `/api/v1/admin/*` 端点先验证 Session，再通过 `requirePlatformPermission` 校验数据库角色权限；
 - 固定 TeamID 与统一 Key 状态必须为 `active`，企业、用户、余额、发布、审计及租户业务才开放；接入前只允许读取或写入腾讯统一配置；
 - 全局读取分别使用 `platform.tenant.read`、`platform.user.read` 或 `platform.answerbit.read`；

@@ -11,8 +11,11 @@ import {
   listBalanceTransactions,
   listBalances,
   setFeaturePointCost,
+  balanceAccounts,
+  balanceTransactions,
+  withPlatformDbContext,
 } from "@geo/db";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 
 export const balanceRepository = {
   list: listBalances,
@@ -22,6 +25,35 @@ export const balanceRepository = {
   allTransactions: listAllBalanceTransactions,
   grant: grantBalance,
   deduct: deductBalance,
+  // @project-doc docs/domains/balance_and_publication.md#balance_invariants
+  async confirmation(
+    input: { organizationId: string; idempotencyKey: string },
+    userId: string,
+  ) {
+    return withPlatformDbContext({ userId }, async (tx) => {
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtext(${input.organizationId}), hashtext(${input.idempotencyKey}))`,
+      );
+      const [row] = await tx
+        .select({
+          transaction: balanceTransactions,
+          brandId: balanceAccounts.brandId,
+        })
+        .from(balanceTransactions)
+        .leftJoin(
+          balanceAccounts,
+          sql`${balanceAccounts.id} = coalesce(${balanceTransactions.sourceAccountId}, ${balanceTransactions.targetAccountId})`,
+        )
+        .where(
+          and(
+            eq(balanceTransactions.organizationId, input.organizationId),
+            eq(balanceTransactions.idempotencyKey, input.idempotencyKey),
+          ),
+        )
+        .limit(1);
+      return row ? { ...row.transaction, brandId: row.brandId } : null;
+    });
+  },
   allocate: allocateBalance,
   pointCosts: listFeaturePointCosts,
   setPointCost: setFeaturePointCost,

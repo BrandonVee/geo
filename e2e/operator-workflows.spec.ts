@@ -2164,6 +2164,315 @@ test.describe("真实运营操作闭环", () => {
     expect(runtimeErrors).toEqual([]);
   });
 
+  test("资产入账校验整数与金额，失败保留输入，成功响应丢失刷新恢复并只读核对", async ({
+    page,
+  }) => {
+    await makePlatformAdministrator();
+    await mockAdminReads(page);
+    const scope = fixture.scopes[0],
+      name = `资产入账-${randomUUID().slice(0, 8)}`;
+    await database.db
+      .update(database.organizations)
+      .set({ name })
+      .where(operators.eq(database.organizations.id, scope.organizationId));
+    let rejectWrite = true,
+      failConfirmation = true,
+      failRefresh = false;
+    const commands: Array<{
+      idempotencyKey: string;
+      amount: number;
+      reason: string;
+    }> = [];
+    await page.route("**/api/v1/admin/balance-grants", async (route) => {
+      commands.push(route.request().postDataJSON());
+      if (rejectWrite)
+        return route.fulfill({
+          status: 422,
+          json: { error: { code: "QA_REJECTED", message: "模拟入账校验失败" } },
+        });
+      const response = await route.fetch();
+      expect(response.status()).toBe(201);
+      await route.abort("failed");
+    });
+    await page.route(
+      "**/api/v1/admin/balance-transactions/confirmation?**",
+      async (route) => {
+        if (failConfirmation)
+          return route.fulfill({
+            status: 503,
+            json: {
+              error: { code: "QA_UNAVAILABLE", message: "暂时无法核对" },
+            },
+          });
+        return route.continue();
+      },
+    );
+    await page.route("**/api/v1/admin/balances", async (route) => {
+      if (failRefresh)
+        return route.fulfill({
+          status: 503,
+          json: {
+            error: { code: "QA_UNAVAILABLE", message: "余额目录暂时无法刷新" },
+          },
+        });
+      return route.continue();
+    });
+    await page.goto("/admin?section=balances");
+    const row = page.locator("tr").filter({ hasText: name });
+    await row.getByRole("button", { name: "入账 / 扣减", exact: true }).click();
+    const dialog = page.getByRole("dialog", {
+      name: `${name} · 资产调整`,
+      exact: true,
+    });
+    await dialog
+      .getByLabel("调整原因", { exact: true })
+      .fill("  账本测试入账  ");
+    await dialog.getByLabel("数量", { exact: true }).fill("17.2");
+    await dialog.getByRole("button", { name: "确认入账", exact: true }).click();
+    await expect(
+      dialog.getByText("积分须为 1 至 10 亿的整数", { exact: true }),
+    ).toBeVisible();
+    expect(commands).toHaveLength(0);
+    await dialog.getByLabel("资产", { exact: true }).press("ArrowDown");
+    await page
+      .locator(".ant-select-item-option")
+      .filter({ hasText: "发布人民币余额（元）" })
+      .click();
+    await dialog.getByLabel("数量", { exact: true }).fill("0.001");
+    await dialog.getByRole("button", { name: "确认入账", exact: true }).click();
+    await expect(
+      dialog.getByText("金额须为 0.01 至 1000 万元，最多两位小数", {
+        exact: true,
+      }),
+    ).toBeVisible();
+    expect(commands).toHaveLength(0);
+    await dialog.getByLabel("资产", { exact: true }).press("ArrowDown");
+    await page
+      .locator(".ant-select-item-option")
+      .filter({ hasText: "腾讯能力积分" })
+      .click();
+    await dialog.getByLabel("数量", { exact: true }).fill("17");
+    await dialog.getByRole("button", { name: "确认入账", exact: true }).click();
+    await expect(
+      dialog.getByText("模拟入账校验失败", { exact: true }),
+    ).toBeVisible();
+    await expect(dialog.getByLabel("数量", { exact: true })).toHaveValue("17");
+    await expect(dialog.getByLabel("调整原因", { exact: true })).toHaveValue(
+      "账本测试入账",
+    );
+    await page.evaluate(axe.source);
+    const editableScan = await page.evaluate(() =>
+      (window as unknown as { axe: typeof axe }).axe.run(
+        document.querySelector(
+          '.ant-modal[role="dialog"], .ant-modal [role="dialog"]',
+        )!,
+        { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa"] } },
+      ),
+    );
+    expect(editableScan.violations.map(({ id }) => id)).toEqual([]);
+    rejectWrite = false;
+    await dialog.getByRole("button", { name: "确认入账", exact: true }).click();
+    await expect(
+      dialog.getByText(
+        "提交结果尚未核实，请先核对操作结果，避免重复入账或扣减。",
+        { exact: true },
+      ),
+    ).toBeVisible();
+    await expect(dialog.getByLabel("数量", { exact: true })).toBeDisabled();
+    await expect(
+      dialog.getByRole("button", { name: "按原内容重试", exact: true }),
+    ).not.toBeVisible();
+    await page.reload();
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByText("17 积分", { exact: true })).toBeVisible();
+    await expect(dialog.getByLabel("数量", { exact: true })).toHaveValue("17");
+    await expect(dialog.getByLabel("数量", { exact: true })).toBeDisabled();
+    await expect(dialog.getByLabel("调整原因", { exact: true })).toHaveValue(
+      "账本测试入账",
+    );
+    expect(commands).toHaveLength(2);
+    for (const theme of ["light", "dark"]) {
+      if ((await page.locator("html").getAttribute("data-theme")) !== theme) {
+        await page.evaluate(
+          (mode) => localStorage.setItem("ab-theme", mode),
+          theme,
+        );
+        await page.reload();
+        await expect(dialog).toBeVisible();
+        await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
+      }
+      for (const width of [390, 768, 1440]) {
+        await page.setViewportSize({ width, height: 1000 });
+        await page.evaluate(async () => {
+          await Promise.all(
+            document
+              .getAnimations()
+              .filter(
+                (a) => a.effect?.getComputedTiming().iterations !== Infinity,
+              )
+              .map((a) => a.finished.catch(() => {})),
+          );
+        });
+        await page.evaluate(axe.source);
+        const result = await page.evaluate(() =>
+          (window as unknown as { axe: typeof axe }).axe.run(
+            document.querySelector(
+              '.ant-modal[role="dialog"], .ant-modal [role="dialog"]',
+            )!,
+            {
+              runOnly: {
+                type: "tag",
+                values: ["wcag2a", "wcag2aa", "wcag21aa"],
+              },
+            },
+          ),
+        );
+        expect(result.violations.map(({ id }) => id)).toEqual([]);
+        if (width === 390)
+          await page.screenshot({
+            path: test
+              .info()
+              .outputPath(`asset-adjustment-pending-${theme}.png`),
+          });
+      }
+    }
+    failConfirmation = false;
+    failRefresh = true;
+    await dialog
+      .getByRole("button", { name: "核对操作结果", exact: true })
+      .click();
+    await expect(dialog).not.toBeVisible();
+    await expect(
+      page.getByText(
+        /余额已入账，已记录资产流水与审计；管理数据刷新失败：余额目录暂时无法刷新/,
+      ),
+    ).toBeVisible();
+    expect(commands).toHaveLength(2);
+    const transactions = await database.db
+      .select()
+      .from(database.balanceTransactions)
+      .where(
+        operators.and(
+          operators.eq(
+            database.balanceTransactions.organizationId,
+            scope.organizationId,
+          ),
+          operators.eq(database.balanceTransactions.operation, "grant"),
+        ),
+      );
+    expect(transactions).toHaveLength(1);
+    expect(transactions[0]).toMatchObject({
+      amount: 17,
+      reason: "账本测试入账",
+      idempotencyKey: commands[1].idempotencyKey,
+    });
+    const audits = await database.db
+      .select()
+      .from(database.operationLogs)
+      .where(
+        operators.eq(database.operationLogs.resourceId, transactions[0].id),
+      );
+    expect(audits).toHaveLength(1);
+    expect(
+      await page.evaluate(
+        (actor) =>
+          sessionStorage.getItem(`geo:admin-asset-adjustment:v1:${actor}`),
+        fixture.userId,
+      ),
+    ).toBeNull();
+  });
+
+  test("资产扣减未执行时按原键重试，企业与品牌账户独立，余额不足保留原表单", async ({
+    page,
+  }) => {
+    await makePlatformAdministrator();
+    await mockAdminReads(page);
+    const scope = fixture.scopes[0],
+      name = `资产扣减-${randomUUID().slice(0, 8)}`;
+    await database.db
+      .update(database.organizations)
+      .set({ name })
+      .where(operators.eq(database.organizations.id, scope.organizationId));
+    await database.db.insert(database.balanceAccounts).values({
+      organizationId: scope.organizationId,
+      asset: "answerbit_points",
+      balance: 100,
+    });
+    const commands: Array<{
+      idempotencyKey: string;
+      brandId?: string;
+      amount: number;
+    }> = [];
+    await page.route("**/api/v1/admin/balance-deductions", async (route) => {
+      commands.push(route.request().postDataJSON());
+      if (commands.length === 1) return route.abort("failed");
+      return route.continue();
+    });
+    await page.goto("/admin?section=balances");
+    const row = page.locator("tr").filter({ hasText: name });
+    await row.getByRole("button", { name: "入账 / 扣减", exact: true }).click();
+    const dialog = page.getByRole("dialog", {
+      name: `${name} · 资产调整`,
+      exact: true,
+    });
+    await dialog.getByRole("radio", { name: "手动扣减", exact: true }).click();
+    await dialog.getByLabel("数量", { exact: true }).fill("17");
+    await dialog.getByLabel("调整原因", { exact: true }).fill("人工纠错扣减");
+    await dialog
+      .getByRole("button", { name: "确认手动扣减", exact: true })
+      .click();
+    await expect(
+      dialog.getByRole("button", { name: "按原内容重试", exact: true }),
+    ).toBeVisible();
+    await expect(dialog.getByLabel("数量", { exact: true })).toBeDisabled();
+    await dialog
+      .getByRole("button", { name: "按原内容重试", exact: true })
+      .click();
+    await expect(dialog).not.toBeVisible();
+    expect(commands).toHaveLength(2);
+    expect(commands[1]).toEqual(commands[0]);
+    await row.getByRole("button", { name: "入账 / 扣减", exact: true }).click();
+    await dialog.getByRole("radio", { name: "手动扣减", exact: true }).click();
+    await dialog.getByRole("radio", { name: "品牌账户", exact: true }).click();
+    await dialog.getByLabel("数量", { exact: true }).fill("1001");
+    await dialog.getByLabel("调整原因", { exact: true }).fill("品牌纠错扣减");
+    await dialog
+      .getByRole("button", { name: "确认手动扣减", exact: true })
+      .click();
+    await expect(
+      dialog.getByText("当前账户余额不足，无法扣减", { exact: true }),
+    ).toBeVisible();
+    await expect(dialog.getByLabel("数量", { exact: true })).toHaveValue(
+      "1001",
+    );
+    await expect(
+      dialog.getByRole("radio", { name: "品牌账户", exact: true }),
+    ).toBeChecked();
+    await dialog.getByLabel("数量", { exact: true }).fill("23");
+    await dialog
+      .getByRole("button", { name: "确认手动扣减", exact: true })
+      .click();
+    await expect(dialog).not.toBeVisible();
+    const accounts = await database.db
+      .select()
+      .from(database.balanceAccounts)
+      .where(
+        operators.and(
+          operators.eq(
+            database.balanceAccounts.organizationId,
+            scope.organizationId,
+          ),
+          operators.eq(database.balanceAccounts.asset, "answerbit_points"),
+        ),
+      );
+    expect(accounts.find((a) => a.brandId === null)?.balance).toBe(83);
+    expect(accounts.find((a) => a.brandId === scope.brandId)?.balance).toBe(
+      977,
+    );
+    expect(commands[3].brandId).toBe(scope.brandId);
+    expect(commands[3].idempotencyKey).not.toBe(commands[0].idempotencyKey);
+  });
+
   test("企业续期保留空积分期限，失败保留输入，冻结与续期响应丢失只读核对一次写入", async ({
     page,
   }) => {

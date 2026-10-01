@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   membershipRole: vi.fn(),
   pointUsage: vi.fn(),
   deduct: vi.fn(),
+  confirmation: vi.fn(),
   brandExists: vi.fn(),
   setPointCost: vi.fn(),
   writeAudit: vi.fn(),
@@ -36,6 +37,7 @@ vi.mock("@/server/repositories/balances", () => ({
   balanceRepository: {
     pointUsage: mocks.pointUsage,
     deduct: mocks.deduct,
+    confirmation: mocks.confirmation,
     brandExists: mocks.brandExists,
     setPointCost: mocks.setPointCost,
   },
@@ -48,6 +50,21 @@ vi.mock("@/server/repositories/organizations", () => ({
 }));
 
 import { balanceService } from "./balances";
+
+describe("管理员资产调整结果核对", () => {
+  it("没有余额管理权限时不读取原流水", async () => {
+    mocks.requirePlatformPermission.mockRejectedValueOnce(
+      new Error("forbidden"),
+    );
+    await expect(
+      balanceService.confirmation(
+        { organizationId: "org", idempotencyKey: "original-key" },
+        "actor",
+      ),
+    ).rejects.toThrow("forbidden");
+    expect(mocks.confirmation).not.toHaveBeenCalled();
+  });
+});
 
 const userId = "d5ddb2bc-44ad-4395-a05b-e3a2ad0129f8";
 const audit = {

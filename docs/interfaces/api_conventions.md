@@ -38,6 +38,8 @@ JSON 请求使用 `Content-Type: application/json`；允许标准的 `applicatio
 
 ## 响应格式
 
+`GET /v1/admin/balance-transactions/confirmation` 接受企业 UUID 与原幂等键，要求 `platform.balance.manage`，只读返回原流水（含账户 BrandID）或 `null`。平台入账和扣减的余额、流水与审计在同一事务提交；相同键的账户、资产、金额、原因、操作或操作者发生变化时返回 `409 IDEMPOTENCY_CONFLICT`，重放成功不重复审计。
+
 成功响应：
 
 ```json

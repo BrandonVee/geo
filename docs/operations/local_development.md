@@ -148,3 +148,5 @@ Worker 等待任务的权限复核回归在已迁移数据库执行 `WORKER_ACCE
 企业生命周期回归由同一一次性数据库脚本以 `ENTERPRISE_LIFECYCLE_DB_TESTS=1` 运行 `src/server/services/enterprise-lifecycle.integration.test.ts`，保留真实企业行锁与审计事务，仅替换平台权限边界；覆盖并发续期旧日期拒绝、服务与积分独立修改、到期恢复拒绝与原子续期恢复、单独续期保留冻结、并发冻结使旧表单冲突、关闭企业拒绝和审计失败回滚。历史记录随一次性数据库删除，不对日常开发库执行。
 
 企业目录查询由同一一次性数据库脚本以 `ORGANIZATION_DIRECTORY_DB_TESTS=1` 运行 `src/server/repositories/organization-directory.integration.test.ts`，使用真实平台角色与只读快照，覆盖企业/品牌名称、BrandID、UUID 和内部标识检索、文字通配符转义、相同接入时间的稳定分页、服务与积分到期独立状态、手动冻结优先、旧 status 筛选兼容、关闭/未映射企业隐藏、成员计数以及冻结末页后的页码回退。测试独立创建并清理 UUID 数据，不调用腾讯，不对日常库执行。
+
+平台资产调整由同一一次性数据库脚本以 `BALANCE_ADJUSTMENT_DB_TESTS=1` 运行 `src/server/services/balance-adjustments.integration.test.ts`，保留真实余额事务、流水、审计和结果核对查询，仅替换平台权限边界；覆盖并发重放、同键内容冲突、审计失败整体回滚、缺少账户的回滚与重试、余额不足，以及冻结到期后的纠错。浏览器覆盖原弹窗错误与输入保留、金额精度校验、提交结果核对、刷新恢复原请求及同键重试；不调用真实上游，审计随测试库整体删除。

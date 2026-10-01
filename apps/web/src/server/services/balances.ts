@@ -105,19 +105,29 @@ export const balanceService = {
     audit: AuditContext,
   ) {
     await requirePlatformPermission(userId, "platform.balance.manage");
-    const result = await balanceRepository.grant({
-      ...input,
-      actorUserId: userId,
-    });
-    await writeAudit(
-      { ...audit, organizationId: input.organizationId },
+    const result = await balanceRepository.grant(
       {
-        operation: "balance.grant",
-        resourceType: "balance_transaction",
-        resourceId: result.transaction.id,
-        summary: `${input.asset} 管理员入账 ${input.amount}：${input.reason}`,
+        ...input,
+        actorUserId: userId,
       },
+      async (tx, transaction) =>
+        writeAudit(
+          { ...audit, organizationId: input.organizationId },
+          {
+            operation: "balance.grant",
+            resourceType: "balance_transaction",
+            resourceId: transaction.id,
+            summary: `${input.asset} 管理员入账 ${input.amount}：${input.reason}`,
+          },
+          tx,
+        ),
     );
+    if (!result.ok)
+      throw new ApiError(
+        409,
+        "IDEMPOTENCY_CONFLICT",
+        "重复请求的入账内容不一致",
+      );
     return result;
   },
   async deduct(
@@ -134,10 +144,23 @@ export const balanceService = {
       ))
     )
       throw new ApiError(404, "BRAND_NOT_FOUND", "品牌不存在");
-    const result = await balanceRepository.deduct({
-      ...input,
-      actorUserId: userId,
-    });
+    const result = await balanceRepository.deduct(
+      {
+        ...input,
+        actorUserId: userId,
+      },
+      async (tx, transaction) =>
+        writeAudit(
+          { ...audit, organizationId: input.organizationId },
+          {
+            operation: "balance.deduct",
+            resourceType: "balance_transaction",
+            resourceId: transaction.id,
+            summary: `${input.asset} 管理员手动扣减 ${input.amount}：${input.reason}`,
+          },
+          tx,
+        ),
+    );
     if (!result.ok)
       throw new ApiError(
         result.code === "IDEMPOTENCY_CONFLICT" ? 409 : 422,
@@ -146,17 +169,14 @@ export const balanceService = {
           ? "重复请求的扣减内容不一致"
           : "当前账户余额不足，无法扣减",
       );
-    if (!result.replayed)
-      await writeAudit(
-        { ...audit, organizationId: input.organizationId },
-        {
-          operation: "balance.deduct",
-          resourceType: "balance_transaction",
-          resourceId: result.transaction.id,
-          summary: `${input.asset} 管理员手动扣减 ${input.amount}：${input.reason}`,
-        },
-      );
     return result;
+  },
+  async confirmation(
+    input: { organizationId: string; idempotencyKey: string },
+    userId: string,
+  ) {
+    await requirePlatformPermission(userId, "platform.balance.manage");
+    return balanceRepository.confirmation(input, userId);
   },
   async allocate(
     input: AllocateBrandBalanceInput,

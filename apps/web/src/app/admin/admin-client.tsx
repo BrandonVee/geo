@@ -65,6 +65,7 @@ import {
 import dayjs, { type Dayjs } from "dayjs";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { AdminAssetAdjustment } from "./admin-asset-adjustment";
 import { EnterpriseValidity } from "./enterprise-validity";
 import { EnterpriseStatus } from "./enterprise-status";
 import {
@@ -365,13 +366,6 @@ type UserAccessForm = {
     features: OrganizationFeature[];
   }>;
 };
-type GrantForm = {
-  operation: "grant" | "deduct";
-  account: "enterprise" | "brand";
-  asset: BalanceAccount["asset"];
-  amount: number;
-  reason: string;
-};
 type CostForm = PointCost;
 type ChannelForm = { name: string; category: string; price: number };
 type PricingTierRuleForm = {
@@ -660,8 +654,6 @@ export function AdminClient({
   const tab: Tab = isTab(section) ? section : "overview";
   const [userForm] = Form.useForm<UserForm>();
   const [userAccessForm] = Form.useForm<UserAccessForm>();
-  const [grantForm] = Form.useForm<GrantForm>();
-  const grantKey = useRef(crypto.randomUUID());
   const [validityOrganization, setValidityOrganization] =
     useState<EnterpriseSettings | null>(null);
   const [validityRestore, setValidityRestore] = useState(false);
@@ -837,8 +829,10 @@ export function AdminClient({
     },
   );
 
-  const [grantOrganization, setGrantOrganization] =
-    useState<Organization | null>(null);
+  const [grantOrganization, setGrantOrganization] = useState<Pick<
+    Organization,
+    "id" | "name" | "answerbitBrandId"
+  > | null>(null);
   const [editingChannel, setEditingChannel] = useState<Channel | null>(null);
   const [channelTierPrices, setChannelTierPrices] = useState<
     Record<PricingTier, number | null>
@@ -1311,16 +1305,6 @@ export function AdminClient({
       websiteAutoTrace: editingPlatformBrand.websiteAutoTrace ?? false,
     });
   }, [editingPlatformBrand, platformBrandUpdateForm]);
-  useEffect(() => {
-    if (!grantOrganization) return;
-    grantForm.resetFields();
-    grantForm.setFieldsValue({
-      asset: "answerbit_points",
-      operation: "grant",
-      account: "enterprise",
-    });
-    grantKey.current = crypto.randomUUID();
-  }, [grantForm, grantOrganization]);
   async function patch(url: string, body: unknown, key: string) {
     setBusy(key);
     try {
@@ -1688,49 +1672,6 @@ export function AdminClient({
       setMessage(
         `腾讯企业 ${brand.brandName}（${brand.brandId}）已从腾讯删除，平台投影已关闭`,
       );
-    } catch (error) {
-      setMessage((error as Error).message);
-    } finally {
-      setBusy("");
-    }
-  }
-  async function grant(values: GrantForm) {
-    if (!grantOrganization || busy === `grant-${grantOrganization.id}`) return;
-    const { asset, amount: quantity, reason } = values;
-    const organizationId = grantOrganization.id;
-    setBusy(`grant-${organizationId}`);
-    try {
-      await api(
-        values.operation === "deduct"
-          ? "/api/v1/admin/balance-deductions"
-          : "/api/v1/admin/balance-grants",
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            organizationId,
-            brandId:
-              values.operation === "deduct" && values.account === "brand"
-                ? grantOrganization.answerbitBrandId
-                : undefined,
-            asset,
-            amount:
-              asset === "publication_cny"
-                ? Math.round(quantity * 100)
-                : quantity,
-            reason,
-            idempotencyKey: grantKey.current,
-          }),
-        },
-      );
-      grantForm.resetFields();
-      setGrantOrganization(null);
-      setMessage(
-        values.operation === "deduct"
-          ? "扣减成功，已记录资产流水与审计"
-          : "余额已由平台管理员入账",
-      );
-      await load();
     } catch (error) {
       setMessage((error as Error).message);
     } finally {
@@ -6185,122 +6126,18 @@ export function AdminClient({
         ) : null}
       </Drawer>
 
-      <Modal
-        footer={null}
-        onCancel={() => setGrantOrganization(null)}
-        open={Boolean(grantOrganization)}
-        title={(grantOrganization?.name ?? "") + " · 资产调整"}
-        width={680}
-      >
-        <Alert
-          description="入账进入企业资金池；手动扣减可选择企业资金池或品牌账户，须填写原因并保留流水。"
-          showIcon
-          style={{ marginBottom: 20 }}
-          type="info"
-        />
-        <Form<GrantForm>
-          form={grantForm}
-          initialValues={{
-            asset: "answerbit_points",
-            operation: "grant",
-            account: "enterprise",
-          }}
-          disabled={Boolean(
-            grantOrganization && busy === `grant-${grantOrganization.id}`,
-          )}
-          onValuesChange={() => {
-            grantKey.current = crypto.randomUUID();
-          }}
-          layout="vertical"
-          onFinish={(values) => void grant(values)}
-          size="large"
-        >
-          <Form.Item label="操作" name="operation" rules={[{ required: true }]}>
-            <Radio.Group
-              options={[
-                { label: "入账", value: "grant" },
-                { label: "手动扣减", value: "deduct" },
-              ]}
-            />
-          </Form.Item>
-          <Form.Item
-            noStyle
-            shouldUpdate={(previous, next) =>
-              previous.operation !== next.operation
-            }
-          >
-            {({ getFieldValue }) =>
-              getFieldValue("operation") === "deduct" ? (
-                <Form.Item
-                  label="扣减账户"
-                  name="account"
-                  rules={[{ required: true }]}
-                >
-                  <Radio.Group
-                    options={[
-                      { label: "企业资金池", value: "enterprise" },
-                      {
-                        label: "品牌账户",
-                        value: "brand",
-                        disabled: !grantOrganization?.answerbitBrandId,
-                      },
-                    ]}
-                  />
-                </Form.Item>
-              ) : null
-            }
-          </Form.Item>
-          <Form.Item label="资产" name="asset" rules={[{ required: true }]}>
-            <Select
-              options={[
-                { label: "腾讯能力积分", value: "answerbit_points" },
-                {
-                  label: "发布人民币余额（元）",
-                  value: "publication_cny",
-                },
-              ]}
-            />
-          </Form.Item>
-          <Form.Item
-            label="数量"
-            name="amount"
-            rules={[{ required: true, message: "请输入数量" }]}
-          >
-            <InputNumber min={0.01} style={{ width: "100%" }} />
-          </Form.Item>
-          <Form.Item
-            label="调整原因"
-            name="reason"
-            rules={[
-              { required: true, message: "请输入调整原因" },
-              { min: 4, message: "至少 4 个字符" },
-            ]}
-          >
-            <Input />
-          </Form.Item>
-          <Form.Item
-            noStyle
-            shouldUpdate={(previous, next) =>
-              previous.operation !== next.operation
-            }
-          >
-            {({ getFieldValue }) => (
-              <Button
-                block
-                htmlType="submit"
-                loading={Boolean(
-                  grantOrganization && busy === "grant-" + grantOrganization.id,
-                )}
-                type="primary"
-              >
-                {getFieldValue("operation") === "deduct"
-                  ? "确认手动扣减"
-                  : "确认入账"}
-              </Button>
-            )}
-          </Form.Item>
-        </Form>
-      </Modal>
+      <AdminAssetAdjustment
+        organization={grantOrganization}
+        userId={userId}
+        onRecover={setGrantOrganization}
+        onClose={() => setGrantOrganization(null)}
+        onSaved={async (message) => {
+          await load();
+          setMessage((failure) =>
+            failure ? `${message}；管理数据刷新失败：${failure}` : message,
+          );
+        }}
+      />
 
       <Modal
         cancelText="取消"

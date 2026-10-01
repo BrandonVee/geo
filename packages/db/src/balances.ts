@@ -90,14 +90,22 @@ async function lockIdempotencyKey(
 }
 
 // @project-doc docs/domains/balance_and_publication.md#balance_invariants
-export async function grantBalance(input: {
-  organizationId: string;
-  asset: BalanceAsset;
-  amount: number;
-  reason: string;
-  idempotencyKey: string;
-  actorUserId: string;
-}) {
+export async function grantBalance(
+  input: {
+    organizationId: string;
+    asset: BalanceAsset;
+    amount: number;
+    reason: string;
+    idempotencyKey: string;
+    actorUserId: string;
+  },
+  onCommitted?: (
+    tx: DatabaseTransaction,
+    transaction: typeof balanceTransactions.$inferSelect,
+  ) => Promise<void>,
+) {
+  if (!Number.isSafeInteger(input.amount) || input.amount <= 0)
+    throw new Error("INVALID_GRANT_AMOUNT");
   return db.transaction(async (tx) => {
     await lockIdempotencyKey(tx, input.organizationId, input.idempotencyKey);
     const [replay] = await tx
@@ -110,7 +118,27 @@ export async function grantBalance(input: {
         ),
       )
       .limit(1);
-    if (replay) return { transaction: replay, replayed: true as const };
+    if (replay) {
+      const [account] = await tx
+        .select()
+        .from(balanceAccounts)
+        .where(accountWhere(input.organizationId, input.asset))
+        .limit(1);
+      if (
+        replay.operation !== "grant" ||
+        replay.referenceType !== "manual_grant" ||
+        replay.targetAccountId !== account?.id ||
+        replay.amount !== input.amount ||
+        replay.reason !== input.reason ||
+        replay.actorUserId !== input.actorUserId
+      )
+        return { ok: false as const, code: "IDEMPOTENCY_CONFLICT" as const };
+      return {
+        ok: true as const,
+        transaction: replay,
+        replayed: true as const,
+      };
+    }
     const account = await ensureAccount(tx, input.organizationId, input.asset);
     const [updated] = await tx
       .update(balanceAccounts)
@@ -136,7 +164,12 @@ export async function grantBalance(input: {
         actorUserId: input.actorUserId,
       })
       .returning();
-    return { transaction: transaction!, replayed: false as const };
+    await onCommitted?.(tx, transaction!);
+    return {
+      ok: true as const,
+      transaction: transaction!,
+      replayed: false as const,
+    };
   });
 }
 
@@ -633,15 +666,21 @@ export function listFeaturePointCosts() {
 }
 
 /** Manual debit: immutable adjustment, conditional debit and idempotent replay. */
-export async function deductBalance(input: {
-  organizationId: string;
-  brandId?: string;
-  asset: BalanceAsset;
-  amount: number;
-  reason: string;
-  idempotencyKey: string;
-  actorUserId: string;
-}) {
+export async function deductBalance(
+  input: {
+    organizationId: string;
+    brandId?: string;
+    asset: BalanceAsset;
+    amount: number;
+    reason: string;
+    idempotencyKey: string;
+    actorUserId: string;
+  },
+  onCommitted?: (
+    tx: DatabaseTransaction,
+    transaction: typeof balanceTransactions.$inferSelect,
+  ) => Promise<void>,
+) {
   if (!Number.isSafeInteger(input.amount) || input.amount <= 0)
     throw new Error("INVALID_DEDUCTION_AMOUNT");
   return db.transaction(async (tx) => {
@@ -710,6 +749,11 @@ export async function deductBalance(input: {
         actorUserId: input.actorUserId,
       })
       .returning();
-    return { ok: true as const, transaction, replayed: false as const };
+    await onCommitted?.(tx, transaction!);
+    return {
+      ok: true as const,
+      transaction: transaction!,
+      replayed: false as const,
+    };
   });
 }

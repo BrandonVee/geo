@@ -3659,6 +3659,7 @@ paths:
   /v1/admin/balance-grants:
     post:
       summary: 平台管理员给企业人工入账
+      description: 余额、流水与审计原子提交，同键重放必须保持账户、资产、金额、原因和操作者一致。
       tags:
         - Platform Balances
       security: *id001
@@ -3677,6 +3678,8 @@ paths:
           description: 入账成功
         "200":
           description: 幂等重放
+        "409":
+          description: 幂等键对应的入账参数或操作不一致
         "403":
           $ref: "#/components/responses/Forbidden"
   /v1/admin/balance-deductions:
@@ -4377,6 +4380,63 @@ paths:
       responses:
         "200":
           description: 分页用户积分与余额流水
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /v1/admin/balance-transactions/confirmation:
+    get:
+      summary: 平台管理员按原请求核对资产调整结果
+      description: 要求 platform.balance.manage，等待同企业同幂等键的在途账本事务完成，只读返回原流水或 null，不产生扣款或入账。
+      tags:
+        - Platform Balances
+      security: *id001
+      parameters:
+        - in: query
+          name: organizationId
+          required: true
+          schema: { type: string, format: uuid }
+        - in: query
+          name: idempotencyKey
+          required: true
+          schema:
+            {
+              type: string,
+              minLength: 8,
+              maxLength: 128,
+              pattern: "^[A-Za-z0-9._:-]+$",
+            }
+      responses:
+        "200":
+          description: 原请求对应流水，未查到时 data 为 null
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  requestId: { type: string }
+                  data:
+                    type: object
+                    nullable: true
+                    properties:
+                      id: { type: string, format: uuid }
+                      organizationId: { type: string, format: uuid }
+                      brandId: { type: string, nullable: true }
+                      asset:
+                        {
+                          type: string,
+                          enum: [answerbit_points, publication_cny],
+                        }
+                      operation:
+                        {
+                          type: string,
+                          enum: [grant, allocate, consume, restore, adjust],
+                        }
+                      referenceType: { type: string }
+                      idempotencyKey: { type: string }
+                      actorUserId: { type: string, nullable: true }
+                      amount: { type: integer }
+                      reason: { type: string }
         "400":
           $ref: "#/components/responses/BadRequest"
         "403":

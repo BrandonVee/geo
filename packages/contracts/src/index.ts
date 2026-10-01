@@ -1202,6 +1202,9 @@ export const adminGrantBalanceSchema = z
 export const adminDeductBalanceSchema = adminGrantBalanceSchema.extend({
   brandId: z.string().trim().min(1).max(128).optional(),
 });
+export const adminBalanceConfirmationQuerySchema = adminGrantBalanceSchema.pick(
+  { organizationId: true, idempotencyKey: true },
+);
 export type AdminDeductBalanceInput = z.infer<typeof adminDeductBalanceSchema>;
 export const allocateBrandBalanceSchema = z
   .object({
