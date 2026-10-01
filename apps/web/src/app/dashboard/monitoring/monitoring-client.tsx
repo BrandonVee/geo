@@ -30,6 +30,7 @@ import {
   type TableColumnsType,
 } from "antd";
 import dayjs, { type Dayjs } from "dayjs";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ScopeFields,
@@ -127,6 +128,9 @@ function MonitoringWorkspace({
   userId: string;
 }) {
   const { organizationId, teamBindingId, brandId } = scope;
+  const router = useRouter();
+  const canCreate = scope.can("resource.create", "geo_insights");
+  const canUpdate = scope.can("resource.update", "geo_insights");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [keywordDraft, setKeywordDraft] = useState("");
@@ -326,7 +330,18 @@ function MonitoringWorkspace({
     successMessage: string,
     details?: DirectoryAttempt["details"],
   ) {
-    if (mutationRef.current || mutationDisabled) return false;
+    const permission = key.endsWith("-create")
+      ? "resource.create"
+      : key.startsWith("category-delete-") || key.startsWith("prompt-delete-")
+        ? "resource.delete"
+        : "resource.update";
+    if (
+      !mountedRef.current ||
+      mutationRef.current ||
+      mutationDisabled ||
+      !scope.can(permission, "geo_insights")
+    )
+      return false;
     mutationRef.current = key;
     setActionKey(key);
     setNotice(null);
@@ -399,6 +414,32 @@ function MonitoringWorkspace({
         style={{ marginBottom: 16 }}
       />
     ) : null;
+  const permissionNotice = (allowed: boolean, operation: string) =>
+    allowed ? null : (
+      <Alert
+        showIcon
+        type="warning"
+        message={
+          scope.serviceUnavailable
+            ? `当前企业服务不可用，暂时无法${operation}`
+            : `当前品牌已没有${operation}权限`
+        }
+        description="原输入已保留，您可以复制或关闭窗口；恢复权限或服务后重新检查即可继续。"
+        action={
+          <Button
+            loading={scope.brandsLoading}
+            disabled={Boolean(actionKey)}
+            onClick={() => {
+              router.refresh();
+              if (!scope.serviceUnavailable) scope.reloadBrands();
+            }}
+          >
+            重新检查权限
+          </Button>
+        }
+        style={{ marginBottom: 16 }}
+      />
+    );
   async function createCategory() {
     if (
       !createCategorySchema.safeParse({
@@ -1471,7 +1512,7 @@ function MonitoringWorkspace({
         confirmLoading={actionKey === "category-create"}
         okButtonProps={{
           "aria-label": "创建分类",
-          disabled: !categoryName.trim() || mutationDisabled,
+          disabled: !canCreate || !categoryName.trim() || mutationDisabled,
         }}
         okText="创建分类"
         onCancel={() => setCategoryCreateOpen(false)}
@@ -1480,6 +1521,7 @@ function MonitoringWorkspace({
         title="新增问题分类"
         width={640}
       >
+        {permissionNotice(canCreate, "新增问题分类")}
         {formError}
         {attempt.pending && !actionKey ? (
           <Alert
@@ -1498,6 +1540,7 @@ function MonitoringWorkspace({
             <Input
               autoFocus
               id="monitoring-create-category-name"
+              readOnly={!canCreate}
               onChange={(event) => setCategoryName(event.target.value)}
               placeholder="输入分类名称"
               value={categoryName}
@@ -1509,6 +1552,7 @@ function MonitoringWorkspace({
           >
             <Input.TextArea
               id="monitoring-create-category-description"
+              readOnly={!canCreate}
               onChange={(event) => setCategoryDescription(event.target.value)}
               placeholder="补充分类用途（可选）"
               rows={3}
@@ -1527,7 +1571,8 @@ function MonitoringWorkspace({
         confirmLoading={actionKey.startsWith("category-update-")}
         okButtonProps={{
           "aria-label": "保存分类",
-          disabled: !editingCategoryName.trim() || mutationDisabled,
+          disabled:
+            !canUpdate || !editingCategoryName.trim() || mutationDisabled,
         }}
         okText="保存分类"
         onCancel={() => setEditingCategory(null)}
@@ -1536,6 +1581,7 @@ function MonitoringWorkspace({
         title="编辑问题分类"
         width={640}
       >
+        {permissionNotice(canUpdate, "编辑问题分类")}
         {formError}
         {attempt.pending && !actionKey ? (
           <Alert
@@ -1554,6 +1600,7 @@ function MonitoringWorkspace({
             <Input
               autoFocus
               id="monitoring-edit-category-name"
+              readOnly={!canUpdate}
               onChange={(event) => setEditingCategoryName(event.target.value)}
               value={editingCategoryName}
             />
@@ -1564,6 +1611,7 @@ function MonitoringWorkspace({
           >
             <Input.TextArea
               id="monitoring-edit-category-description"
+              readOnly={!canUpdate}
               onChange={(event) =>
                 setEditingCategoryDescription(event.target.value)
               }
@@ -1584,6 +1632,7 @@ function MonitoringWorkspace({
         okButtonProps={{
           "aria-label": "添加问题",
           disabled:
+            !canCreate ||
             !promptTitleId ||
             !promptText.trim() ||
             mutationDisabled ||
@@ -1598,6 +1647,7 @@ function MonitoringWorkspace({
         title="新增监控问题"
         width={760}
       >
+        {permissionNotice(canCreate, "新增监控问题")}
         {formError}
         {attempt.pending && !actionKey ? (
           <Alert
@@ -1625,6 +1675,7 @@ function MonitoringWorkspace({
           >
             <Select
               id="monitoring-new-prompt-category"
+              disabled={!canCreate || mutationDisabled}
               onChange={setPromptTitleId}
               options={categories.map((item) => ({
                 label: item.title_name,
@@ -1645,6 +1696,7 @@ function MonitoringWorkspace({
             <Input.TextArea
               autoFocus
               id="monitoring-new-prompt-text"
+              readOnly={!canCreate}
               onChange={(event) => setPromptText(event.target.value)}
               placeholder="输入需要监控的问题"
               rows={6}
@@ -1663,7 +1715,7 @@ function MonitoringWorkspace({
         confirmLoading={actionKey.startsWith("prompt-update-")}
         okButtonProps={{
           "aria-label": "保存问题",
-          disabled: !editingPromptText.trim() || mutationDisabled,
+          disabled: !canUpdate || !editingPromptText.trim() || mutationDisabled,
         }}
         okText="保存问题"
         onCancel={() => setEditingPrompt(null)}
@@ -1672,6 +1724,7 @@ function MonitoringWorkspace({
         title="编辑监控问题"
         width={720}
       >
+        {permissionNotice(canUpdate, "编辑监控问题")}
         {formError}
         {attempt.pending && !actionKey ? (
           <Alert
@@ -1690,6 +1743,7 @@ function MonitoringWorkspace({
             <Input.TextArea
               autoFocus
               id="monitoring-edit-prompt-text"
+              readOnly={!canUpdate}
               value={editingPromptText}
               onChange={(event) => setEditingPromptText(event.target.value)}
               autoSize={{ minRows: 4, maxRows: 10 }}

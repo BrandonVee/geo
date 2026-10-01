@@ -154,6 +154,7 @@ export function BillingClient(props: BillingProps) {
     />
   );
 }
+// @project-doc docs/domains/balance_and_publication.md#publication_state_machine
 function BillingWorkspace({
   userId,
   organizations,
@@ -163,6 +164,7 @@ function BillingWorkspace({
   view,
 }: BillingProps & { scope: ReturnType<typeof useAnswerBitScope> }) {
   const router = useRouter();
+  const canPublish = scope.can("publication.create");
   const draftScope = useMemo(
     () => ({
       userId,
@@ -232,6 +234,7 @@ function BillingWorkspace({
   const [publicationForm] = Form.useForm<PublicationForm>();
   const [appealForm] = Form.useForm<AppealForm>();
   const [appealOrderId, setAppealOrderId] = useState<string>();
+  const [appealError, setAppealError] = useState("");
   function saveDraft() {
     if (view !== "new" || !scope.brandId) return;
     draftCleared.current = false;
@@ -473,7 +476,7 @@ function BillingWorkspace({
     [],
   );
   async function createOrder(values: PublicationForm) {
-    if (submitting.current) return;
+    if (submitting.current || !canPublish) return;
     submitting.current = true;
     setBusy("publication");
     const payload = {
@@ -552,6 +555,8 @@ function BillingWorkspace({
     }
   }
   async function cancelOrder(orderId: string) {
+    if (submitting.current || !canPublish) return;
+    submitting.current = true;
     setBusy(`cancel-${orderId}`);
     try {
       await api(`/api/v1/publication-orders/${orderId}/cancel`, {
@@ -568,11 +573,14 @@ function BillingWorkspace({
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "取消发布订单失败");
     } finally {
+      submitting.current = false;
       setBusy("");
     }
   }
   async function appealOrder(values: AppealForm) {
-    if (!appealOrderId) return;
+    if (!appealOrderId || submitting.current || !canPublish) return;
+    submitting.current = true;
+    setAppealError("");
     setBusy(`appeal-${appealOrderId}`);
     try {
       await api(`/api/v1/publication-orders/${appealOrderId}/appeal`, {
@@ -591,11 +599,41 @@ function BillingWorkspace({
       await Promise.all([load(), orderPage.refresh()]);
       setMessage("发布申诉已提交");
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "发布申诉提交失败");
+      const failure =
+        error instanceof Error ? error.message : "发布申诉提交失败";
+      setAppealError(failure);
+      setMessage(failure);
     } finally {
+      submitting.current = false;
       setBusy("");
     }
   }
+  const publicationPermissionNotice = (operation: string) =>
+    canPublish ? null : (
+      <Alert
+        type="warning"
+        showIcon
+        message={
+          scope.serviceUnavailable
+            ? `当前企业服务不可用，暂时无法${operation}`
+            : `当前品牌已没有${operation}权限`
+        }
+        description="原输入已保留，恢复权限或服务后可继续操作。"
+        action={
+          <Button
+            disabled={Boolean(busy)}
+            loading={scope.brandsLoading}
+            onClick={() => {
+              router.refresh();
+              if (!scope.serviceUnavailable) scope.reloadBrands();
+            }}
+          >
+            重新检查权限
+          </Button>
+        }
+        style={{ marginBottom: 16 }}
+      />
+    );
   const brandMoney =
     brandAccounts.find((item) => item.asset === "publication_cny")?.balance ??
     0;
@@ -704,11 +742,13 @@ function BillingWorkspace({
             <Popconfirm
               cancelText="保留订单"
               okText="确认取消"
+              okButtonProps={{ disabled: !canPublish || Boolean(busy) }}
               onConfirm={() => void cancelOrder(item.order.id)}
               title="取消后将向聚合发布上游申请取消，并返还本地发布余额。"
             >
               <Button
                 danger
+                disabled={Boolean(busy)}
                 loading={busy === `cancel-${item.order.id}`}
                 size="small"
               >
@@ -721,7 +761,10 @@ function BillingWorkspace({
           (item.order.status === "processing" ||
             item.order.status === "published") ? (
             <Button
+              disabled={Boolean(busy)}
               onClick={() => {
+                if (submitting.current) return;
+                setAppealError("");
                 appealForm.resetFields();
                 setAppealOrderId(item.order.id);
               }}
@@ -991,6 +1034,7 @@ function BillingWorkspace({
           layout="vertical"
           onFinish={(values) => void createOrder(values)}
         >
+          {publicationPermissionNotice("提交发布")}
           <Form.Item
             hidden
             name="channelId"
@@ -1393,12 +1437,32 @@ function BillingWorkspace({
           appealOrderId && busy === `appeal-${appealOrderId}`,
         )}
         okText="提交申诉"
-        onCancel={() => setAppealOrderId(undefined)}
+        okButtonProps={{
+          disabled: !canPublish || Boolean(busy),
+          "aria-label": "提交申诉",
+        }}
+        cancelButtonProps={{ disabled: Boolean(busy) }}
+        closable={!busy}
+        maskClosable={!busy}
+        keyboard={!busy}
+        onCancel={() => {
+          if (!submitting.current) setAppealOrderId(undefined);
+        }}
         onOk={() => appealForm.submit()}
         open={Boolean(appealOrderId)}
         title="聚合发布订单申诉"
       >
+        {publicationPermissionNotice("提交发布申诉")}
+        {appealError ? (
+          <Alert
+            type="error"
+            showIcon
+            message={appealError}
+            style={{ marginBottom: 16 }}
+          />
+        ) : null}
         <Form<AppealForm>
+          disabled={Boolean(busy)}
           form={appealForm}
           layout="vertical"
           onFinish={(values) => void appealOrder(values)}
@@ -1409,6 +1473,7 @@ function BillingWorkspace({
             rules={[{ required: true, message: "请选择申诉原因" }]}
           >
             <Select
+              disabled={!canPublish || Boolean(busy)}
               options={[
                 { label: "未收录，申请退款（包收录资源）", value: 1 },
                 { label: "发布结果与案例不一致", value: 2 },
@@ -1418,7 +1483,12 @@ function BillingWorkspace({
             />
           </Form.Item>
           <Form.Item label="具体说明" name="detail">
-            <Input.TextArea maxLength={2000} rows={4} showCount />
+            <Input.TextArea
+              readOnly={!canPublish}
+              maxLength={2000}
+              rows={4}
+              showCount
+            />
           </Form.Item>
         </Form>
       </Modal>

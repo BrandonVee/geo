@@ -1133,6 +1133,264 @@ test.describe("真实运营操作闭环", () => {
     expect(account.balance).toBe(9900);
   });
 
+  for (const scenario of ["权限变化", "提交锁"] as const) {
+    test(`发布申诉${scenario}保留说明，禁止重复或无权限提交，恢复后继续`, async ({
+      page,
+    }) => {
+      const order = await seedPublicationOrder(0, "processing");
+      const target = fixture.scopes[0];
+      const writes: Record<string, unknown>[] = [];
+      let fail = scenario === "提交锁",
+        submitted = false,
+        releaseWrite!: () => void;
+      const writeWait = new Promise<void>((resolve) => {
+        releaseWrite = resolve;
+      });
+      await mockBusinessApis(page, async (route) => {
+        if (!new URL(route.request().url()).pathname.endsWith("/appeal"))
+          return route.continue();
+        writes.push(route.request().postDataJSON());
+        submitted = true;
+        if (fail) {
+          await writeWait;
+          await route.fulfill({
+            status: 422,
+            json: { error: { message: "申诉原因需要补充" } },
+          });
+        } else await fulfill(route, {});
+      });
+      await page.route("**/api/v1/publication-orders?**", (route) =>
+        route.fulfill({
+          json: {
+            ...envelope([
+              {
+                order: {
+                  id: order.id,
+                  title: order.title,
+                  status: "processing",
+                  priceAmount: 100,
+                  currency: "CNY",
+                  resultUrl: null,
+                  providerOrderId: "upstream-order",
+                  providerStatus: 3,
+                  providerMessage: null,
+                  createdAt: new Date().toISOString(),
+                },
+                channel,
+              },
+            ]),
+            pagination: { page: 1, pageSize: 20, total: 1, pages: 1 },
+          },
+        }),
+      );
+      let holdBrand = false,
+        brandRequested = false,
+        releaseBrand!: () => void;
+      const brandWait = new Promise<void>((resolve) => {
+        releaseBrand = resolve;
+      });
+      await page.route("**/api/v1/answerbit/brands?**", async (route) => {
+        if (holdBrand) {
+          brandRequested = true;
+          await brandWait;
+        }
+        await route.continue();
+      });
+      const setRole = (role: "brand_admin" | "brand_viewer") =>
+        database.db
+          .update(database.brandAccess)
+          .set({ role })
+          .where(
+            operators.and(
+              operators.eq(database.brandAccess.userId, fixture.userId),
+              operators.eq(
+                database.brandAccess.organizationId,
+                target.organizationId,
+              ),
+            ),
+          );
+      await page.goto(scopedPath("/dashboard/publication/orders"));
+      const open = page.getByRole("button", { name: /申\s*诉/ });
+      await expect(open).toBeEnabled();
+      if (scenario === "权限变化") {
+        await setRole("brand_viewer");
+        holdBrand = true;
+        await page
+          .getByRole("button", { name: "刷新品牌范围", exact: true })
+          .click();
+        await expect.poll(() => brandRequested).toBe(true);
+      }
+      await open.click();
+      const dialog = page.getByRole("dialog", {
+        name: "聚合发布订单申诉",
+        exact: true,
+      });
+      const reason = dialog.getByLabel("申诉原因", { exact: true });
+      await reason.focus();
+      await reason.press("ArrowDown");
+      await page
+        .locator(".ant-select-dropdown")
+        .getByText("其他原因", { exact: true })
+        .click();
+      const detail = dialog.getByLabel("具体说明", { exact: true });
+      await detail.fill("尚未提交的原申诉说明");
+      const submit = dialog.getByRole("button", {
+        name: "提交申诉",
+        exact: true,
+      });
+      if (scenario === "权限变化") {
+        holdBrand = false;
+        releaseBrand();
+        await expect(
+          dialog.getByText("当前品牌已没有提交发布申诉权限", { exact: true }),
+        ).toBeVisible();
+        await expect(submit).toBeDisabled();
+        await expect(detail).toHaveAttribute("readonly", "");
+        await expect(detail).toHaveValue("尚未提交的原申诉说明");
+        const native = await page.request.post(
+          `/api/v1/publication-orders/${order.id}/appeal`,
+          {
+            data: {
+              organizationId: target.organizationId,
+              teamBindingId: target.teamBindingId,
+              brandId: target.brandId,
+              reason: 4,
+              detail: "尚未提交的原申诉说明",
+            },
+          },
+        );
+        expect(native.status()).toBe(403);
+        expect(writes).toHaveLength(0);
+        await setRole("brand_admin");
+        await dialog
+          .getByRole("button", { name: "重新检查权限", exact: true })
+          .click();
+        await expect(submit).toBeEnabled();
+        await expect(detail).toHaveValue("尚未提交的原申诉说明");
+        await submit.click();
+      } else {
+        await submit.click();
+        await expect.poll(() => submitted).toBe(true);
+        await expect(detail).toBeDisabled();
+        await expect(reason).toBeDisabled();
+        await expect(
+          dialog.getByRole("button", { name: /取\s*消/ }),
+        ).toBeDisabled();
+        await expect(dialog.locator(".ant-modal-close")).toHaveCount(0);
+        await expect(
+          page.locator("tbody").getByRole("button", { name: /取\s*消/ }),
+        ).toBeDisabled();
+        await page.keyboard.press("Escape");
+        await expect(dialog).toBeVisible();
+        expect(writes).toHaveLength(1);
+        releaseWrite();
+        await expect(
+          dialog.getByText("申诉原因需要补充", { exact: true }),
+        ).toBeVisible();
+        await expect(detail).toHaveValue("尚未提交的原申诉说明");
+        await expect(submit).toBeEnabled();
+        fail = false;
+        await submit.click();
+      }
+      await expect(dialog).toBeHidden();
+      expect(writes).toHaveLength(scenario === "权限变化" ? 1 : 2);
+      for (const input of writes) {
+        expect(input.reason).toBe(4);
+        expect(input.detail).toBe("尚未提交的原申诉说明");
+        expect(input.organizationId).toBe(target.organizationId);
+        expect(input.brandId).toBe(target.brandId);
+      }
+    });
+  }
+
+  test("提交发布权限变化保留稿件，原页重新检查权限后只提交一次", async ({
+    page,
+  }) => {
+    const target = fixture.scopes[0];
+    const writes: Record<string, unknown>[] = [];
+    await mockBusinessApis(page, async (route) => {
+      if (
+        new URL(route.request().url()).pathname !== "/api/v1/publication-orders"
+      )
+        return route.continue();
+      const input = route.request().postDataJSON();
+      writes.push(input);
+      await fulfill(route, {
+        order: {
+          id: randomUUID(),
+          title: input.title,
+          status: "processing",
+          priceAmount: 100,
+          currency: "CNY",
+          resultUrl: null,
+        },
+        replayed: false,
+      });
+    });
+    await page.goto(
+      `${scopedPath("/dashboard/publication/new")}&channelId=${channel.id}`,
+    );
+    const title = page.getByLabel("内容标题", { exact: true });
+    const body = page.getByPlaceholder("粘贴或输入文章正文，段落将自动排版", {
+      exact: true,
+    });
+    await expect(title).toBeEnabled();
+    await title.fill("权限恢复后提交的稿件");
+    await body.fill("权限变化前尚未提交的正文");
+    await page.getByLabel("发布要求", { exact: true }).fill("保留稿件要求");
+    const setRole = (role: "brand_admin" | "brand_viewer") =>
+      database.db
+        .update(database.brandAccess)
+        .set({ role })
+        .where(
+          operators.and(
+            operators.eq(database.brandAccess.userId, fixture.userId),
+            operators.eq(
+              database.brandAccess.organizationId,
+              target.organizationId,
+            ),
+          ),
+        );
+    await setRole("brand_viewer");
+    await page
+      .getByRole("button", { name: "刷新品牌范围", exact: true })
+      .click();
+    await expect(
+      page.getByText("当前品牌已没有提交发布权限", { exact: true }),
+    ).toBeVisible();
+    const submit = page.getByRole("button", { name: /确认并提交发布/ });
+    await expect(submit).toBeDisabled();
+    await expect(title).toHaveValue("权限恢复后提交的稿件");
+    await expect(body).toHaveValue("权限变化前尚未提交的正文");
+    const native = await page.request.post("/api/v1/publication-orders", {
+      data: {
+        organizationId: target.organizationId,
+        teamBindingId: target.teamBindingId,
+        brandId: target.brandId,
+        channelId: channel.id,
+        title: "权限恢复后提交的稿件",
+        contentHtml: "<p>权限变化前尚未提交的正文</p>",
+        note: "保留稿件要求",
+        idempotencyKey: randomUUID(),
+      },
+    });
+    expect(native.status()).toBe(403);
+    expect(writes).toHaveLength(0);
+    await setRole("brand_admin");
+    await page
+      .getByRole("button", { name: "重新检查权限", exact: true })
+      .click();
+    await expect(submit).toBeEnabled();
+    await expect(title).toHaveValue("权限恢复后提交的稿件");
+    await expect(body).toHaveValue("权限变化前尚未提交的正文");
+    await submit.click();
+    await expect(title).toHaveValue("");
+    expect(writes).toHaveLength(1);
+    expect(writes[0].title).toBe("权限恢复后提交的稿件");
+    expect(writes[0].contentHtml).toBe("<p>权限变化前尚未提交的正文</p>");
+    expect(writes[0].note).toBe("保留稿件要求");
+  });
+
   test("发布订单分页搜索、日期与状态恢复，取消后自动回退末页", async ({
     page,
   }) => {
@@ -7046,6 +7304,272 @@ test.describe("真实运营操作闭环", () => {
       .toBe(createdId);
     expect(createdId).not.toBe(old.id);
   });
+  for (const variant of [
+    {
+      name: "新增分类",
+      modal: "新增问题分类",
+      field: "分类名称",
+      submit: "创建分类",
+      permission: "新增问题分类",
+      resource: "categories",
+      method: "POST",
+    },
+    {
+      name: "编辑分类 产品选择",
+      modal: "编辑问题分类",
+      field: "分类名称",
+      submit: "保存分类",
+      permission: "编辑问题分类",
+      resource: "categories/category-0",
+      method: "PATCH",
+    },
+    {
+      name: "新增问题",
+      modal: "新增监控问题",
+      field: "问题内容",
+      submit: "添加问题",
+      permission: "新增监控问题",
+      resource: "prompts",
+      method: "POST",
+    },
+    {
+      name: "编辑问题",
+      modal: "编辑监控问题",
+      field: "问题内容",
+      submit: "保存问题",
+      permission: "编辑监控问题",
+      resource: "prompts/prompt-0",
+      method: "PATCH",
+    },
+  ]) {
+    test(`监测权限刷新保留${variant.modal}输入，在原窗口恢复权限后继续保存`, async ({
+      page,
+    }) => {
+      let writes = 0,
+        hold = false,
+        requested = false,
+        release!: () => void;
+      const pending = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await mockMonitoringApis(page, async (route) => {
+        if (route.request().method() === "GET") return false;
+        writes++;
+        const input = route.request().postDataJSON();
+        expect(
+          input[variant.field === "分类名称" ? "titleName" : "query"],
+        ).toBe("权限恢复后继续提交的原输入");
+        expect(route.request().method()).toBe(variant.method);
+        await fulfill(route, { id: "restored-resource" });
+        return true;
+      });
+      await page.route("**/api/v1/answerbit/brands?**", async (route) => {
+        if (hold) {
+          requested = true;
+          await pending;
+        }
+        await route.continue();
+      });
+      await page.goto(scopedPath("/dashboard/monitoring"));
+      const triggerName =
+        variant.name === "编辑问题"
+          ? `编辑问题 ${fixture.scopes[0].name} 的监测问题`
+          : variant.name;
+      const trigger = page.getByRole("button", {
+        name: triggerName,
+        exact: true,
+      });
+      await expect(trigger).toBeEnabled();
+      const setRole = (role: "brand_admin" | "brand_viewer") =>
+        database.db
+          .update(database.brandAccess)
+          .set({ role })
+          .where(
+            operators.and(
+              operators.eq(database.brandAccess.userId, fixture.userId),
+              operators.eq(
+                database.brandAccess.organizationId,
+                fixture.scopes[0].organizationId,
+              ),
+            ),
+          );
+      await setRole("brand_viewer");
+      hold = true;
+      await page
+        .getByRole("button", { name: "刷新品牌范围", exact: true })
+        .click();
+      await expect.poll(() => requested).toBe(true);
+      await trigger.click();
+      const dialog = page.getByRole("dialog", {
+        name: variant.modal,
+        exact: true,
+      });
+      const input = dialog.getByLabel(variant.field, { exact: true });
+      await input.fill("权限恢复后继续提交的原输入");
+      if (variant.modal === "新增监控问题") {
+        await dialog.getByLabel("所属分类", { exact: true }).focus();
+        await dialog.getByLabel("所属分类", { exact: true }).press("ArrowDown");
+        await page
+          .locator(".ant-select-dropdown")
+          .getByText("产品选择", { exact: true })
+          .click();
+      }
+      hold = false;
+      release();
+      await expect(
+        dialog.getByText(`当前品牌已没有${variant.permission}权限`, {
+          exact: true,
+        }),
+      ).toBeVisible();
+      const submit = dialog.getByRole("button", {
+        name: variant.submit,
+        exact: true,
+      });
+      await expect(submit).toBeDisabled();
+      await expect(input).toHaveValue("权限恢复后继续提交的原输入");
+      await expect(input).toHaveAttribute("readonly", "");
+      const payload = {
+        organizationId: fixture.scopes[0].organizationId,
+        teamBindingId: fixture.scopes[0].teamBindingId,
+        brandId: fixture.scopes[0].brandId,
+        ...(variant.field === "分类名称"
+          ? { titleName: "权限恢复后继续提交的原输入", titleDescription: "" }
+          : {
+              query: "权限恢复后继续提交的原输入",
+              ...(variant.method === "POST" ? { titleId: "category-0" } : {}),
+            }),
+      };
+      const native =
+        variant.method === "POST"
+          ? await page.request.post(`/api/v1/answerbit/${variant.resource}`, {
+              data: payload,
+            })
+          : await page.request.patch(`/api/v1/answerbit/${variant.resource}`, {
+              data: payload,
+            });
+      expect(native.status()).toBe(403);
+      expect(writes).toBe(0);
+      await setRole("brand_admin");
+      await dialog
+        .getByRole("button", { name: "重新检查权限", exact: true })
+        .click();
+      await expect(submit).toBeEnabled();
+      await expect(input).toHaveValue("权限恢复后继续提交的原输入");
+      await expect(input).not.toHaveAttribute("readonly", "");
+      await submit.click();
+      await expect(dialog).toBeHidden();
+      expect(writes).toBe(1);
+    });
+  }
+
+  test("监测分类编辑遇到服务到期保留输入，续期后在原窗口重新检查并保存", async ({
+    page,
+  }) => {
+    const now = Date.now();
+    await database.db
+      .update(database.organizations)
+      .set({ serviceExpiresAt: new Date(now + 90_000) })
+      .where(
+        operators.eq(
+          database.organizations.id,
+          fixture.scopes[0].organizationId,
+        ),
+      );
+    await page.clock.install({ time: new Date(now) });
+    let writes = 0,
+      brandReads = 0;
+    await mockMonitoringApis(page, async (route) => {
+      if (route.request().method() === "GET") return false;
+      writes++;
+      expect(route.request().postDataJSON().titleName).toBe("到期前编辑的分类");
+      await fulfill(route, {});
+      return true;
+    });
+    await page.route("**/api/v1/answerbit/brands?**", async (route) => {
+      brandReads++;
+      await route.continue();
+    });
+    await page.goto(scopedPath("/dashboard/monitoring"));
+    await page
+      .getByRole("button", { name: "编辑分类 产品选择", exact: true })
+      .click();
+    const dialog = page.getByRole("dialog", {
+      name: "编辑问题分类",
+      exact: true,
+    });
+    const input = dialog.getByLabel("分类名称", { exact: true });
+    await input.fill("到期前编辑的分类");
+    await database.db
+      .update(database.organizations)
+      .set({ serviceExpiresAt: new Date(now - 1000) })
+      .where(
+        operators.eq(
+          database.organizations.id,
+          fixture.scopes[0].organizationId,
+        ),
+      );
+    await page.clock.fastForward(100_000);
+    await expect(
+      dialog.getByText("当前企业服务不可用，暂时无法编辑问题分类", {
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(
+      dialog.getByRole("button", { name: "保存分类", exact: true }),
+    ).toBeDisabled();
+    await expect(input).toHaveValue("到期前编辑的分类");
+    const response = await page.request.patch(
+      "/api/v1/answerbit/categories/category-0",
+      {
+        data: {
+          organizationId: fixture.scopes[0].organizationId,
+          teamBindingId: fixture.scopes[0].teamBindingId,
+          brandId: fixture.scopes[0].brandId,
+          titleName: "到期前编辑的分类",
+          titleDescription: "",
+        },
+      },
+    );
+    expect(response.status()).toBe(403);
+    expect(writes).toBe(0);
+    expect(brandReads).toBeGreaterThan(0);
+    const readsBefore = brandReads;
+    const checked = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === "/dashboard/monitoring" &&
+        response.request().resourceType() === "fetch",
+    );
+    await dialog
+      .getByRole("button", { name: "重新检查权限", exact: true })
+      .click();
+    await checked;
+    await expect(
+      dialog.getByRole("button", { name: "保存分类", exact: true }),
+    ).toBeDisabled();
+    await expect(input).toHaveValue("到期前编辑的分类");
+    expect(brandReads).toBe(readsBefore);
+    expect(writes).toBe(0);
+    await database.db
+      .update(database.organizations)
+      .set({ serviceExpiresAt: new Date(now + 86_400_000) })
+      .where(
+        operators.eq(
+          database.organizations.id,
+          fixture.scopes[0].organizationId,
+        ),
+      );
+    await dialog
+      .getByRole("button", { name: "重新检查权限", exact: true })
+      .click();
+    await expect(
+      dialog.getByRole("button", { name: "保存分类", exact: true }),
+    ).toBeEnabled();
+    await expect(input).toHaveValue("到期前编辑的分类");
+    await dialog.getByRole("button", { name: "保存分类", exact: true }).click();
+    await expect(dialog).toBeHidden();
+    expect(writes).toBe(1);
+  });
+
   test("监测批量去重和限制提前校验，明确失败保留弹窗，提交时锁定输入和关闭", async ({
     page,
   }) => {
