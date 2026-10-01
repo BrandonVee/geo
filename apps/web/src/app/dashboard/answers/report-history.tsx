@@ -204,11 +204,13 @@ export function ReportHistory({
   busy,
   onDownload,
   onExport,
+  canExportJob,
 }: {
   history: ReturnType<typeof useReportHistory>;
   busy: string;
   onDownload: (job: ExportJob) => void;
   onExport: (job: ExportJob) => void;
+  canExportJob?: (job: ExportJob) => boolean;
 }) {
   const { query, data, loading, navigating, error, invalid, refresh, change } =
     history;
@@ -370,7 +372,10 @@ export function ReportHistory({
                     <Button
                       key="retry"
                       size="small"
-                      disabled={Boolean(busy)}
+                      disabled={
+                        Boolean(busy) ||
+                        (canExportJob ? !canExportJob(job) : false)
+                      }
                       onClick={() => onExport(job)}
                     >
                       重新导出

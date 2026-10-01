@@ -6567,6 +6567,349 @@ test.describe("真实运营操作闭环", () => {
     expect((await views.json()).data).toEqual([]);
   });
 
+  for (const mode of ["响应丢失", "执行中切换"] as const) {
+    test(`报告原请求${mode}后保留原条件与键，真实队列和额度只创建一次`, async ({
+      page,
+    }) => {
+      const target = fixture.scopes[0];
+      const [version] = await database.db
+        .select()
+        .from(database.billingPlanVersions)
+        .limit(1);
+      const periodStart = new Date(Date.now() - 86_400_000),
+        periodEnd = new Date(Date.now() + 86_400_000);
+      const [subscription] = await database.db
+        .insert(database.platformSubscriptions)
+        .values({
+          organizationId: target.organizationId,
+          planVersionId: version.id,
+          currentPeriodStart: periodStart,
+          currentPeriodEnd: periodEnd,
+        })
+        .returning();
+      const [entitlement] = await database.db
+        .insert(database.subscriptionEntitlements)
+        .values({
+          organizationId: target.organizationId,
+          subscriptionId: subscription.id,
+          entitlementKey: "report_exports",
+          limitAmount: 3,
+          unit: "次",
+          periodStart,
+          periodEnd,
+        })
+        .returning();
+      await mockBusinessApis(page, (route) => route.continue());
+      await mockAnswerReads(page);
+      await page.route("**/api/v1/report-exports?**", (route) =>
+        route.continue(),
+      );
+      const keys: string[] = [],
+        payloads: Record<string, unknown>[] = [];
+      let jobId = "",
+        committed = false;
+      let release: () => void = () => {};
+      const waiting = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await page.route("**/api/v1/report-exports", async (route) => {
+        keys.push(route.request().headers()["idempotency-key"]);
+        payloads.push(route.request().postDataJSON());
+        const response = await route.fetch();
+        expect(response.ok()).toBe(true);
+        const job = (await response.json()).data;
+        if (!jobId) jobId = job.id;
+        if (keys.length === 1) {
+          committed = true;
+          if (mode === "响应丢失") return route.abort("failed");
+          await waiting;
+        }
+        return route.fulfill({ response }).catch(() => {});
+      });
+      await page.goto(scopedPath("/dashboard/answers"));
+      const fresh = page.getByRole("button", { name: /^回答\s*CSV$/ });
+      await expect(fresh).toBeEnabled();
+      await page.getByPlaceholder("问题、文章或域名").fill("原报告完整条件");
+      await fresh.click();
+      await expect.poll(() => committed).toBe(true);
+      const confirm = page.getByRole("button", {
+        name: "确认原导出 · 回答 CSV",
+        exact: true,
+      });
+      if (mode === "响应丢失") await expect(confirm).toBeEnabled();
+      else await expect(confirm).toBeDisabled();
+      await expect(fresh).toBeDisabled();
+      // Switch away and return without replacing or repeating the original request.
+      for (const letter of ["B", "A"]) {
+        await page.locator("#answerbit-scope-organization").focus();
+        await page.locator("#answerbit-scope-organization").press("ArrowDown");
+        await page
+          .getByTitle(`流程测试企业 ${letter}`, { exact: true })
+          .click();
+        await expect(
+          page.getByText(`流程测试企业 ${letter} 的回答`, { exact: true }),
+        ).toBeVisible();
+        await expect(
+          page.getByText("原关键词：原报告完整条件", { exact: true }),
+        )[letter === "A" ? "toBeVisible" : "toBeHidden"]();
+      }
+      expect(keys).toHaveLength(1);
+      if (mode === "执行中切换") {
+        await expect(confirm).toBeDisabled();
+        release();
+        await expect(
+          page.getByText("回答 CSV原导出仍在提交", { exact: true }),
+        ).toBeHidden();
+        await expect(
+          page.getByRole("button", { name: "查看本次报告", exact: true }),
+        ).toBeVisible();
+      } else {
+        await page.reload();
+        await expect(
+          page.getByText("原关键词：原报告完整条件", { exact: true }),
+        ).toBeVisible();
+        await page
+          .getByPlaceholder("问题、文章或域名")
+          .fill("继续分析的新筛选");
+        for (const theme of ["light", "dark"] as const) {
+          if (theme === "dark")
+            await page.getByRole("button", { name: "切换亮暗色模式" }).click();
+          await expect
+            .poll(() => page.locator("html").getAttribute("data-theme"))
+            .toBe(theme);
+          for (const width of [390, 768, 1440]) {
+            await page.setViewportSize({ width, height: 1000 });
+            await page.evaluate(async () => {
+              await Promise.all(
+                document
+                  .getAnimations()
+                  .filter(
+                    (a) =>
+                      a.effect?.getComputedTiming().iterations !== Infinity,
+                  )
+                  .map((a) => a.finished.catch(() => {})),
+              );
+            });
+            await expect
+              .poll(() =>
+                page.evaluate(() => document.documentElement.scrollWidth),
+              )
+              .toBeLessThanOrEqual(width);
+            await page.evaluate(axe.source);
+            const result = await page.evaluate(async () =>
+              (window as unknown as { axe: typeof axe }).axe.run(document, {
+                runOnly: {
+                  type: "tag",
+                  values: ["wcag2a", "wcag2aa", "wcag21aa"],
+                },
+              }),
+            );
+            expect(result.violations).toEqual([]);
+          }
+        }
+        await database.db
+          .update(database.brandAccess)
+          .set({ role: "brand_viewer" })
+          .where(
+            operators.and(
+              operators.eq(
+                database.brandAccess.organizationId,
+                target.organizationId,
+              ),
+              operators.eq(database.brandAccess.userId, fixture.userId),
+            ),
+          );
+        await page
+          .getByRole("button", { name: "刷新品牌范围", exact: true })
+          .click();
+        await expect(confirm).toBeDisabled();
+        await expect(
+          page.getByText(
+            "当前没有报告导出权限，原记录已保留；恢复权限后可继续确认。",
+            { exact: true },
+          ),
+        ).toBeVisible();
+        const denied = await page.request.post("/api/v1/report-exports", {
+          headers: { "Idempotency-Key": keys[0] },
+          data: payloads[0],
+        });
+        expect(denied.status()).toBe(403);
+        await database.db
+          .update(database.brandAccess)
+          .set({ role: "brand_admin" })
+          .where(
+            operators.and(
+              operators.eq(
+                database.brandAccess.organizationId,
+                target.organizationId,
+              ),
+              operators.eq(database.brandAccess.userId, fixture.userId),
+            ),
+          );
+        await page
+          .getByRole("button", { name: "重新检查权限", exact: true })
+          .click();
+        await expect(confirm).toBeEnabled();
+        await confirm.click();
+        await expect(confirm).toBeHidden();
+        expect(keys).toHaveLength(2);
+        expect(keys[1]).toBe(keys[0]);
+        expect(payloads[1]).toEqual(payloads[0]);
+        await expect(page.getByPlaceholder("问题、文章或域名")).toHaveValue(
+          "继续分析的新筛选",
+        );
+      }
+      const jobs = await database.db
+        .select()
+        .from(database.reportExports)
+        .where(
+          operators.eq(
+            database.reportExports.organizationId,
+            target.organizationId,
+          ),
+        );
+      expect(jobs).toHaveLength(1);
+      expect(jobs[0]).toMatchObject({
+        id: jobId,
+        idempotencyKey: keys[0],
+        status: "queued",
+        filters: { keyword: "原报告完整条件" },
+      });
+      const [saved] = await database.db
+        .select()
+        .from(database.subscriptionEntitlements)
+        .where(
+          operators.eq(database.subscriptionEntitlements.id, entitlement.id),
+        );
+      expect(saved.reservedAmount).toBe(1);
+      const audits = await database.db
+        .select()
+        .from(database.operationLogs)
+        .where(
+          operators.and(
+            operators.eq(
+              database.operationLogs.organizationId,
+              target.organizationId,
+            ),
+            operators.eq(
+              database.operationLogs.operation,
+              "report-export.create",
+            ),
+          ),
+        );
+      expect(audits).toHaveLength(1);
+      const queued = await database.pool.query<{ count: number }>(
+        "select count(*)::int as count from pgboss.job where name = 'report-export' and data->>'exportId' = $1",
+        [jobId],
+      );
+      expect(queued.rows[0].count).toBe(1);
+      await page
+        .getByRole("button", { name: "查看本次报告", exact: true })
+        .click();
+      await expect(
+        page
+          .getByRole("region", { name: "报告记录", exact: true })
+          .getByText("等待生成", { exact: true }),
+      ).toBeVisible();
+    });
+  }
+
+  test("报告暂存失败不写入，明确拒绝可修正，未知响应和后续拒绝保留原请求", async ({
+    page,
+  }) => {
+    const keys: string[] = [],
+      payloads: Record<string, unknown>[] = [];
+    await mockBusinessApis(page, async (route) => {
+      keys.push(route.request().headers()["idempotency-key"]);
+      payloads.push(route.request().postDataJSON());
+      if (keys.length === 1)
+        return route.fulfill({
+          status: 422,
+          json: { error: { message: "测试输入被拒绝" } },
+        });
+      if (keys.length === 2) return fulfill(route, { status: "queued" });
+      if (keys.length === 3)
+        return route.fulfill({
+          status: 403,
+          json: { error: { message: "测试权限已变更" } },
+        });
+      const payload = payloads.at(-1)!;
+      return fulfill(route, {
+        id: randomUUID(),
+        reportType: payload.reportType,
+        status: "queued",
+        filters: payload,
+        downloadUrl: null,
+      });
+    });
+    await mockAnswerReads(page);
+    await page.goto(scopedPath("/dashboard/answers"));
+    const fresh = page.getByRole("button", { name: /^回答\s*CSV$/ });
+    await expect(fresh).toBeEnabled();
+    await page.getByPlaceholder("问题、文章或域名").fill("第一次输入");
+    await page.evaluate(() => {
+      const original = Storage.prototype.setItem;
+      (
+        window as unknown as { restoreReportStorage: () => void }
+      ).restoreReportStorage = () => {
+        Storage.prototype.setItem = original;
+      };
+      Storage.prototype.setItem = function (key, value) {
+        if (key.startsWith("geo.report.")) throw new Error("QA storage denied");
+        return original.call(this, key, value);
+      };
+    });
+    await fresh.click();
+    await expect(
+      page.getByText(
+        "无法暂存本次导出，尚未发送请求；请恢复浏览器存储后再试。",
+        { exact: true },
+      ),
+    ).toBeVisible();
+    expect(keys).toHaveLength(0);
+    await page.evaluate(() =>
+      (
+        window as unknown as { restoreReportStorage: () => void }
+      ).restoreReportStorage(),
+    );
+    await fresh.click();
+    await expect(
+      page.getByText("测试输入被拒绝", { exact: true }),
+    ).toBeVisible();
+    await expect(fresh).toBeEnabled();
+    await page.getByPlaceholder("问题、文章或域名").fill("修正后的原条件");
+    await fresh.click();
+    const confirm = page.getByRole("button", {
+      name: "确认原导出 · 回答 CSV",
+      exact: true,
+    });
+    await expect(confirm).toBeEnabled();
+    expect(keys[1]).not.toBe(keys[0]);
+    await page
+      .getByPlaceholder("问题、文章或域名")
+      .fill("不能替换的后续分析条件");
+    await confirm.click();
+    await expect(
+      page.getByText("测试权限已变更", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("原关键词：修正后的原条件", { exact: true }),
+    ).toBeVisible();
+    expect(keys[2]).toBe(keys[1]);
+    expect(payloads[2]).toEqual(payloads[1]);
+    await page.reload();
+    await expect(
+      page.getByText("原关键词：修正后的原条件", { exact: true }),
+    ).toBeVisible();
+    await confirm.click();
+    await expect(confirm).toBeHidden();
+    expect(keys[3]).toBe(keys[1]);
+    expect(payloads[3]).toEqual(payloads[1]);
+    await fresh.click();
+    await expect.poll(() => keys.length).toBe(5);
+    expect(keys[4]).not.toBe(keys[1]);
+  });
+
   test("报告网络失败后刷新重试保留同一键，过期报告按原筛选重新导出", async ({
     page,
   }) => {
@@ -6613,13 +6956,23 @@ test.describe("真实运营操作闭环", () => {
     await page.getByRole("button", { name: /回答\s*CSV/ }).click();
     await expect.poll(() => keys.length).toBe(1);
     await expect(
-      page.getByRole("button", { name: /回答\s*CSV/ }),
-    ).toBeEnabled();
+      page.getByRole("button", { name: /^回答\s*CSV$/ }),
+    ).toBeDisabled();
+    await page.getByPlaceholder("问题、文章或域名").fill("响应丢失后的新筛选");
     await page.reload();
-    await page.getByPlaceholder("问题、文章或域名").fill("选购问题");
-    await page.getByRole("button", { name: /回答\s*CSV/ }).click();
+    await expect(
+      page.getByText("原关键词：选购问题", { exact: true }),
+    ).toBeVisible();
+    await page.getByPlaceholder("问题、文章或域名").fill("当前继续分析的条件");
+    await page
+      .getByRole("button", { name: "确认原导出 · 回答 CSV", exact: true })
+      .click();
     await expect(page.getByText("等待生成", { exact: true })).toBeVisible();
     expect(keys[1]).toBe(keys[0]);
+    expect(payloads[1]).toEqual(payloads[0]);
+    await expect(page.getByPlaceholder("问题、文章或域名")).toHaveValue(
+      "当前继续分析的条件",
+    );
     expect(payloads[1]).toMatchObject({
       keyword: "选购问题",
       mentionBrand: -1,

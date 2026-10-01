@@ -34,7 +34,11 @@ import {
 import dayjs from "dayjs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { answersSavedViewFiltersSchema } from "@geo/contracts";
-import { ReportAttempt } from "./report-attempt";
+import {
+  reportTypes,
+  useReportAttempts,
+  type ReportType,
+} from "./report-attempt";
 import { useDirectoryRead } from "../directory-read";
 import {
   ReportHistory,
@@ -52,6 +56,11 @@ import {
   ModelLabel,
   modelSelectOptions,
 } from "../model-display";
+const reportLabels = {
+  answers: "回答 CSV",
+  domain_rank: "域名 CSV",
+  article_rank: "文章 CSV",
+};
 type Task = {
   task_id: string;
   query_id: string;
@@ -173,7 +182,11 @@ function AnswersWorkspace({
   }>({});
   const mounted = useRef(true);
   const toolSubmitting = useRef(false);
-  const attempts = useRef(new Map<string, ReportAttempt>());
+  const reportAttempts = useReportAttempts(userId, {
+    organizationId: scope.organizationId,
+    teamBindingId: scope.teamBindingId,
+    brandId: scope.brandId,
+  });
   const canRead = scope.can("answerbit.resource.read");
   const canExport = scope.can("report.export");
   const reportHistory = useReportHistory(
@@ -184,6 +197,23 @@ function AnswersWorkspace({
     },
     canExport && Boolean(scope.brandId),
   );
+  const refreshReports = reportHistory.refresh;
+  useEffect(() => {
+    const job = reportAttempts.completedReport;
+    if (!job || !canExport) return;
+    setSubmittedReport(job);
+    setMessageType(
+      ["failed", "expired"].includes(job.status) ? "error" : "success",
+    );
+    setMessage(
+      job.status === "failed"
+        ? "上次导出生成失败，可以重新导出。"
+        : job.status === "expired"
+          ? "上次导出文件已过期，可以重新导出。"
+          : "导出任务已提交，可离开页面等待；文件生成后会显示下载入口。",
+    );
+    void refreshReports();
+  }, [reportAttempts.completedReport, canExport, refreshReports]);
   useEffect(() => {
     mounted.current = true;
     const currentReads = reads.current;
@@ -449,14 +479,25 @@ function AnswersWorkspace({
       if (mounted.current) setToolBusy("");
     }
   }
-  async function createExport(
-    reportType: "answers" | "domain_rank" | "article_rank",
-    previous?: ExportJob,
-  ) {
-    if (!canExport || !scope.brandId || toolSubmitting.current) return;
+  async function createExport(reportType: ReportType, previous?: ExportJob) {
+    const attempt = reportAttempts.get(reportType);
+    if (
+      !canExport ||
+      !scope.brandId ||
+      toolSubmitting.current ||
+      !attempt?.ready ||
+      attempt.inFlight
+    )
+      return;
+    if (previous && attempt.pending) {
+      setMessageType("info");
+      setMessage("请先确认原导出，再按这份报告重新导出。");
+      return;
+    }
     toolSubmitting.current = true;
     setToolBusy(reportType);
-    const payload = {
+    const wasPending = Boolean(attempt.pending);
+    const payload = attempt.pending?.payload ?? {
       organizationId: scope.organizationId,
       teamBindingId: scope.teamBindingId,
       brandId: scope.brandId,
@@ -468,55 +509,60 @@ function AnswersWorkspace({
         promptIds: [],
         platforms: selectedPlatforms,
         tagIds: [],
-        mentionBrand: Number(mentionBrand),
+        mentionBrand: Number(mentionBrand) as -1 | 0 | 1,
         ...(keyword.trim() ? { keyword: keyword.trim() } : {}),
       }),
     };
-    let attempt = attempts.current.get(reportType);
-    if (!attempt) {
-      attempt = new ReportAttempt(
-        `geo.report.${userId}.${scope.organizationId}.${scope.brandId}.${reportType}`,
-      );
-      attempts.current.set(reportType, attempt);
-    }
+    let submittedKey: string | undefined;
     try {
+      const pending = attempt.begin(payload);
+      submittedKey = pending.key;
       const response = await fetch("/api/v1/report-exports", {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "Idempotency-Key": attempt.key(payload),
+          "Idempotency-Key": pending.key,
         },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(pending.payload),
       });
       const body = await response.json();
-      if (!response.ok) throw new Error(body.error?.message);
-      attempt.complete();
-      if (!mounted.current) return;
+      if (!response.ok) {
+        // A refusal of a new request is definite. A later permission or quota
+        // refusal cannot erase an earlier submission with an unknown outcome.
+        if (
+          !wasPending &&
+          response.status >= 400 &&
+          response.status < 500 &&
+          body.error?.code !== "REPORT_EXPORT_IDEMPOTENCY_CONFLICT"
+        )
+          attempt.complete(pending.key);
+        throw new Error(
+          body.error?.message ?? "导出请求未确认，请确认原导出。",
+        );
+      }
       const job = body.data as ExportJob;
-      setSubmittedReport(job);
-      setMessageType(
-        ["failed", "expired"].includes(job.status) ? "error" : "success",
-      );
-      setMessage(
-        job.status === "failed"
-          ? "上次导出生成失败，可以重新导出。"
-          : job.status === "expired"
-            ? "上次导出文件已过期，可以重新导出。"
-            : "导出任务已提交，可离开页面等待；文件生成后会显示下载入口。",
-      );
-      await reportHistory.refresh();
+      if (
+        !job?.id ||
+        job.reportType !== pending.payload.reportType ||
+        !["queued", "running", "succeeded", "failed", "expired"].includes(
+          job.status,
+        )
+      )
+        throw new Error("导出响应未能确认，请继续确认原导出。");
+      attempt.complete(pending.key, job);
     } catch (error) {
       if (mounted.current) {
         setMessageType("error");
         setMessage(
           error instanceof TypeError
-            ? "导出请求未确认，请重试；重复点击不会创建重复任务。"
+            ? "导出结果暂未确认，请确认原导出；将沿用原条件与提交键。"
             : error instanceof Error
               ? error.message
-              : "导出请求未确认，请重试；重复点击不会创建重复任务。",
+              : "导出结果暂未确认，请确认原导出。",
         );
       }
     } finally {
+      if (submittedKey) attempt.settle(submittedKey);
       toolSubmitting.current = false;
       if (mounted.current) setToolBusy("");
     }
@@ -945,30 +991,104 @@ function AnswersWorkspace({
           </Space>
           {canExport ? (
             <Space size={[8, 8]} wrap>
-              <Button
-                loading={toolBusy === "answers"}
-                disabled={Boolean(toolBusy)}
-                onClick={() => void createExport("answers")}
-              >
-                回答 CSV
-              </Button>
-              <Button
-                loading={toolBusy === "domain_rank"}
-                disabled={Boolean(toolBusy)}
-                onClick={() => void createExport("domain_rank")}
-              >
-                域名 CSV
-              </Button>
-              <Button
-                loading={toolBusy === "article_rank"}
-                disabled={Boolean(toolBusy)}
-                onClick={() => void createExport("article_rank")}
-              >
-                文章 CSV
-              </Button>
+              {reportTypes.map((type) => {
+                const attempt = reportAttempts.get(type);
+                return (
+                  <Button
+                    key={type}
+                    aria-label={reportLabels[type]}
+                    loading={toolBusy === type || attempt?.inFlight}
+                    disabled={
+                      Boolean(toolBusy) ||
+                      !reportAttempts.ready ||
+                      !attempt?.ready ||
+                      Boolean(attempt.pending)
+                    }
+                    onClick={() => void createExport(type)}
+                  >
+                    {reportLabels[type]}
+                  </Button>
+                );
+              })}
             </Space>
           ) : null}
         </Flex>
+        {reportAttempts.errors.map(({ type, attempt, message }) => (
+          <Alert
+            key={type}
+            type="warning"
+            showIcon
+            message={`${reportLabels[type]}：${message}`}
+            style={{ marginTop: 16 }}
+            action={
+              <Button onClick={() => attempt.reload()}>重新读取暂存</Button>
+            }
+          />
+        ))}
+        {reportAttempts.pending.map(({ type, attempt, record }) => (
+          <Alert
+            key={type}
+            type="warning"
+            showIcon
+            message={`${reportLabels[type]}${attempt.inFlight ? "原导出仍在提交" : "导出结果待确认"}`}
+            style={{ marginTop: 16 }}
+            description={
+              <Space direction="vertical" style={{ width: "100%" }}>
+                <Typography.Text>
+                  原数据日期：{record.payload.beginDate} 至{" "}
+                  {record.payload.endDate}
+                </Typography.Text>
+                {record.payload.keyword ? (
+                  <Typography.Text>
+                    原关键词：{record.payload.keyword}
+                  </Typography.Text>
+                ) : null}
+                {record.payload.platforms.length ? (
+                  <Space wrap>
+                    <Typography.Text>原模型：</Typography.Text>
+                    {record.payload.platforms.map((model) => (
+                      <ModelLabel key={model} modelId={model} />
+                    ))}
+                  </Space>
+                ) : null}
+                {type === "answers" ? (
+                  <Typography.Text>
+                    原品牌提及：
+                    {record.payload.mentionBrand === 1
+                      ? "已提及"
+                      : record.payload.mentionBrand === 0
+                        ? "未提及"
+                        : "全部"}
+                  </Typography.Text>
+                ) : null}
+                <Typography.Text type="secondary">
+                  确认将沿用原条件与提交键，当前分析筛选保持不变。
+                </Typography.Text>
+                {!canExport ? (
+                  <Space wrap>
+                    <Typography.Text type="secondary">
+                      当前没有报告导出权限，原记录已保留；恢复权限后可继续确认。
+                    </Typography.Text>
+                    <Button
+                      loading={scope.brandsLoading}
+                      onClick={() => scope.reloadBrands()}
+                    >
+                      重新检查权限
+                    </Button>
+                  </Space>
+                ) : null}
+                <Button
+                  aria-label={`确认原导出 · ${reportLabels[type]}`}
+                  loading={toolBusy === type || attempt.inFlight}
+                  disabled={!canExport || Boolean(toolBusy) || attempt.inFlight}
+                  onClick={() => void createExport(type)}
+                >
+                  确认原导出 · {reportLabels[type]}
+                </Button>
+              </Space>
+            }
+          />
+        ))}
         {canExport && scope.brandId ? (
           <>
             {submittedReport ? (
@@ -992,6 +1112,15 @@ function AnswersWorkspace({
               busy={toolBusy}
               onDownload={(job) => void downloadReport(job)}
               onExport={(job) => void createExport(job.reportType, job)}
+              canExportJob={(job) => {
+                const attempt = reportAttempts.get(job.reportType);
+                return Boolean(
+                  reportAttempts.ready &&
+                    attempt?.ready &&
+                    !attempt.pending &&
+                    !attempt.inFlight,
+                );
+              }}
             />
           </>
         ) : null}
