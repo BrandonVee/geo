@@ -30,7 +30,6 @@ import {
   Typography,
 } from "antd";
 import dayjs, { type Dayjs } from "dayjs";
-import { useSearchParams } from "next/navigation";
 import {
   useCallback,
   useEffect,
@@ -53,28 +52,17 @@ import {
   buildTaskCountTrendData,
   type OverviewTrendPoint,
 } from "./overview-trend";
-import {
-  selectScopeId,
-  readStoredBrandId,
-  readStoredOrganizationId,
-  storeBrandId,
-  storeOrganizationId,
-} from "./scope-storage";
+import { useAnswerBitScope } from "./use-answerbit-scope";
 
 import { CompetitorDirectory, type Competitor } from "./competitor-directory";
 import { useDirectoryRead } from "./directory-read";
-import { useWorkspaceAccess, workspacePermission } from "./workspace-access";
+import { workspacePermission } from "./workspace-access";
 
 type Organization = {
   id: string;
   name: string;
   role: string | null;
   teamBindingId: string;
-};
-type Brand = {
-  id: string;
-  name: string;
-  accessRole: "tenant_admin" | "brand_admin" | "brand_editor" | "brand_viewer";
 };
 
 type Metric = { value: number; fluctuation: number };
@@ -266,6 +254,8 @@ function MetricBlock({
   );
 }
 
+// @project-doc docs/domains/geo_operations.md#competitor_workflow
+// @project-doc docs/domains/geo_operations.md#workspace_scope
 export function OverviewClient({
   organizations,
   userId,
@@ -274,21 +264,18 @@ export function OverviewClient({
   userId: string;
 }) {
   const { token } = theme.useToken();
-  const searchParams = useSearchParams();
-  const requestedOrganizationId = searchParams.get("organizationId");
-  const requestedBrandId = searchParams.get("brandId");
+  const scope = useAnswerBitScope(organizations);
+  const {
+    organizationId,
+    teamBindingId: teamId,
+    brandId,
+    brands,
+    scopeRestored,
+  } = scope;
   const screens = Grid.useBreakpoint();
   const compact = !screens.md;
   const [range, setRange] = useState<[Dayjs, Dayjs]>(initialRange);
-  const [organizationId, setOrganizationIdState] = useState(
-    organizations[0]?.id ?? "",
-  );
-  const organizationIdRef = useRef(organizations[0]?.id ?? "");
-  const [brandId, setBrandId] = useState("");
-  const [brandScopeKey, setBrandScopeKey] = useState("");
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>([]);
-  const [brands, setBrands] = useState<Brand[]>([]);
-  const [platforms, setPlatforms] = useState<Record<string, string>>({});
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [trends, setTrends] = useState<ExposureTrends | null>(null);
   const [scoreTrends, setScoreTrends] = useState<ScoreTrends | null>(null);
@@ -298,7 +285,6 @@ export function OverviewClient({
   const [analyticsError, setAnalyticsError] = useState("");
   const [activeTab, setActiveTab] = useState<OverviewTab>("trend");
   const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
-  const [scopeRestored, setScopeRestored] = useState(false);
   const analyticsRequestIdRef = useRef(0);
   const analyticsSnapshotRef = useRef("");
 
@@ -314,50 +300,16 @@ export function OverviewClient({
     analyticsSnapshotRef.current = "";
   }, []);
 
-  const selectOrganization = useCallback(
-    (nextOrganizationId: string) => {
-      if (organizationIdRef.current === nextOrganizationId) return;
-      organizationIdRef.current = nextOrganizationId;
-      const url = new URL(window.location.href);
-      if (url.searchParams.get("organizationId") !== nextOrganizationId)
-        url.searchParams.delete("brandId");
-      url.searchParams.set("organizationId", nextOrganizationId);
-      window.history.replaceState(null, "", url);
-      analyticsRequestIdRef.current += 1;
-      setOrganizationIdState(nextOrganizationId);
-      setBrandId("");
-      setBrandScopeKey("");
-      setBrands([]);
-      setSelectedPlatforms([]);
-      setPlatforms({});
-      clearAnalytics();
-    },
-    [clearAnalytics],
-  );
-
-  const selectBrand = useCallback(
-    (nextBrandId: string) => {
-      analyticsRequestIdRef.current += 1;
-      setBrandId(nextBrandId);
-      clearAnalytics();
-    },
-    [clearAnalytics],
-  );
-
-  const selectedOrganization = organizations.find(
-    (item) => item.id === organizationId,
-  );
-  const teamId = selectedOrganization?.teamBindingId ?? "";
-  const currentScopeKey =
-    organizationId && teamId ? `${organizationId}:${teamId}` : "";
-  const selectedBrand = brands.find((item) => item.id === brandId);
-  const scopeReady = Boolean(
-    selectedBrand && brandScopeKey === currentScopeKey,
-  );
-  const access = useWorkspaceAccess();
-  const workspace = access.organizations.find(
-    (item) => item.id === organizationId,
-  );
+  useEffect(() => {
+    analyticsRequestIdRef.current += 1;
+    clearAnalytics();
+  }, [organizationId, teamId, brandId, clearAnalytics]);
+  useEffect(() => {
+    setSelectedPlatforms([]);
+  }, [organizationId, teamId]);
+  const selectedBrand = scope.brand;
+  const scopeReady = Boolean(organizationId && teamId && brandId);
+  const workspace = scope.organization;
   const competitorRead = useDirectoryRead<Competitor[]>(
     scopeReady
       ? `/api/v1/answerbit/competitors?${qs({ organizationId, teamBindingId: teamId, brandId })}`
@@ -370,85 +322,12 @@ export function OverviewClient({
   const endDate = range[1].format("YYYY-MM-DD");
   const rangeDays = range[1].diff(range[0], "day") + 1;
 
-  useEffect(() => {
-    const availableIds = organizations.map((item) => item.id);
-    selectOrganization(
-      selectScopeId(
-        requestedOrganizationId,
-        readStoredOrganizationId(availableIds),
-        availableIds,
-      ),
-    );
-    setScopeRestored(true);
-  }, [organizations, requestedOrganizationId, selectOrganization]);
-
-  useEffect(() => {
-    if (!scopeRestored || !organizationId) return;
-    storeOrganizationId(organizationId);
-  }, [organizationId, scopeRestored]);
-
-  const brandRead = useDirectoryRead<Brand[]>(
-    scopeRestored && teamId
-      ? `/api/v1/answerbit/brands?${qs({ organizationId, teamBindingId: teamId })}`
-      : null,
-  );
   const platformRead = useDirectoryRead<Record<string, string>>(
     scopeRestored && teamId
       ? `/api/v1/answerbit/dashboard/platforms?${qs({ organizationId, teamBindingId: teamId })}`
       : null,
   );
-  useEffect(() => {
-    if (!brandRead.data) {
-      if (brandRead.error) {
-        analyticsRequestIdRef.current += 1;
-        setBrands([]);
-        setBrandId("");
-        setBrandScopeKey("");
-        clearAnalytics();
-      }
-      return;
-    }
-    const nextBrands = brandRead.data;
-    setBrands(nextBrands);
-    setBrandId((current) =>
-      selectScopeId(
-        requestedBrandId,
-        nextBrands.some((item) => item.id === current)
-          ? current
-          : readStoredBrandId(
-              organizationId,
-              nextBrands.map((item) => item.id),
-            ),
-        nextBrands.map((item) => item.id),
-      ),
-    );
-    setBrandScopeKey(currentScopeKey);
-  }, [
-    brandRead.data,
-    brandRead.error,
-    currentScopeKey,
-    organizationId,
-    requestedBrandId,
-    clearAnalytics,
-  ]);
-  useEffect(() => {
-    setPlatforms(platformRead.data ?? {});
-  }, [platformRead.data]);
-
-  useEffect(() => {
-    if (organizationId && brandId && scopeReady) {
-      storeBrandId(organizationId, brandId);
-      const url = new URL(window.location.href);
-      if (
-        url.searchParams.get("organizationId") !== organizationId ||
-        url.searchParams.get("brandId") !== brandId
-      ) {
-        url.searchParams.set("organizationId", organizationId);
-        url.searchParams.set("brandId", brandId);
-        window.history.replaceState(null, "", url);
-      }
-    }
-  }, [organizationId, brandId, scopeReady]);
+  const platforms = platformRead.data ?? {};
 
   const analyticsInput = JSON.stringify(
     scopeReady && brands.some((item) => item.id === brandId)
@@ -731,7 +610,7 @@ export function OverviewClient({
               <Select
                 aria-label="企业"
                 value={organizationId}
-                onChange={selectOrganization}
+                onChange={scope.setOrganizationId}
                 options={organizations.map((item) => ({
                   value: item.id,
                   label: item.name,
@@ -740,21 +619,36 @@ export function OverviewClient({
                 style={{ width: "100%" }}
               />
             </label>
-            <label className="overview-filter-field">
-              <Typography.Text type="secondary">品牌</Typography.Text>
-              <Select
-                aria-label="品牌"
-                value={brandId || undefined}
-                placeholder="选择品牌"
-                onChange={selectBrand}
-                options={brands.map((item) => ({
-                  value: item.id,
-                  label: item.name,
-                }))}
-                popupMatchSelectWidth={false}
-                style={{ width: "100%" }}
-              />
-            </label>
+            <div className="overview-filter-field">
+              <label htmlFor="overview-scope-brand">
+                <Typography.Text type="secondary">品牌</Typography.Text>
+              </label>
+              <Flex align="center" gap={8}>
+                <Select
+                  id="overview-scope-brand"
+                  aria-label="品牌"
+                  value={brandId || undefined}
+                  placeholder="选择品牌"
+                  disabled={!teamId || !brands.length}
+                  loading={scope.brandsLoading}
+                  onChange={scope.setBrandId}
+                  options={brands.map((item) => ({
+                    value: item.id,
+                    label: item.name,
+                  }))}
+                  popupMatchSelectWidth={false}
+                  style={{ flex: 1, minWidth: 0 }}
+                />
+                <Button
+                  aria-label="刷新品牌范围"
+                  title="重新读取可访问品牌"
+                  disabled={!teamId}
+                  loading={scope.brandsLoading}
+                  icon={<ReloadOutlined />}
+                  onClick={scope.reloadBrands}
+                />
+              </Flex>
+            </div>
             <label className="overview-filter-field">
               <Typography.Text type="secondary">模型</Typography.Text>
               <Select
@@ -815,21 +709,32 @@ export function OverviewClient({
         </div>
       </Card>
 
-      {brandRead.error ? (
+      {scope.error ? (
         <Alert
           showIcon
           type="error"
           message="品牌目录请求失败"
-          description={brandRead.error}
+          description={scope.error}
           action={
             <Button
               aria-label="重试品牌目录"
-              loading={brandRead.loading}
-              onClick={() => void brandRead.reload()}
+              loading={scope.brandsLoading}
+              onClick={scope.reloadBrands}
             >
               重试品牌
             </Button>
           }
+        />
+      ) : null}
+      {scope.brandsLoaded &&
+      !scope.brandsLoading &&
+      !scope.error &&
+      !brands.length ? (
+        <Alert
+          type="info"
+          showIcon
+          message="当前企业没有可访问品牌"
+          description="请联系企业管理员确认品牌授权，或切换到其他已授权企业。"
         />
       ) : null}
       {platformRead.error ? (

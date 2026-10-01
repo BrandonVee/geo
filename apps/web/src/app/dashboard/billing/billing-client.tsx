@@ -124,12 +124,19 @@ type BillingProps = {
     brandId?: string;
   };
 };
+const orderScopeQueryKeys = [
+  "page",
+  "pageSize",
+  "keyword",
+  "status",
+  "beginDate",
+  "endDate",
+] as const;
+
 export function BillingClient(props: BillingProps) {
   const scope = useAnswerBitScope(
     props.organizations,
-    props.view === "orders"
-      ? ["page", "pageSize", "keyword", "status", "beginDate", "endDate"]
-      : [],
+    props.view === "orders" ? orderScopeQueryKeys : undefined,
   );
   const incomingMatches =
     (!props.initialPublication.organizationId ||

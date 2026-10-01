@@ -70,6 +70,7 @@ export function CompetitorDirectory({
     writingRef = useRef(false);
   const reloadRef = useRef(catalog.reload);
   const locked = busy || Boolean(attempt.pending) || !attempt.ready;
+  const editorAllowed = Boolean(brandId) && (editingId ? canUpdate : canCreate);
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -147,6 +148,8 @@ export function CompetitorDirectory({
       competitorAlias: alias.trim(),
     };
     const deletingOperation = operation === "删除竞品";
+    if (!(deletingOperation ? canDelete : resourceId ? canUpdate : canCreate))
+      return;
     if (
       !deletingOperation &&
       !(resourceId ? updateCompetitorSchema : createCompetitorSchema).safeParse(
@@ -480,12 +483,21 @@ export function CompetitorDirectory({
         okText={editingId ? "保存竞品" : "添加竞品"}
         okButtonProps={{
           "aria-label": editingId ? "保存竞品" : "添加竞品",
-          disabled: locked || !name.trim(),
+          disabled: locked || !editorAllowed || !name.trim(),
         }}
         onCancel={() => setEditorOpen(false)}
         onOk={() => void write(editingId ? "编辑竞品" : "添加竞品", editingId)}
       >
         {error}
+        {!editorAllowed ? (
+          <Alert
+            showIcon
+            type="warning"
+            message={`当前品牌已没有${editingId ? "编辑" : "添加"}竞品权限`}
+            description="原输入已保留，您可以复制或关闭弹窗；管理员恢复权限后可继续保存。"
+            style={{ marginBottom: 16 }}
+          />
+        ) : null}
         {attempt.pending && !busy ? (
           <Alert
             showIcon
@@ -498,6 +510,7 @@ export function CompetitorDirectory({
           <Form.Item htmlFor="competitor-name" label="竞品名称" required>
             <Input
               id="competitor-name"
+              readOnly={!editorAllowed}
               value={name}
               onChange={(event) => setName(event.target.value)}
               placeholder="例如：竞品品牌名称"
@@ -506,6 +519,7 @@ export function CompetitorDirectory({
           <Form.Item htmlFor="competitor-alias" label="竞品别名">
             <Input
               id="competitor-alias"
+              readOnly={!editorAllowed}
               value={alias}
               onChange={(event) => setAlias(event.target.value)}
               placeholder="可选，用于匹配品牌称呼"
@@ -527,12 +541,21 @@ export function CompetitorDirectory({
         okButtonProps={{
           "aria-label": "删除竞品",
           danger: true,
-          disabled: locked,
+          disabled: locked || !canDelete,
         }}
         onCancel={() => setDeleting(null)}
         onOk={() => void write("删除竞品", deleting?.id)}
       >
         {error}
+        {!canDelete ? (
+          <Alert
+            showIcon
+            type="warning"
+            message="当前品牌已没有删除竞品权限"
+            description="请关闭确认窗口，或联系管理员恢复权限后再操作。"
+            style={{ marginBottom: 16 }}
+          />
+        ) : null}
         <Typography.Paragraph>
           将删除腾讯 AnswerBit 中的竞品“{deleting?.name}
           ”，之后的趋势与排名查询不再选择该竞品。

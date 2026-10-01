@@ -28,10 +28,11 @@ export type ScopeBrand = {
 const query = (input: Record<string, string>) =>
   new URLSearchParams(input).toString();
 const emptyBrands: ScopeBrand[] = [];
+const emptyQueryKeys: readonly string[] = [];
 // @project-doc docs/domains/geo_operations.md#workspace_scope
 export function useAnswerBitScope(
   organizations: ScopeOrganization[],
-  resetQueryKeys: readonly string[] = [],
+  resetQueryKeys: readonly string[] = emptyQueryKeys,
 ) {
   const workspace = useWorkspaceAccess();
   const [now, setNow] = useState(() => Date.now());
@@ -72,16 +73,19 @@ export function useAnswerBitScope(
     brands.some((item) => item.id === selection.id)
       ? selection.id
       : "";
-  function replaceScopeUrl(nextOrganizationId: string, nextBrandId?: string) {
-    const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-    const next = scopedDashboardPath(
-      current,
-      nextOrganizationId,
-      nextBrandId,
-      resetQueryKeys,
-    );
-    if (next !== current) window.history.replaceState(null, "", next);
-  }
+  const replaceScopeUrl = useCallback(
+    (nextOrganizationId: string, nextBrandId?: string) => {
+      const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+      const next = scopedDashboardPath(
+        current,
+        nextOrganizationId,
+        nextBrandId,
+        resetQueryKeys,
+      );
+      if (next !== current) window.history.replaceState(null, "", next);
+    },
+    [resetQueryKeys],
+  );
   const setOrganizationId = useCallback(
     (nextOrganizationId: string) => {
       if (organizationIdRef.current === nextOrganizationId) return;
@@ -180,6 +184,7 @@ export function useAnswerBitScope(
     organizations,
     brands,
     brandRead.data,
+    replaceScopeUrl,
   ]);
   const brand = brands.find((item) => item.id === brandId);
   const organization = workspace.organizations.find(
@@ -220,6 +225,7 @@ export function useAnswerBitScope(
     reloadBrands,
     brandsLoading: brandRead.loading,
     brandsLoaded: Boolean(brandRead.data),
+    scopeRestored,
   };
 }
 export function ScopeFields({

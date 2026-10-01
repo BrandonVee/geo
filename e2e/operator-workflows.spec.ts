@@ -8361,6 +8361,275 @@ test.describe("真实运营操作闭环", () => {
       ).toBe(true);
     });
   });
+  test("总览浏览器往返恢复企业，加载期间隐藏旧品牌，迟到目录不改写当前范围", async ({
+    page,
+  }) => {
+    await mockOverviewApis(page);
+    let hold = true,
+      requested = false,
+      release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const target = fixture.scopes[1];
+    await page.route("**/api/v1/answerbit/brands?**", async (route) => {
+      const url = new URL(route.request().url());
+      if (
+        hold &&
+        url.searchParams.get("organizationId") === target.organizationId
+      ) {
+        requested = true;
+        await pending;
+      }
+      await route.continue().catch(() => {});
+    });
+    const pairs: string[][] = [];
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (
+        url.pathname.startsWith("/api/v1/answerbit/") &&
+        url.searchParams.has("brandId")
+      )
+        pairs.push([
+          url.searchParams.get("organizationId")!,
+          url.searchParams.get("brandId")!,
+        ]);
+    });
+    await page.goto(scopedPath("/dashboard"));
+    await expect(
+      page.getByRole("combobox", { name: "品牌", exact: true }),
+    ).toHaveAttribute("aria-expanded", "false");
+    await expect(page.locator(".overview-metric-grid")).toContainText("22.5");
+    await page.evaluate(
+      (path) => history.pushState(null, "", path),
+      scopedPath("/dashboard", 1),
+    );
+    await expect.poll(() => requested).toBe(true);
+    await expect(
+      page
+        .getByRole("combobox", { name: "企业", exact: true })
+        .locator("../.."),
+    ).toContainText(target.name);
+    await expect(
+      page
+        .getByRole("combobox", { name: "品牌", exact: true })
+        .locator("../.."),
+    ).not.toContainText(fixture.scopes[0].name);
+    await expect(page.getByRole("button", { name: /重新查询/ })).toBeDisabled();
+    await page.goBack();
+    await expect
+      .poll(() => new URL(page.url()).searchParams.get("organizationId"))
+      .toBe(fixture.scopes[0].organizationId);
+    await expect(page.locator(".overview-metric-grid")).toContainText("22.5");
+    hold = false;
+    release();
+    await expect(
+      page
+        .getByRole("combobox", { name: "品牌", exact: true })
+        .locator("../.."),
+    ).toContainText(fixture.scopes[0].name);
+    await page.goForward();
+    await expect(page.locator(".overview-metric-grid")).toContainText("55");
+    await expect(
+      page
+        .getByRole("combobox", { name: "品牌", exact: true })
+        .locator("../.."),
+    ).toContainText(target.name);
+    await expect
+      .poll(() => new URL(page.url()).searchParams.get("brandId"))
+      .toBe(target.brandId);
+    expect(
+      pairs.every(([organizationId, brandId]) =>
+        fixture.scopes.some(
+          (scope) =>
+            scope.organizationId === organizationId &&
+            scope.brandId === brandId,
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  for (const operation of ["添加", "编辑", "删除"] as const) {
+    test(`总览刷新权限期间${operation}竞品保留原窗口，降级阻止提交，恢复权限后继续`, async ({
+      page,
+    }) => {
+      const target = fixture.scopes[0];
+      const original = `${target.name} 的竞品`;
+      let rows = [{ id: "competitor-0", name: original, alias: "原别名" }];
+      const writes: string[] = [];
+      await mockOverviewApis(page, async (route, path) => {
+        if (
+          path === "/api/v1/answerbit/competitors" &&
+          route.request().method() === "GET"
+        ) {
+          await fulfill(route, rows);
+          return true;
+        }
+        if (
+          path.startsWith("/api/v1/answerbit/competitors") &&
+          route.request().method() !== "GET"
+        ) {
+          const method = route.request().method();
+          writes.push(method);
+          if (method === "DELETE") rows = [];
+          else {
+            const body = route.request().postDataJSON();
+            rows = [
+              {
+                id: "competitor-0",
+                name: body.competitorName,
+                alias: body.competitorAlias,
+              },
+            ];
+          }
+          await fulfill(route, { id: "competitor-0" });
+          return true;
+        }
+        return false;
+      });
+      let hold = false,
+        requested = false,
+        fail = false,
+        release!: () => void;
+      const pending = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await page.route("**/api/v1/answerbit/brands?**", async (route) => {
+        if (fail)
+          return route.fulfill({
+            status: 503,
+            json: { error: { message: "品牌目录暂时不可用" } },
+          });
+        if (hold) {
+          requested = true;
+          await pending;
+        }
+        await route.continue();
+      });
+      const setRole = (role: "brand_admin" | "brand_viewer") =>
+        database.db
+          .update(database.brandAccess)
+          .set({ role })
+          .where(
+            operators.and(
+              operators.eq(database.brandAccess.userId, fixture.userId),
+              operators.eq(
+                database.brandAccess.organizationId,
+                target.organizationId,
+              ),
+            ),
+          );
+      await page.goto(scopedPath("/dashboard"));
+      await page.getByRole("tab", { name: /竞品管理/ }).click();
+      const action = page.getByRole("button", {
+        name: operation === "添加" ? "添加竞品" : `${operation}${original}`,
+        exact: true,
+      });
+      await expect(action).toBeEnabled();
+      const dialog = page.getByRole("dialog", {
+        name: operation === "删除" ? "删除这个竞品？" : `${operation}竞品`,
+        exact: true,
+      });
+      const draft = "权限变更前尚未提交的竞品";
+      if (operation === "编辑") {
+        await action.click();
+        await dialog.getByLabel("竞品名称", { exact: true }).fill(draft);
+        await dialog.getByRole("button", { name: /取\s*消/ }).click();
+        fail = true;
+        await page
+          .getByRole("button", { name: "刷新品牌范围", exact: true })
+          .click();
+        await expect(
+          page.getByText("品牌目录暂时不可用", { exact: true }),
+        ).toBeVisible();
+        await action.click();
+        await expect(
+          dialog.getByLabel("竞品名称", { exact: true }),
+        ).toHaveValue(draft);
+        await dialog.getByRole("button", { name: /取\s*消/ }).click();
+        fail = false;
+      }
+      await setRole("brand_viewer");
+      hold = true;
+      await page
+        .getByRole("button", { name: "刷新品牌范围", exact: true })
+        .click();
+      await expect.poll(() => requested).toBe(true);
+      await action.click();
+      if (operation !== "删除") {
+        await dialog.getByLabel("竞品名称", { exact: true }).fill(draft);
+        await dialog.getByLabel("竞品别名", { exact: true }).fill("保留的别名");
+      }
+      hold = false;
+      release();
+      await expect(
+        dialog.getByText(`当前品牌已没有${operation}竞品权限`, { exact: true }),
+      ).toBeVisible();
+      const submit = dialog.getByRole("button", {
+        name: operation === "编辑" ? "保存竞品" : `${operation}竞品`,
+        exact: true,
+      });
+      await expect(submit).toBeDisabled();
+      if (operation !== "删除") {
+        await expect(
+          dialog.getByLabel("竞品名称", { exact: true }),
+        ).toHaveValue(draft);
+        await expect(
+          dialog.getByLabel("竞品名称", { exact: true }),
+        ).toHaveAttribute("readonly", "");
+        await expect(
+          dialog.getByLabel("竞品别名", { exact: true }),
+        ).toHaveValue("保留的别名");
+      }
+      const input = {
+        organizationId: target.organizationId,
+        teamBindingId: target.teamBindingId,
+        brandId: target.brandId,
+        competitorName: draft,
+        competitorAlias: "保留的别名",
+      };
+      const native =
+        operation === "添加"
+          ? await page.request.post("/api/v1/answerbit/competitors", {
+              data: input,
+            })
+          : operation === "编辑"
+            ? await page.request.patch(
+                "/api/v1/answerbit/competitors/competitor-0",
+                { data: input },
+              )
+            : await page.request.delete(
+                `/api/v1/answerbit/competitors/competitor-0?${new URLSearchParams({ organizationId: target.organizationId, teamBindingId: target.teamBindingId, brandId: target.brandId })}`,
+              );
+      expect(native.status()).toBe(403);
+      expect(writes).toEqual([]);
+      await dialog.getByRole("button", { name: /取\s*消/ }).click();
+      await setRole("brand_admin");
+      await page
+        .getByRole("button", { name: "刷新品牌范围", exact: true })
+        .click();
+      await expect(action).toBeEnabled();
+      await action.click();
+      if (operation !== "删除")
+        await expect(
+          dialog.getByLabel("竞品名称", { exact: true }),
+        ).toHaveValue(draft);
+      await expect(submit).toBeEnabled();
+      await submit.click();
+      await expect(dialog).toBeHidden();
+      expect(writes).toEqual([
+        operation === "添加"
+          ? "POST"
+          : operation === "编辑"
+            ? "PATCH"
+            : "DELETE",
+      ]);
+      if (operation === "删除")
+        await expect(page.getByText(original, { exact: true })).toHaveCount(0);
+      else await expect(page.getByText(draft, { exact: true })).toBeVisible();
+    });
+  }
+
   test("共享范围切换后刷新与侧栏跳转保留企业，禁止浏览器存储仍可恢复", async ({
     page,
   }) => {
