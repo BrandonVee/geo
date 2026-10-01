@@ -116,3 +116,7 @@ GET、PUT、DELETE 按 HTTP 语义保持幂等；POST 中具有财务或外部�
 ## OpenAPI 维护
 
 [OpenAPI 定义](./openapi.yaml) 是客户端生成和接口联调入口。新增、重命名或删除 API 时，同一变更必须更新 Route、共享契约、OpenAPI 与相关领域/集成文档。OpenAPI 中应包含安全方案、参数范围、成功响应和主要错误响应。Web 测试会双向比对 `apps/web/src/app/api` 的 Route、HTTP 方法与 OpenAPI；Better Auth 由单一 catch-all Route 承载多个已公开认证路径，是唯一允许的路径映射例外。
+
+取消、申诉请求支持可选 UUID `actionRequestId`，客户端发送前保存编号；缺省由服务端生成。订单返回的 `providerAction` 是当前服务端操作记录，含原操作类型、操作者、开始与期限时间、状态及申诉内容。存在执行中或结果不确定操作时返回 `409 PUBLICATION_ACTION_RECONCILIATION_REQUIRED`，`error.details.action` 提供原记录；读取核对不重复写入上游。
+
+`POST /api/v1/publication-orders/{orderId}/action-resolution` 接收企业、内部绑定、品牌、原 `actionId` 和非空 `note`（最多2000字）。要求当前品牌 `publication.create` 权限，企业与品牌不可越界。未超期执行中返回 `409 PUBLICATION_ACTION_IN_PROGRESS`，编号已变化返回状态冲突；结束只解除服务端待核对并审计，不取消订单、申诉或退款。已结束的相同编号返回原订单；结果不确定时应读取原订单确认，不自动重发。

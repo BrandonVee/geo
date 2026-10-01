@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+export * from "./publication-actions";
 export { publicationBodyHtml } from "./publication-content";
 export * from "./user-access";
 export {

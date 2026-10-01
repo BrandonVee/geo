@@ -1,4 +1,8 @@
 import {
+  beginPublicationAction,
+  dispatchPublicationAction,
+  settlePublicationAction,
+  resolvePublicationAction,
   createPublicationOrderWithBalance,
   findPublicationChannel,
   findPublicationChannelForUser,
@@ -17,6 +21,10 @@ import {
 } from "@geo/db";
 
 export const publicationRepository = {
+  beginAction: beginPublicationAction,
+  dispatchAction: dispatchPublicationAction,
+  settleAction: settlePublicationAction,
+  resolveAction: resolvePublicationAction,
   findByIdempotency: findPublicationOrderByIdempotency,
   channels: listPublicationChannels,
   channelPage: listPublicationChannelsPage,

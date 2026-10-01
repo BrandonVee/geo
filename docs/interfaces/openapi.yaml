@@ -4220,7 +4220,7 @@ paths:
         "200":
           description: 订单已取消并返还余额
         "409":
-          description: 当前状态不允许取消，或上游订单号尚未确认
+          description: 当前状态不允许取消、上游订单号尚未确认，或 PUBLICATION_ACTION_RECONCILIATION_REQUIRED 已有操作待核对；details.action 返回原操作
         "422":
           description: FROG_PUBLICATION_CANCEL_REJECTED，上游明确拒绝取消，订单与余额保持不变
         "502":
@@ -4254,13 +4254,43 @@ paths:
         "200":
           description: 申诉已提交到聚合发布上游，已有售后状态时返回原订单
         "409":
-          description: 当前状态不允许申诉
+          description: 当前状态不允许申诉，或 PUBLICATION_ACTION_RECONCILIATION_REQUIRED 已有操作待核对；details.action 返回原操作
         "422":
           description: 当前订单不支持聚合发布申诉，或 FROG_PUBLICATION_APPEAL_REJECTED 上游明确拒绝申诉
         "502":
           description: FROG_PUBLICATION_APPEAL_FAILED，申诉结果未确认，先核对订单状态
         "504":
           description: 上游申诉请求超时，结果未确认，先核对订单状态
+  /v1/publication-orders/{orderId}/action-resolution:
+    post:
+      summary: 核对上游后结束待确认的发布操作
+      description: 要求 publication.create 与品牌范围；仅解除已不确定或超过两分钟执行期限的原操作，保存核对说明和审计，不重发、不退款。原操作 ID 变化返回冲突，重复解除返回原结果。
+      tags: [Publications]
+      security: *id001
+      parameters:
+        - in: path
+          name: orderId
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResolvePublicationAction"
+      responses:
+        "200": { description: 原操作已结束；订单与余额保持当前实际状态 }
+        "400": { description: VALIDATION_ERROR，核对参数或说明有误 }
+        "403": { description: 当前用户没有发布操作权限或品牌范围 }
+        "404": { description: 发布订单在当前范围不存在 }
+        "409":
+          {
+            description: PUBLICATION_ACTION_IN_PROGRESS 原操作仍在执行，或 PUBLICATION_ACTION_CONFLICT 操作 ID 已变化,
+          }
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
   /v1/admin/publication-provider-configuration:
     get:
       summary: 查询媒体发布平台统一接入配置
@@ -6412,6 +6442,10 @@ components:
         brandId:
           type: string
           maxLength: 128
+        actionRequestId:
+          type: string
+          format: uuid
+          description: 当前浏览器原操作 ID；省略时服务端生成
     AppealPublicationOrder:
       type: object
       additionalProperties: false
@@ -6436,6 +6470,40 @@ components:
         detail:
           type: string
           maxLength: 2000
+        actionRequestId:
+          type: string
+          format: uuid
+    ResolvePublicationAction:
+      type: object
+      additionalProperties: false
+      required: [organizationId, teamBindingId, brandId, actionId, note]
+      properties:
+        organizationId: { type: string, format: uuid }
+        teamBindingId: { type: string, format: uuid }
+        brandId: { type: string, minLength: 1, maxLength: 128 }
+        actionId: { type: string, format: uuid }
+        note: { type: string, minLength: 1, maxLength: 2000 }
+    PublicationProviderAction:
+      type: object
+      description: 订单 providerAction 字段，为空时无操作记录；由订单查询、取消、申诉和核对响应返回
+      required: [id, operation, state, actorUserId, startedAt, expiresAt]
+      properties:
+        id: { type: string, format: uuid }
+        operation: { type: string, enum: [cancel, appeal] }
+        state:
+          {
+            type: string,
+            enum: [pending, uncertain, completed, rejected, released],
+          }
+        actorUserId: { type: string, format: uuid }
+        startedAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        dispatchedAt: { type: string, format: date-time }
+        reason: { type: integer, enum: [1, 2, 3, 4] }
+        detail: { type: string, maxLength: 2000 }
+        resolvedAt: { type: string, format: date-time }
+        resolvedBy: { type: string, format: uuid }
+        resolutionNote: { type: string, maxLength: 2000 }
     UpdatePublicationOrder:
       type: object
       additionalProperties: false

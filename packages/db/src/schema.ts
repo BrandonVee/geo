@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import type { OrganizationFeature } from "@geo/core";
+import type { OrganizationFeature, PublicationProviderAction } from "@geo/core";
 import {
   boolean,
   check,
@@ -949,6 +949,7 @@ export const publicationOrders = pgTable(
     providerStatus: integer("provider_status"),
     providerMessage: text("provider_message"),
     providerSyncedAt: timestamp("provider_synced_at", { withTimezone: true }),
+    providerAction: jsonb("provider_action").$type<PublicationProviderAction>(),
     createdBy: uuid("created_by")
       .notNull()
       .references(() => users.id),

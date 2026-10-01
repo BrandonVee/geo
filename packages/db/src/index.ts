@@ -6,6 +6,7 @@ export * from "./maintenance";
 export * from "./context";
 export * from "./balances";
 export * from "./publications";
+export * from "./publication-actions";
 export * from "./pricing";
 export * from "./tencent-enterprise-sync";
 export * from "./release";

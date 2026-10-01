@@ -71,9 +71,14 @@ describe("database release readiness", () => {
       "utf8",
     );
     expect(migration).toContain(`('schema', '${CURRENT_SCHEMA_VERSION}')`);
-    expect(migration).toContain("tenant_balance_actors");
-    expect(migration).toContain("SECURITY DEFINER");
-    expect(migration).toContain("FROM PUBLIC");
+    expect(migration).toContain("provider_action");
+    const actorMigration = await readFile(
+      new URL("../drizzle/v11.sql", import.meta.url),
+      "utf8",
+    );
+    expect(actorMigration).toContain("tenant_balance_actors");
+    expect(actorMigration).toContain("SECURITY DEFINER");
+    expect(actorMigration).toContain("FROM PUBLIC");
     const trackingMigration = await readFile(
       new URL("../drizzle/v10.sql", import.meta.url),
       "utf8",

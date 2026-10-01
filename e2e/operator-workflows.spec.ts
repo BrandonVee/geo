@@ -1777,6 +1777,346 @@ test.describe("真实运营操作闭环", () => {
     expect(writes).toBe(1);
   });
 
+  for (const lostResponse of [false, true]) {
+    test(`发布服务器待核对在新浏览器恢复，核对保存${lostResponse ? "响应丢失" : "成功"}后解除且不退款`, async ({
+      page,
+    }) => {
+      const seed = await seedPublicationOrder(0, "processing");
+      const target = fixture.scopes[0];
+      const action = {
+        id: randomUUID(),
+        operation: "cancel" as const,
+        state: "uncertain" as const,
+        actorUserId: fixture.userId,
+        startedAt: new Date(Date.now() - 90_000).toISOString(),
+        expiresAt: new Date(Date.now() - 1).toISOString(),
+      };
+      await database.db
+        .update(database.publicationOrders)
+        .set({ providerAction: action })
+        .where(operators.eq(database.publicationOrders.id, seed.id));
+      let writes = 0,
+        cancellations = 0;
+      await mockBusinessApis(page, async (route) => {
+        const path = new URL(route.request().url()).pathname;
+        if (path.endsWith("/cancel")) cancellations++;
+        if (!path.endsWith("/action-resolution")) return route.continue();
+        writes++;
+        if (!lostResponse) return route.continue();
+        const response = await route.fetch();
+        expect(response.status()).toBe(200);
+        await route.abort("failed");
+      });
+      await page.goto(scopedPath("/dashboard/publication/orders"));
+      await expect(
+        page.getByText("取消操作待核对", { exact: true }),
+      ).toBeVisible();
+      await expect(
+        page.locator("tbody").getByRole("button", { name: /取\s*消/ }),
+      ).toBeDisabled();
+      await expect(
+        page.getByText("发布操作结果待核对", { exact: true }),
+      ).toBeHidden();
+      const blocked = await page.request.post(
+        `/api/v1/publication-orders/${seed.id}/cancel`,
+        { data: { ...target, name: undefined, actionRequestId: randomUUID() } },
+      );
+      expect(blocked.status()).toBe(409);
+      expect((await blocked.json()).error.code).toBe(
+        "PUBLICATION_ACTION_RECONCILIATION_REQUIRED",
+      );
+      await page
+        .getByRole("button", { name: `核对原操作 ${seed.id}`, exact: true })
+        .click();
+      await expect(
+        page.getByText("发布操作结果待核对", { exact: true }),
+      ).toBeVisible();
+      await page.reload();
+      await expect(
+        page.getByText("发布操作结果待核对", { exact: true }),
+      ).toBeVisible();
+      await page
+        .getByRole("button", { name: "核对订单状态", exact: true })
+        .click();
+      const note = page.getByLabel("上游核对说明", { exact: true });
+      await expect(note).toBeVisible();
+      const finish = page.getByRole("button", {
+        name: "已核对，结束本次操作",
+        exact: true,
+      });
+      await expect(finish).toBeDisabled();
+      const setRole = (role: "brand_admin" | "brand_viewer") =>
+        database.db
+          .update(database.brandAccess)
+          .set({ role })
+          .where(
+            operators.and(
+              operators.eq(database.brandAccess.userId, fixture.userId),
+              operators.eq(
+                database.brandAccess.organizationId,
+                target.organizationId,
+              ),
+            ),
+          );
+      if (!lostResponse) {
+        await setRole("brand_viewer");
+        await page
+          .getByRole("button", { name: "刷新品牌范围", exact: true })
+          .click();
+        await expect(
+          page.getByText(
+            "当前权限只允许查看和核对，结束核对需要发布操作权限。",
+            { exact: true },
+          ),
+        ).toBeVisible();
+        await expect(note).toBeDisabled();
+        const denied = await page.request.post(
+          `/api/v1/publication-orders/${seed.id}/action-resolution`,
+          {
+            data: {
+              organizationId: target.organizationId,
+              teamBindingId: target.teamBindingId,
+              brandId: target.brandId,
+              actionId: action.id,
+              note: "查看者不能结束",
+            },
+          },
+        );
+        expect(denied.status()).toBe(403);
+        await setRole("brand_admin");
+        await page
+          .getByRole("button", { name: "刷新品牌范围", exact: true })
+          .click();
+        await expect(note).toBeEnabled();
+        const wrong = fixture.scopes[1];
+        const isolated = await page.request.post(
+          `/api/v1/publication-orders/${seed.id}/action-resolution`,
+          {
+            data: {
+              organizationId: wrong.organizationId,
+              teamBindingId: wrong.teamBindingId,
+              brandId: wrong.brandId,
+              actionId: action.id,
+              note: "其他企业核对",
+            },
+          },
+        );
+        expect(isolated.status()).toBe(404);
+      }
+      await note.fill("已核对上游后台，订单尚未取消；本次结束核对");
+      await finish.click();
+      await page.getByRole("button", { name: "确认结束", exact: true }).click();
+      if (lostResponse) {
+        await expect(
+          page.getByText("核对结果暂未确认，请继续读取原订单核对。", {
+            exact: true,
+          }),
+        ).toBeVisible();
+        await expect(
+          page.getByText("发布操作结果待核对", { exact: true }),
+        ).toBeVisible();
+        await page
+          .getByRole("button", { name: "核对订单状态", exact: true })
+          .click();
+        await expect(
+          page.getByText("已核对：原操作已结束，请检查当前订单状态后继续", {
+            exact: true,
+          }),
+        ).toBeVisible();
+      } else
+        await expect(
+          page.getByText("本次核对已结束，请以订单实际状态为准。", {
+            exact: true,
+          }),
+        ).toBeVisible();
+      await expect(
+        page.getByText("发布操作结果待核对", { exact: true }),
+      ).toBeHidden();
+      expect(writes).toBe(1);
+      expect(cancellations).toBe(0);
+      const [saved] = await database.db
+        .select()
+        .from(database.publicationOrders)
+        .where(operators.eq(database.publicationOrders.id, seed.id));
+      expect(saved.status).toBe("processing");
+      expect(saved.providerAction).toMatchObject({
+        id: action.id,
+        state: "released",
+        resolutionNote: "已核对上游后台，订单尚未取消；本次结束核对",
+      });
+      const refunds = await database.db
+        .select()
+        .from(database.balanceTransactions)
+        .where(
+          operators.and(
+            operators.eq(database.balanceTransactions.referenceId, seed.id),
+            operators.eq(database.balanceTransactions.operation, "restore"),
+          ),
+        );
+      expect(refunds).toHaveLength(0);
+      const audits = await database.db
+        .select()
+        .from(database.operationLogs)
+        .where(
+          operators.and(
+            operators.eq(database.operationLogs.resourceId, seed.id),
+            operators.eq(
+              database.operationLogs.operation,
+              "publication.order.action.resolved",
+            ),
+          ),
+        );
+      expect(audits).toHaveLength(1);
+    });
+  }
+
+  test("发布服务器执行中记录不能提前结束，超期后明确核对才解除", async ({
+    page,
+  }) => {
+    const seed = await seedPublicationOrder(0, "processing");
+    const target = fixture.scopes[0];
+    const action = {
+      id: randomUUID(),
+      operation: "cancel" as const,
+      state: "pending" as const,
+      actorUserId: fixture.userId,
+      startedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 120_000).toISOString(),
+    };
+    await database.db
+      .update(database.publicationOrders)
+      .set({ providerAction: action })
+      .where(operators.eq(database.publicationOrders.id, seed.id));
+    await mockBusinessApis(page, (route) => route.continue());
+    await page.goto(scopedPath("/dashboard/publication/orders"));
+    await page
+      .getByRole("button", { name: `核对原操作 ${seed.id}`, exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: "核对订单状态", exact: true })
+      .click();
+    await page
+      .getByLabel("上游核对说明", { exact: true })
+      .fill("上游尚无处理记录");
+    const finish = page.getByRole("button", {
+      name: "已核对，结束本次操作",
+      exact: true,
+    });
+    await expect(finish).toBeDisabled();
+    const blocked = await page.request.post(
+      `/api/v1/publication-orders/${seed.id}/action-resolution`,
+      {
+        data: {
+          organizationId: target.organizationId,
+          teamBindingId: target.teamBindingId,
+          brandId: target.brandId,
+          actionId: action.id,
+          note: "不得提前结束",
+        },
+      },
+    );
+    expect(blocked.status()).toBe(409);
+    expect((await blocked.json()).error.code).toBe(
+      "PUBLICATION_ACTION_IN_PROGRESS",
+    );
+    await database.db
+      .update(database.publicationOrders)
+      .set({
+        providerAction: {
+          ...action,
+          expiresAt: new Date(Date.now() - 1).toISOString(),
+        },
+      })
+      .where(operators.eq(database.publicationOrders.id, seed.id));
+    await page
+      .getByRole("button", { name: "核对订单状态", exact: true })
+      .click();
+    await expect(finish).toBeEnabled();
+    await finish.click();
+    await page.getByRole("button", { name: "确认结束", exact: true }).click();
+    await expect(
+      page.getByText("发布操作结果待核对", { exact: true }),
+    ).toBeHidden();
+  });
+
+  test("发布订单旧列表允许操作时，服务器阻止重复提交并恢复另一位管理员的原说明", async ({
+    page,
+  }) => {
+    const seed = await seedPublicationOrder(0, "processing");
+    const action = {
+      id: randomUUID(),
+      operation: "appeal" as const,
+      state: "uncertain" as const,
+      actorUserId: fixture.userId,
+      startedAt: new Date(Date.now() - 120_000).toISOString(),
+      expiresAt: new Date(Date.now() - 1).toISOString(),
+      reason: 4 as const,
+      detail: "另一位管理员提交的原申诉说明",
+    };
+    const [original] = await database.db
+      .select()
+      .from(database.publicationOrders)
+      .where(operators.eq(database.publicationOrders.id, seed.id));
+    await database.db
+      .update(database.publicationChannels)
+      .set({
+        provider: "frog_media",
+        providerMediaType: "website",
+        providerResourceId: `resource-${seed.id}`,
+      })
+      .where(operators.eq(database.publicationChannels.id, original.channelId));
+    await database.db
+      .update(database.publicationOrders)
+      .set({ providerOrderId: "upstream", providerAction: action })
+      .where(operators.eq(database.publicationOrders.id, seed.id));
+    let writes = 0;
+    await mockBusinessApis(page, async (route) => {
+      writes++;
+      await route.continue();
+    });
+    await page.route("**/api/v1/publication-orders?**", (route) =>
+      route.fulfill({
+        json: {
+          ...envelope([
+            {
+              order: {
+                ...original,
+                providerOrderId: "upstream",
+                providerAction: null,
+              },
+              channel,
+            },
+          ]),
+          pagination: { page: 1, pageSize: 20, total: 1, pages: 1 },
+        },
+      }),
+    );
+    await page.goto(scopedPath("/dashboard/publication/orders"));
+    await page
+      .locator("tbody")
+      .getByRole("button", { name: /取\s*消/ })
+      .click();
+    await page.getByRole("button", { name: "确认取消", exact: true }).click();
+    await expect(
+      page.getByText("发布操作结果待核对", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("具体说明：另一位管理员提交的原申诉说明", { exact: true }),
+    ).toBeVisible();
+    expect(writes).toBe(1);
+    await page.reload();
+    await expect(
+      page.getByText("具体说明：另一位管理员提交的原申诉说明", { exact: true }),
+    ).toBeVisible();
+    expect(writes).toBe(1);
+    const [saved] = await database.db
+      .select()
+      .from(database.publicationOrders)
+      .where(operators.eq(database.publicationOrders.id, seed.id));
+    expect(saved.providerAction?.id).toBe(action.id);
+    expect(saved.status).toBe("processing");
+  });
+
   test("提交发布权限变化保留稿件，原页重新检查权限后只提交一次", async ({
     page,
   }) => {

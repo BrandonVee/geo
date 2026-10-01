@@ -1,7 +1,10 @@
+import { randomUUID } from "node:crypto";
+import type { DatabaseTransaction } from "@geo/db";
 import { publicationBodyHtml } from "@geo/core";
 import { publicationTrackingSourceSchema } from "@geo/contracts";
 import type {
   AppealPublicationOrderInput,
+  ResolvePublicationActionInput,
   AdminPublicationChannelQuery,
   CreatePublicationChannelInput,
   CreatePublicationOrderInput,
@@ -93,6 +96,224 @@ async function syncFrogOrders(
         ...result,
       }),
     );
+}
+
+// @project-doc docs/domains/balance_and_publication.md#publication_state_machine
+async function performOrderAction(
+  orderId: string,
+  input: PublicationOrderActionInput & {
+    reason?: 1 | 2 | 3 | 4;
+    detail?: string;
+  },
+  operation: "cancel" | "appeal",
+  userId: string,
+  audit: AuditContext,
+) {
+  await authorizeBrand(
+    input.organizationId,
+    input.teamBindingId,
+    input.brandId,
+    userId,
+    "publication.create",
+  );
+  const row = await publicationRepository.findOrder(
+    orderId,
+    input.organizationId,
+  );
+  if (!row || row.order.brandId !== input.brandId)
+    throw new ApiError(404, "PUBLICATION_ORDER_NOT_FOUND", "发布订单不存在");
+  if (
+    (operation === "cancel" && row.order.status === "cancelled") ||
+    (operation === "appeal" &&
+      row.order.providerStatus === 9 &&
+      ["processing", "published"].includes(row.order.status))
+  )
+    return row.order;
+  if (
+    !(
+      operation === "cancel"
+        ? ["submitted", "processing"]
+        : ["processing", "published"]
+    ).includes(row.order.status)
+  )
+    throw new ApiError(
+      409,
+      "PUBLICATION_ORDER_STATE_CONFLICT",
+      "当前订单状态不允许此操作，请刷新订单",
+    );
+  if (
+    (row.channel.provider === "frog_media" || operation === "appeal") &&
+    (row.channel.provider !== "frog_media" ||
+      !row.order.providerOrderId ||
+      !isFrogMediaType(row.channel.providerMediaType))
+  )
+    throw new ApiError(
+      operation === "cancel" ? 409 : 422,
+      operation === "cancel"
+        ? "FROG_PUBLICATION_RECONCILIATION_REQUIRED"
+        : "PUBLICATION_APPEAL_UNSUPPORTED",
+      "请先核对上游订单；当前订单不支持此操作",
+    );
+  const id = input.actionRequestId ?? randomUUID();
+  const scope = {
+    organizationId: input.organizationId,
+    teamBindingId: input.teamBindingId,
+    brandId: input.brandId,
+    userId,
+  };
+  const claim = await publicationRepository.beginAction(
+    {
+      ...scope,
+      orderId,
+      action: {
+        id,
+        operation,
+        state: "pending",
+        actorUserId: userId,
+        startedAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 120_000).toISOString(),
+        ...(operation === "appeal"
+          ? { reason: input.reason, detail: input.detail }
+          : {}),
+      },
+    },
+    (tx) =>
+      writeAudit(
+        { ...audit, organizationId: input.organizationId },
+        {
+          operation: "publication.order.action.started",
+          resourceType: "publication_order",
+          resourceId: orderId,
+          summary: `开始${operation === "cancel" ? "取消发布" : "发布申诉"}，操作 ${id}`,
+        },
+        tx,
+      ),
+  );
+  if (claim.kind === "missing")
+    throw new ApiError(404, "PUBLICATION_ORDER_NOT_FOUND", "发布订单不存在");
+  if (claim.kind === "replayed") return claim.order;
+  if (claim.kind === "blocked")
+    throw new ApiError(
+      409,
+      "PUBLICATION_ACTION_RECONCILIATION_REQUIRED",
+      "该订单已有操作待核对，请先检查原操作结果",
+      { action: claim.order.providerAction },
+    );
+  if (claim.kind !== "started")
+    throw new ApiError(
+      409,
+      "PUBLICATION_ACTION_CONFLICT",
+      "订单或原操作已变化，请刷新后检查",
+    );
+  const completedAudit = (tx: DatabaseTransaction) =>
+    writeAudit(
+      { ...audit, organizationId: input.organizationId },
+      {
+        operation:
+          operation === "cancel"
+            ? "publication.order.cancelled"
+            : "publication.order.appeal",
+        resourceType: "publication_order",
+        resourceId: orderId,
+        summary: `${operation === "cancel" ? "取消发布并返还余额" : "提交发布申诉"}，操作 ${id}`,
+      },
+      tx,
+    );
+  try {
+    if (claim.channel.provider === "frog_media") {
+      const client = await resolveFrogPublicationClient();
+      if (
+        !(await publicationRepository.dispatchAction({
+          ...scope,
+          orderId,
+          actionId: id,
+        }))
+      )
+        throw new Error("PUBLICATION_ACTION_DISPATCH_CONFLICT");
+      if (operation === "cancel")
+        await client.cancel(
+          claim.channel.providerMediaType as FrogMediaType,
+          claim.order.providerOrderId!,
+        );
+      else
+        await client.appeal(claim.channel.providerMediaType as FrogMediaType, {
+          orderId: claim.order.providerOrderId!,
+          reason: input.reason!,
+          detail: input.detail,
+        });
+    }
+    const updated =
+      operation === "cancel"
+        ? await publicationRepository.updateOrder(
+            {
+              orderId,
+              status: "cancelled",
+              processedBy: userId,
+              providerMessage: "用户取消投稿",
+              providerSyncedAt: new Date(),
+              expectedActionId: id,
+            },
+            completedAudit,
+          )
+        : await publicationRepository.recordProviderSnapshot(
+            {
+              orderId,
+              providerStatus: 9,
+              providerMessage: input.detail || "已提交发布申诉",
+              expectedActionId: id,
+            },
+            completedAudit,
+          );
+    if (!updated) throw new Error("PUBLICATION_ACTION_COMPLETION_CONFLICT");
+    return updated;
+  } catch (error) {
+    const rejected =
+      error instanceof FrogPublicationError &&
+      ["business", "not_configured"].includes(error.kind);
+    await publicationRepository.settleAction(
+      {
+        ...scope,
+        orderId,
+        actionId: id,
+        state: rejected ? "rejected" : "uncertain",
+      },
+      (tx) =>
+        writeAudit(
+          { ...audit, organizationId: input.organizationId },
+          {
+            operation: rejected
+              ? "publication.order.action.rejected"
+              : "publication.order.action.uncertain",
+            resourceType: "publication_order",
+            resourceId: orderId,
+            summary: `${rejected ? "上游明确拒绝" : "结果待核对"}，操作 ${id}`,
+            result: "failed",
+          },
+          tx,
+        ),
+    );
+    if (rejected)
+      throw new ApiError(
+        422,
+        error.kind === "not_configured"
+          ? "FROG_PUBLICATION_NOT_CONFIGURED"
+          : operation === "cancel"
+            ? "FROG_PUBLICATION_CANCEL_REJECTED"
+            : "FROG_PUBLICATION_APPEAL_REJECTED",
+        operation === "cancel"
+          ? "上游拒绝取消，订单与余额保持不变"
+          : "上游拒绝申诉，请检查原说明后再提交",
+      );
+    throw new ApiError(
+      error instanceof FrogPublicationError && error.kind === "timeout"
+        ? 504
+        : 502,
+      operation === "cancel"
+        ? "FROG_PUBLICATION_CANCEL_FAILED"
+        : "FROG_PUBLICATION_APPEAL_FAILED",
+      "处理结果暂未确认，请核对订单状态，避免重复提交",
+    );
+  }
 }
 
 export const publicationService = {
@@ -467,87 +688,19 @@ export const publicationService = {
     userId: string,
     audit: AuditContext,
   ) {
-    await authorizeBrand(
-      input.organizationId,
-      input.teamBindingId,
-      input.brandId,
-      userId,
-      "publication.create",
-    );
-    const row = await publicationRepository.findOrder(
-      orderId,
-      input.organizationId,
-    );
-    if (!row || row.order.brandId !== input.brandId)
-      throw new ApiError(404, "PUBLICATION_ORDER_NOT_FOUND", "发布订单不存在");
-    if (row.order.status === "cancelled") return row.order;
-    if (!["submitted", "processing"].includes(row.order.status))
-      throw new ApiError(
-        409,
-        "PUBLICATION_ORDER_STATE_CONFLICT",
-        "当前发布订单状态不允许取消",
-      );
-    if (row.channel.provider === "frog_media") {
-      if (
-        !row.order.providerOrderId ||
-        !isFrogMediaType(row.channel.providerMediaType)
-      )
-        throw new ApiError(
-          409,
-          "FROG_PUBLICATION_RECONCILIATION_REQUIRED",
-          "投稿结果尚未确认，请先核对聚合发布上游订单",
-        );
-      try {
-        const frogClient = await resolveFrogPublicationClient();
-        await frogClient.cancel(
-          row.channel.providerMediaType,
-          row.order.providerOrderId,
-        );
-      } catch (error) {
-        if (error instanceof FrogPublicationError && error.kind === "business")
-          throw new ApiError(
-            422,
-            "FROG_PUBLICATION_CANCEL_REJECTED",
-            "聚合发布上游拒绝取消，订单与余额保持不变",
-          );
-        throw new ApiError(
-          error instanceof FrogPublicationError && error.kind === "timeout"
-            ? 504
-            : 502,
-          "FROG_PUBLICATION_CANCEL_FAILED",
-          "聚合发布上游未确认取消，本地订单与余额保持不变",
-        );
-      }
-    }
-    const updated = await publicationRepository.updateOrder({
-      orderId,
-      status: "cancelled",
-      processedBy: userId,
-      providerMessage: "用户取消投稿",
-      providerSyncedAt: new Date(),
-    });
-    if (updated === null)
-      throw new ApiError(
-        409,
-        "PUBLICATION_ORDER_STATE_CONFLICT",
-        "当前发布订单状态不允许取消",
-      );
-    if (!updated)
-      throw new ApiError(404, "PUBLICATION_ORDER_NOT_FOUND", "发布订单不存在");
-    await writeAudit(
-      { ...audit, organizationId: input.organizationId },
-      {
-        operation: "publication.order.cancelled",
-        resourceType: "publication_order",
-        resourceId: orderId,
-        summary: "取消聚合发布订单并返还发布余额",
-      },
-    );
-    return updated;
+    return performOrderAction(orderId, input, "cancel", userId, audit);
   },
   async appeal(
     orderId: string,
     input: AppealPublicationOrderInput,
+    userId: string,
+    audit: AuditContext,
+  ) {
+    return performOrderAction(orderId, input, "appeal", userId, audit);
+  },
+  async resolveAction(
+    orderId: string,
+    input: ResolvePublicationActionInput,
     userId: string,
     audit: AuditContext,
   ) {
@@ -558,66 +711,35 @@ export const publicationService = {
       userId,
       "publication.create",
     );
-    const row = await publicationRepository.findOrder(
-      orderId,
-      input.organizationId,
+    const result = await publicationRepository.resolveAction(
+      { ...input, orderId, userId },
+      (tx) =>
+        writeAudit(
+          { ...audit, organizationId: input.organizationId },
+          {
+            operation: "publication.order.action.resolved",
+            resourceType: "publication_order",
+            resourceId: orderId,
+            summary: `核对并结束操作 ${input.actionId}：${input.note}`,
+          },
+          tx,
+        ),
     );
-    if (!row || row.order.brandId !== input.brandId)
+    if (result.kind === "missing")
       throw new ApiError(404, "PUBLICATION_ORDER_NOT_FOUND", "发布订单不存在");
-    if (
-      row.channel.provider !== "frog_media" ||
-      !row.order.providerOrderId ||
-      !isFrogMediaType(row.channel.providerMediaType)
-    )
-      throw new ApiError(
-        422,
-        "PUBLICATION_APPEAL_UNSUPPORTED",
-        "该订单不支持聚合发布申诉",
-      );
-    if (!["processing", "published"].includes(row.order.status))
+    if (result.kind === "running")
       throw new ApiError(
         409,
-        "PUBLICATION_ORDER_STATE_CONFLICT",
-        "当前发布订单状态不允许申诉",
+        "PUBLICATION_ACTION_IN_PROGRESS",
+        "原操作仍在执行，请稍后重新核对",
       );
-    if (row.order.providerStatus === 9) return row.order;
-    try {
-      const frogClient = await resolveFrogPublicationClient();
-      await frogClient.appeal(row.channel.providerMediaType, {
-        orderId: row.order.providerOrderId,
-        reason: input.reason,
-        detail: input.detail,
-      });
-    } catch (error) {
-      if (error instanceof FrogPublicationError && error.kind === "business")
-        throw new ApiError(
-          422,
-          "FROG_PUBLICATION_APPEAL_REJECTED",
-          "聚合发布上游拒绝申诉，请检查原说明后再提交",
-        );
+    if (result.kind === "conflict")
       throw new ApiError(
-        error instanceof FrogPublicationError && error.kind === "timeout"
-          ? 504
-          : 502,
-        "FROG_PUBLICATION_APPEAL_FAILED",
-        "聚合发布上游未确认申诉，请先核对订单状态，避免重复提交",
+        409,
+        "PUBLICATION_ACTION_CONFLICT",
+        "订单操作已变化，请刷新后重新核对",
       );
-    }
-    const updated = await publicationRepository.recordProviderSnapshot({
-      orderId,
-      providerStatus: 9,
-      providerMessage: input.detail || "已提交发布申诉",
-    });
-    await writeAudit(
-      { ...audit, organizationId: input.organizationId },
-      {
-        operation: "publication.order.appeal",
-        resourceType: "publication_order",
-        resourceId: orderId,
-        summary: `提交聚合发布申诉，原因 ${input.reason}`,
-      },
-    );
-    return updated;
+    return result.order;
   },
   async adminChannels(query: AdminPublicationChannelQuery, userId: string) {
     await requirePlatformPermission(userId, "platform.publication.manage");

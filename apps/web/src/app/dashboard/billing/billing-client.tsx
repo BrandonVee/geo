@@ -31,6 +31,8 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import dayjs from "dayjs";
+import type { PublicationProviderAction } from "@geo/core";
+import { publicationProviderActionSchema } from "@geo/contracts";
 import { AccessibleTable } from "../../accessible-table";
 import {
   ScopeFields,
@@ -74,6 +76,7 @@ type PublicationOrder = {
     providerOrderId: string | null;
     providerStatus: number | null;
     providerMessage: string | null;
+    providerAction?: PublicationProviderAction | null;
     createdAt: string;
   };
   channel: Channel;
@@ -105,14 +108,24 @@ const publicationStatusLabels: Record<string, string> = {
   failed: "发布失败",
   cancelled: "已取消",
 };
+const providerActionPending = (action?: PublicationProviderAction | null) =>
+  Boolean(action && ["pending", "uncertain"].includes(action.state));
 async function api<T>(url: string, init?: RequestInit) {
   const response = await fetch(url, init);
   const body = await response.json();
   if (!response.ok) {
     const error = new Error(body.error?.message ?? "请求失败") as Error & {
       definite: boolean;
+      action?: PublicationProviderAction;
     };
-    error.definite = response.status >= 400 && response.status < 500;
+    const action = publicationProviderActionSchema.safeParse(
+      body.error?.details?.action,
+    );
+    if (action.success) error.action = action.data;
+    error.definite =
+      response.status >= 400 &&
+      response.status < 500 &&
+      body.error?.code !== "PUBLICATION_ACTION_RECONCILIATION_REQUIRED";
     throw error;
   }
   return body.data as T;
@@ -255,6 +268,9 @@ function BillingWorkspace({
   const mountedRef = useRef(false);
   const [actionChecked, setActionChecked] = useState<string>();
   const [actionCheckMessage, setActionCheckMessage] = useState("");
+  const [checkedServerAction, setCheckedServerAction] =
+    useState<PublicationProviderAction>();
+  const [actionResolutionNote, setActionResolutionNote] = useState("");
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -264,6 +280,8 @@ function BillingWorkspace({
   useEffect(() => {
     setActionChecked(undefined);
     setActionCheckMessage("");
+    setCheckedServerAction(undefined);
+    setActionResolutionNote("");
   }, [actionAttempt.pending?.id]);
   function saveDraft() {
     if (view !== "new" || !scope.brandId) return;
@@ -642,6 +660,7 @@ function BillingWorkspace({
           organizationId: scope.organizationId,
           teamBindingId: scope.teamBindingId,
           brandId: scope.brandId,
+          actionRequestId: id,
           ...values,
         }),
       });
@@ -657,6 +676,13 @@ function BillingWorkspace({
           values ? "发布申诉已提交" : "发布订单已取消，发布余额已返还",
         );
     } catch (error) {
+      const serverAction = (
+        error as Error & { action?: PublicationProviderAction }
+      ).action;
+      if (serverAction && mountedRef.current) {
+        actionAttempt.finish(id);
+        restoreServerAction(row.order, serverAction);
+      }
       const definite = (error as Error & { definite?: boolean }).definite;
       if (definite) actionAttempt.finish(id);
       if (!mountedRef.current) return;
@@ -672,6 +698,39 @@ function BillingWorkspace({
       submitting.current = false;
       if (mountedRef.current) setBusy("");
     }
+  }
+  function restoreServerAction(
+    order: PublicationOrder["order"],
+    action: PublicationProviderAction,
+  ) {
+    if (
+      !actionAttempt.begin({
+        id: action.id,
+        operation:
+          action.operation === "cancel" ? "取消发布订单" : "提交发布申诉",
+        submittedAt: action.startedAt,
+        details: [
+          { label: "订单编号", value: order.id },
+          { label: "文章标题", value: order.title },
+          ...(action.operation === "appeal"
+            ? [
+                { label: "申诉原因", value: String(action.reason) },
+                { label: "具体说明", value: action.detail || "未填写" },
+              ]
+            : []),
+        ],
+        form: {
+          kind: "publication_action",
+          orderId: order.id,
+          title: order.title,
+          action: action.operation,
+          reason: action.reason,
+          detail: action.detail,
+        },
+      })
+    )
+      return;
+    actionAttempt.settle(action.id);
   }
   async function checkOrderAction() {
     const pending = actionAttempt.pending;
@@ -699,13 +758,26 @@ function BillingWorkspace({
         throw new Error(
           "当前范围未查到原订单，请保留原操作并检查权限或联系管理员。",
         );
+      if (
+        row.order.providerAction &&
+        providerActionPending(row.order.providerAction) &&
+        row.order.providerAction.id !== pending.id
+      ) {
+        actionAttempt.finish(pending.id);
+        restoreServerAction(row.order, row.order.providerAction);
+        return;
+      }
       setActionChecked(pending.id);
+      setCheckedServerAction(row.order.providerAction ?? undefined);
       const complete =
         form.action === "cancel"
           ? row.order.status === "cancelled"
           : row.order.providerStatus === 9;
       const terminal = ["failed", "cancelled"].includes(row.order.status);
-      if (complete || terminal) {
+      const serverEnded =
+        row.order.providerAction &&
+        !providerActionPending(row.order.providerAction);
+      if (complete || terminal || serverEnded) {
         if (!actionAttempt.finish()) return;
         if (appealOrderId === form.orderId) {
           setAppealOrderId(undefined);
@@ -716,7 +788,9 @@ function BillingWorkspace({
             ? form.action === "cancel"
               ? "已核对：订单已取消，发布余额已返还"
               : "已核对：订单已进入售后处理"
-            : "已核对：原订单已终止，结果以当前订单状态为准",
+            : terminal
+              ? "已核对：原订单已终止，结果以当前订单状态为准"
+              : "已核对：原操作已结束，请检查当前订单状态后继续",
         );
         await Promise.all([load(), orderPage.refresh()]);
       } else
@@ -727,6 +801,56 @@ function BillingWorkspace({
       if (mountedRef.current)
         setActionCheckMessage(
           error instanceof Error ? error.message : "订单核对失败，请重试",
+        );
+    } finally {
+      checkingRef.current = false;
+      if (mountedRef.current) setCheckingAction(false);
+    }
+  }
+  async function finishCheckedAction() {
+    const pending = actionAttempt.pending;
+    const form = pending?.form;
+    if (
+      !pending ||
+      form?.kind !== "publication_action" ||
+      actionAttempt.inFlight ||
+      checkingRef.current ||
+      actionChecked !== pending.id
+    )
+      return;
+    checkingRef.current = true;
+    setCheckingAction(true);
+    try {
+      if (checkedServerAction && providerActionPending(checkedServerAction)) {
+        if (!canPublish || !actionResolutionNote.trim()) return;
+        await api(
+          `/api/v1/publication-orders/${form.orderId}/action-resolution`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              organizationId: scope.organizationId,
+              teamBindingId: scope.teamBindingId,
+              brandId: scope.brandId,
+              actionId: checkedServerAction.id,
+              note: actionResolutionNote.trim(),
+            }),
+          },
+        );
+      }
+      if (!mountedRef.current) return;
+      if (actionAttempt.finish()) {
+        setAppealOrderId(undefined);
+        setMessage("本次核对已结束，请以订单实际状态为准。");
+        await Promise.all([load(), orderPage.refresh()]);
+      }
+    } catch (error) {
+      if (mountedRef.current)
+        setActionCheckMessage(
+          (error as Error & { definite?: boolean }).definite &&
+            error instanceof Error
+            ? error.message
+            : "核对结果暂未确认，请继续读取原订单核对。",
         );
     } finally {
       checkingRef.current = false;
@@ -765,6 +889,29 @@ function BillingWorkspace({
               {actionCheckMessage}
             </Typography.Text>
           ) : null}
+          {checkedServerAction && providerActionPending(checkedServerAction) ? (
+            <Space direction="vertical" style={{ width: "100%" }}>
+              <label htmlFor="publication-action-resolution-note">
+                上游核对说明
+              </label>
+              {!canPublish ? (
+                <Typography.Text type="secondary">
+                  当前权限只允许查看和核对，结束核对需要发布操作权限。
+                </Typography.Text>
+              ) : null}
+              <Input.TextArea
+                id="publication-action-resolution-note"
+                value={actionResolutionNote}
+                onChange={(event) =>
+                  setActionResolutionNote(event.target.value)
+                }
+                maxLength={2000}
+                rows={2}
+                disabled={!canPublish || checkingAction}
+                placeholder="确认上游结果后填写核对依据；结束核对不会再次取消、申诉或退款"
+              />
+            </Space>
+          ) : null}
           <Space wrap>
             <Button
               disabled={
@@ -780,19 +927,21 @@ function BillingWorkspace({
               description="只清除本次待核对记录，不会再次取消或申诉，也不代表原操作成功。"
               okText="确认结束"
               cancelText="继续核对"
-              onConfirm={() => {
-                if (actionAttempt.finish()) {
-                  setAppealOrderId(undefined);
-                  setMessage("本次核对已结束，请以订单实际状态为准。");
-                }
-              }}
+              onConfirm={() => finishCheckedAction()}
             >
               <Button
                 disabled={
                   checkingAction ||
                   actionAttempt.inFlight ||
                   actionChecked !== actionAttempt.pending.id ||
-                  !scope.can("publication.read")
+                  !scope.can("publication.read") ||
+                  (checkedServerAction &&
+                    providerActionPending(checkedServerAction) &&
+                    (!canPublish ||
+                      !actionResolutionNote.trim() ||
+                      (checkedServerAction.state === "pending" &&
+                        new Date(checkedServerAction.expiresAt).getTime() >
+                          Date.now())))
                 }
               >
                 已核对，结束本次操作
@@ -888,6 +1037,13 @@ function BillingWorkspace({
           >
             {publicationStatusLabels[item.order.status] ?? "状态待核对"}
           </Tag>
+          {providerActionPending(item.order.providerAction) ? (
+            <Tag color="warning">
+              {item.order.providerAction?.operation === "cancel"
+                ? "取消操作待核对"
+                : "申诉操作待核对"}
+            </Tag>
+          ) : null}
           {item.order.providerMessage ? (
             <Typography.Text ellipsis type="secondary">
               {item.order.providerMessage}
@@ -938,14 +1094,22 @@ function BillingWorkspace({
               cancelText="保留订单"
               okText="确认取消"
               okButtonProps={{
-                disabled: !canPublish || Boolean(busy) || actionBlocked,
+                disabled:
+                  !canPublish ||
+                  Boolean(busy) ||
+                  actionBlocked ||
+                  providerActionPending(item.order.providerAction),
               }}
               onConfirm={() => void runOrderAction(item.order.id)}
               title="取消后将向聚合发布上游申请取消，并返还本地发布余额。"
             >
               <Button
                 danger
-                disabled={Boolean(busy) || actionBlocked}
+                disabled={
+                  Boolean(busy) ||
+                  actionBlocked ||
+                  providerActionPending(item.order.providerAction)
+                }
                 loading={busy === `cancel-${item.order.id}`}
                 size="small"
               >
@@ -958,7 +1122,11 @@ function BillingWorkspace({
           (item.order.status === "processing" ||
             item.order.status === "published") ? (
             <Button
-              disabled={Boolean(busy) || actionBlocked}
+              disabled={
+                Boolean(busy) ||
+                actionBlocked ||
+                providerActionPending(item.order.providerAction)
+              }
               onClick={() => {
                 if (submitting.current || actionBlocked) return;
                 setAppealError("");
@@ -968,6 +1136,19 @@ function BillingWorkspace({
               size="small"
             >
               申诉
+            </Button>
+          ) : null}
+          {providerActionPending(item.order.providerAction) ? (
+            <Button
+              size="small"
+              disabled={actionBlocked || Boolean(busy)}
+              aria-label={`核对原操作 ${item.order.id}`}
+              onClick={() =>
+                item.order.providerAction &&
+                restoreServerAction(item.order, item.order.providerAction)
+              }
+            >
+              核对原操作
             </Button>
           ) : null}
         </Space>

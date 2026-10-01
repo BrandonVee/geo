@@ -1425,14 +1425,42 @@ export const updatePublicationOrderSchema = z
     note: z.string().trim().max(2000).optional(),
   })
   .strict();
-export const publicationOrderActionSchema = z
+const publicationOrderScopeSchema = z
   .object({
     organizationId: z.string().uuid(),
     teamBindingId: z.string().uuid(),
     brandId: z.string().trim().min(1).max(128),
   })
   .strict();
-export const publicationTrackingSourceQuerySchema = publicationOrderActionSchema
+export const publicationOrderActionSchema = publicationOrderScopeSchema
+  .extend({ actionRequestId: z.string().uuid().optional() })
+  .strict();
+export const publicationProviderActionSchema = z.object({
+  id: z.string().uuid(),
+  operation: z.enum(["cancel", "appeal"]),
+  state: z.enum(["pending", "uncertain", "completed", "rejected", "released"]),
+  actorUserId: z.string().uuid(),
+  startedAt: z.string().datetime(),
+  expiresAt: z.string().datetime(),
+  dispatchedAt: z.string().datetime().optional(),
+  reason: z
+    .union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)])
+    .optional(),
+  detail: z.string().max(2000).optional(),
+  resolvedAt: z.string().datetime().optional(),
+  resolvedBy: z.string().uuid().optional(),
+  resolutionNote: z.string().max(2000).optional(),
+});
+export const resolvePublicationActionSchema = publicationOrderScopeSchema
+  .extend({
+    actionId: z.string().uuid(),
+    note: z.string().trim().min(1).max(2000),
+  })
+  .strict();
+export type ResolvePublicationActionInput = z.infer<
+  typeof resolvePublicationActionSchema
+>;
+export const publicationTrackingSourceQuerySchema = publicationOrderScopeSchema
   .extend({ orderId: z.string().uuid() })
   .strict();
 export const publicationTrackingSourceSchema = z.object({

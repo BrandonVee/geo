@@ -125,6 +125,18 @@ try {
       "exec",
       "vitest",
       "run",
+      "src/server/services/publication-actions.integration.test.ts",
+    ],
+    { PUBLICATION_ACTION_DB_TESTS: "1" },
+  );
+  await run(
+    pnpm,
+    [
+      "--filter",
+      "@geo/web",
+      "exec",
+      "vitest",
+      "run",
       "src/server/services/report-exports.integration.test.ts",
     ],
     { REPORT_EXPORT_DB_TESTS: "1" },

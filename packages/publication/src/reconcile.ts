@@ -1,4 +1,8 @@
 import type { FrogOrderInfo, FrogPublicationClient } from "./client";
+import {
+  publicationActionPending,
+  type PublicationProviderAction,
+} from "@geo/core";
 
 export type PublicationSyncRow = {
   order: {
@@ -7,6 +11,7 @@ export type PublicationSyncRow = {
     providerOrderId: string | null;
     providerStatus: number | null;
     updatedAt: Date;
+    providerAction?: PublicationProviderAction | null;
   };
   channel: {
     provider: string;
@@ -38,7 +43,8 @@ export function publicationNeedsSync(row: PublicationSyncRow) {
     Boolean(row.order.providerOrderId) &&
     (["submitted", "processing"].includes(row.order.status) ||
       (row.order.status === "published" &&
-        [9, 4].includes(row.order.providerStatus ?? -1)))
+        ([9, 4].includes(row.order.providerStatus ?? -1) ||
+          publicationActionPending(row.order.providerAction))))
   );
 }
 

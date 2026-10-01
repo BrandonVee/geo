@@ -1,4 +1,5 @@
 import { assertEnterpriseAccess } from "./enterprise-access";
+import { observePublicationAction, publicationActionPending } from "@geo/core";
 import {
   and,
   asc,
@@ -27,7 +28,11 @@ import {
   organizations,
 } from "./schema";
 import type { PricingTier } from "./pricing";
-import { withPlatformDbContext, withTenantDbContext } from "./context";
+import {
+  withPlatformDbContext,
+  withTenantDbContext,
+  type DatabaseTransaction,
+} from "./context";
 
 const pricingTiers = ["retail", "bronze", "silver", "gold"] as const;
 
@@ -792,27 +797,41 @@ export async function createPublicationOrderWithBalance(input: {
     return { ok: true as const, order: order!, replayed: false as const };
   });
 }
-export async function updatePublicationOrder(input: {
-  orderId: string;
-  status: "processing" | "published" | "failed" | "cancelled";
-  resultUrl?: string;
-  note?: string;
-  processedBy: string | null;
-  providerOrderId?: string;
-  providerStatus?: number;
-  providerMessage?: string;
-  providerSyncedAt?: Date;
-  allowPublishedFailure?: boolean;
-  providerSync?: boolean;
-  expectedUpdatedAt?: Date;
-}) {
+export async function updatePublicationOrder(
+  input: {
+    orderId: string;
+    status: "processing" | "published" | "failed" | "cancelled";
+    resultUrl?: string;
+    note?: string;
+    processedBy: string | null;
+    providerOrderId?: string;
+    providerStatus?: number;
+    providerMessage?: string;
+    providerSyncedAt?: Date;
+    allowPublishedFailure?: boolean;
+    providerSync?: boolean;
+    expectedUpdatedAt?: Date;
+    expectedActionId?: string;
+  },
+  audit?: (tx: DatabaseTransaction) => Promise<void>,
+) {
   return db.transaction(async (tx) => {
     const [current] = await tx
       .select()
       .from(publicationOrders)
       .where(eq(publicationOrders.id, input.orderId))
+      .for("update")
       .limit(1);
     if (!current) return undefined;
+    if (input.expectedActionId) {
+      if (current.providerAction?.id !== input.expectedActionId) return null;
+      if (
+        current.status === input.status &&
+        current.providerAction.state === "completed"
+      )
+        return current;
+      if (!publicationActionPending(current.providerAction)) return null;
+    }
     const allowed: string[] =
       current.status === "submitted"
         ? [
@@ -836,6 +855,11 @@ export async function updatePublicationOrder(input: {
         note: input.note ?? current.note,
         processedBy: input.processedBy,
         processedAt: new Date(),
+        providerAction: observePublicationAction(
+          current.providerAction,
+          input.status,
+          input.providerStatus,
+        ),
         ...(input.providerOrderId !== undefined
           ? { providerOrderId: input.providerOrderId }
           : {}),
@@ -903,44 +927,71 @@ export async function updatePublicationOrder(input: {
         })
         .onConflictDoNothing();
     }
+    if (audit) await audit(tx);
     return updated;
   });
 }
 
-export async function recordPublicationProviderSnapshot(input: {
-  orderId: string;
-  providerOrderId?: string;
-  providerStatus?: number;
-  providerMessage?: string;
-  resultUrl?: string;
-  expectedUpdatedAt?: Date;
-}) {
-  const [row] = await db
-    .update(publicationOrders)
-    .set({
-      ...(input.providerOrderId !== undefined
-        ? { providerOrderId: input.providerOrderId }
-        : {}),
-      ...(input.providerStatus !== undefined
-        ? { providerStatus: input.providerStatus }
-        : {}),
-      ...(input.providerMessage !== undefined
-        ? { providerMessage: input.providerMessage }
-        : {}),
-      ...(input.resultUrl !== undefined ? { resultUrl: input.resultUrl } : {}),
-      providerSyncedAt: new Date(),
-      updatedAt: sql`greatest(date_trunc('milliseconds', clock_timestamp()), date_trunc('milliseconds', ${publicationOrders.updatedAt}) + interval '1 millisecond')`,
-    })
-    .where(
-      and(
-        eq(publicationOrders.id, input.orderId),
-        input.expectedUpdatedAt
-          ? sql`date_trunc('milliseconds', ${publicationOrders.updatedAt}) = ${input.expectedUpdatedAt.toISOString()}::timestamptz`
-          : undefined,
-      ),
-    )
-    .returning();
-  return row;
+export async function recordPublicationProviderSnapshot(
+  input: {
+    orderId: string;
+    providerOrderId?: string;
+    providerStatus?: number;
+    providerMessage?: string;
+    resultUrl?: string;
+    expectedUpdatedAt?: Date;
+    expectedActionId?: string;
+  },
+  audit?: (tx: DatabaseTransaction) => Promise<void>,
+) {
+  return db.transaction(async (tx) => {
+    const [current] = await tx
+      .select()
+      .from(publicationOrders)
+      .where(eq(publicationOrders.id, input.orderId))
+      .for("update");
+    if (!current) return undefined;
+    if (input.expectedActionId) {
+      if (current.providerAction?.id !== input.expectedActionId)
+        return undefined;
+      if (current.providerAction.state === "completed") return current;
+      if (!publicationActionPending(current.providerAction)) return undefined;
+    }
+    const [row] = await tx
+      .update(publicationOrders)
+      .set({
+        ...(input.providerOrderId !== undefined
+          ? { providerOrderId: input.providerOrderId }
+          : {}),
+        ...(input.providerStatus !== undefined
+          ? { providerStatus: input.providerStatus }
+          : {}),
+        ...(input.providerMessage !== undefined
+          ? { providerMessage: input.providerMessage }
+          : {}),
+        ...(input.resultUrl !== undefined
+          ? { resultUrl: input.resultUrl }
+          : {}),
+        providerAction: observePublicationAction(
+          current.providerAction,
+          current.status,
+          input.providerStatus,
+        ),
+        providerSyncedAt: new Date(),
+        updatedAt: sql`greatest(date_trunc('milliseconds', clock_timestamp()), date_trunc('milliseconds', ${publicationOrders.updatedAt}) + interval '1 millisecond')`,
+      })
+      .where(
+        and(
+          eq(publicationOrders.id, input.orderId),
+          input.expectedUpdatedAt
+            ? sql`date_trunc('milliseconds', ${publicationOrders.updatedAt}) = ${input.expectedUpdatedAt.toISOString()}::timestamptz`
+            : undefined,
+        ),
+      )
+      .returning();
+    if (row && audit) await audit(tx);
+    return row;
+  });
 }
 
 export async function findPublicationOrderWithChannel(
@@ -998,7 +1049,10 @@ export function listPendingProviderPublicationOrders() {
           inArray(publicationOrders.status, ["submitted", "processing"]),
           and(
             eq(publicationOrders.status, "published"),
-            inArray(publicationOrders.providerStatus, [4, 9]),
+            or(
+              inArray(publicationOrders.providerStatus, [4, 9]),
+              sql`${publicationOrders.providerAction}->>'state' in ('pending', 'uncertain')`,
+            ),
           ),
         ),
       ),

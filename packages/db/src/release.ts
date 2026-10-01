@@ -3,7 +3,7 @@ import { inArray } from "drizzle-orm";
 import { withPlatformDbContext } from "./context";
 import { systemReleaseState } from "./schema";
 
-export const CURRENT_SCHEMA_VERSION = "v11";
+export const CURRENT_SCHEMA_VERSION = "v12";
 export const CURRENT_SEED_VERSION = "v2";
 
 const requiredVersions = {

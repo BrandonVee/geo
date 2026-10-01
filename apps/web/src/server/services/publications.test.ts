@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 const m = vi.hoisted(() => ({
+  beginAction: vi.fn(),
+  dispatchAction: vi.fn(),
+  settleAction: vi.fn(),
+  resolveAction: vi.fn(),
   findByIdempotency: vi.fn(),
   findChannel: vi.fn(),
   findChannelForUser: vi.fn(),
@@ -109,6 +113,15 @@ const order = {
 };
 beforeEach(() => {
   vi.resetAllMocks();
+  m.dispatchAction.mockResolvedValue(true);
+  m.beginAction.mockImplementation(async (input) => {
+    const row = await m.findOrder();
+    return {
+      kind: "started",
+      ...row,
+      order: { ...row.order, providerAction: input.action },
+    };
+  });
   m.reconcile.mockResolvedValue({ errors: 0 });
   m.findChannel.mockResolvedValue(channel);
   m.findChannelForUser.mockResolvedValue(channel);
@@ -540,6 +553,7 @@ describe("发布业务闭环", () => {
     expect(m.cancel).toHaveBeenCalledWith("website", "upstream");
     expect(m.updateOrder).toHaveBeenCalledWith(
       expect.objectContaining({ orderId: "order", status: "cancelled" }),
+      expect.any(Function),
     );
   });
   for (const action of ["cancel", "appeal"] as const) {
@@ -615,6 +629,7 @@ describe("发布业务闭环", () => {
         orderId: "order",
         providerStatus: 9,
       }),
+      expect.any(Function),
     );
   });
 });
