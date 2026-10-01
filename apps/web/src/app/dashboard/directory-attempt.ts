@@ -19,21 +19,28 @@ const attemptSchema = z.object({
         titleId: z.string(),
         text: z.string(),
       }),
+      z.object({
+        kind: z.literal("competitor"),
+        name: z.string(),
+        alias: z.string(),
+        resourceId: z.string().optional(),
+      }),
     ])
     .optional(),
 });
-export type MonitoringAttempt = z.infer<typeof attemptSchema>;
+export type DirectoryAttempt = z.infer<typeof attemptSchema>;
 const activeAttempts = new Set<string>();
 
 // @project-doc docs/domains/geo_operations.md#monitoring_workflow
-export function useMonitoringAttempt(storageKey: string) {
-  const [pending, setPending] = useState<MonitoringAttempt | null>(null);
+// @project-doc docs/domains/geo_operations.md#competitor_workflow
+export function useDirectoryAttempt(storageKey: string) {
+  const [pending, setPending] = useState<DirectoryAttempt | null>(null);
   const [ready, setReady] = useState(false);
   const [inFlight, setInFlight] = useState(false);
   const [resolvedVersion, setResolvedVersion] = useState(0);
   const [storageError, setStorageError] = useState("");
   const mountedRef = useRef(false);
-  const pendingRef = useRef<MonitoringAttempt | null>(null);
+  const pendingRef = useRef<DirectoryAttempt | null>(null);
   useEffect(() => {
     mountedRef.current = true;
     try {
@@ -86,7 +93,7 @@ export function useMonitoringAttempt(storageKey: string) {
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
   }, []);
-  function begin(attempt: MonitoringAttempt) {
+  function begin(attempt: DirectoryAttempt) {
     activeAttempts.add(attempt.id);
     setInFlight(true);
     pendingRef.current = attempt;

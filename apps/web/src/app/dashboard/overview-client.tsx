@@ -5,29 +5,21 @@ import {
   ArrowDownOutlined,
   ArrowUpOutlined,
   BulbOutlined,
-  DeleteOutlined,
-  EditOutlined,
   LineChartOutlined,
   MinusOutlined,
-  PlusOutlined,
   ReloadOutlined,
-  SearchOutlined,
   ThunderboltOutlined,
 } from "@ant-design/icons";
 import { Line } from "@ant-design/charts";
 import {
-  App,
+  Alert,
   Badge,
   Button,
   Card,
   DatePicker,
   Empty,
   Flex,
-  Form,
   Grid,
-  Input,
-  Modal,
-  Popconfirm,
   Select,
   Space,
   Statistic,
@@ -38,6 +30,7 @@ import {
   Typography,
 } from "antd";
 import dayjs, { type Dayjs } from "dayjs";
+import { useSearchParams } from "next/navigation";
 import {
   useCallback,
   useEffect,
@@ -46,7 +39,7 @@ import {
   useState,
   type CSSProperties,
 } from "react";
-import { apiClient, getApiData } from "@/lib/http-client";
+import { getApiData } from "@/lib/http-client";
 import { useThemeMode } from "../providers";
 import {
   findModelUpstreamLabel,
@@ -61,11 +54,16 @@ import {
   type OverviewTrendPoint,
 } from "./overview-trend";
 import {
+  selectScopeId,
   readStoredBrandId,
   readStoredOrganizationId,
   storeBrandId,
   storeOrganizationId,
 } from "./scope-storage";
+
+import { CompetitorDirectory, type Competitor } from "./competitor-directory";
+import { useDirectoryRead } from "./directory-read";
+import { useWorkspaceAccess, workspacePermission } from "./workspace-access";
 
 type Organization = {
   id: string;
@@ -78,7 +76,7 @@ type Brand = {
   name: string;
   accessRole: "tenant_admin" | "brand_admin" | "brand_editor" | "brand_viewer";
 };
-type Competitor = { id: string; name: string; alias: string };
+
 type Metric = { value: number; fluctuation: number };
 type Metrics = { exposure: Metric; avg_rank: Metric; score: Metric };
 type ExposureTrends = {
@@ -270,41 +268,41 @@ function MetricBlock({
 
 export function OverviewClient({
   organizations,
+  userId,
 }: {
   organizations: Organization[];
+  userId: string;
 }) {
-  const { message } = App.useApp();
   const { token } = theme.useToken();
+  const searchParams = useSearchParams();
+  const requestedOrganizationId = searchParams.get("organizationId");
+  const requestedBrandId = searchParams.get("brandId");
   const screens = Grid.useBreakpoint();
   const compact = !screens.md;
   const [range, setRange] = useState<[Dayjs, Dayjs]>(initialRange);
   const [organizationId, setOrganizationIdState] = useState(
     organizations[0]?.id ?? "",
   );
+  const organizationIdRef = useRef(organizations[0]?.id ?? "");
   const [brandId, setBrandId] = useState("");
   const [brandScopeKey, setBrandScopeKey] = useState("");
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>([]);
   const [brands, setBrands] = useState<Brand[]>([]);
   const [platforms, setPlatforms] = useState<Record<string, string>>({});
-  const [competitors, setCompetitors] = useState<Competitor[]>([]);
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [trends, setTrends] = useState<ExposureTrends | null>(null);
   const [scoreTrends, setScoreTrends] = useState<ScoreTrends | null>(null);
   const [ranks, setRanks] = useState<Rank[]>([]);
   const [scoreRanks, setScoreRanks] = useState<ScoreRank[]>([]);
   const [loading, setLoading] = useState(false);
+  const [analyticsError, setAnalyticsError] = useState("");
   const [activeTab, setActiveTab] = useState<OverviewTab>("trend");
-  const [competitorQuery, setCompetitorQuery] = useState("");
   const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
-  const [editorOpen, setEditorOpen] = useState(false);
-  const [editing, setEditing] = useState<Competitor | null>(null);
   const [scopeRestored, setScopeRestored] = useState(false);
-  const [form] = Form.useForm<{ name: string; alias: string }>();
-  const scopeRequestIdRef = useRef(0);
   const analyticsRequestIdRef = useRef(0);
+  const analyticsSnapshotRef = useRef("");
 
   const clearAnalytics = useCallback(() => {
-    setCompetitors([]);
     setMetrics(null);
     setTrends(null);
     setScoreTrends(null);
@@ -312,11 +310,19 @@ export function OverviewClient({
     setScoreRanks([]);
     setLastSyncedAt(null);
     setLoading(false);
+    setAnalyticsError("");
+    analyticsSnapshotRef.current = "";
   }, []);
 
   const selectOrganization = useCallback(
     (nextOrganizationId: string) => {
-      scopeRequestIdRef.current += 1;
+      if (organizationIdRef.current === nextOrganizationId) return;
+      organizationIdRef.current = nextOrganizationId;
+      const url = new URL(window.location.href);
+      if (url.searchParams.get("organizationId") !== nextOrganizationId)
+        url.searchParams.delete("brandId");
+      url.searchParams.set("organizationId", nextOrganizationId);
+      window.history.replaceState(window.history.state, "", url);
       analyticsRequestIdRef.current += 1;
       setOrganizationIdState(nextOrganizationId);
       setBrandId("");
@@ -324,9 +330,6 @@ export function OverviewClient({
       setBrands([]);
       setSelectedPlatforms([]);
       setPlatforms({});
-      setCompetitorQuery("");
-      setEditorOpen(false);
-      setEditing(null);
       clearAnalytics();
     },
     [clearAnalytics],
@@ -336,9 +339,6 @@ export function OverviewClient({
     (nextBrandId: string) => {
       analyticsRequestIdRef.current += 1;
       setBrandId(nextBrandId);
-      setCompetitorQuery("");
-      setEditorOpen(false);
-      setEditing(null);
       clearAnalytics();
     },
     [clearAnalytics],
@@ -354,9 +354,18 @@ export function OverviewClient({
   const scopeReady = Boolean(
     selectedBrand && brandScopeKey === currentScopeKey,
   );
-  const canEdit = Boolean(
-    scopeReady && selectedBrand?.accessRole !== "brand_viewer",
+  const access = useWorkspaceAccess();
+  const workspace = access.organizations.find(
+    (item) => item.id === organizationId,
   );
+  const competitorRead = useDirectoryRead<Competitor[]>(
+    scopeReady
+      ? `/api/v1/answerbit/competitors?${qs({ organizationId, teamBindingId: teamId, brandId })}`
+      : null,
+  );
+  const competitors = competitorRead.data ?? [];
+  const competitorIds = competitors.map((item) => item.id).join(",");
+  const [analysisRefresh, setAnalysisRefresh] = useState(0);
   const beginDate = range[0].format("YYYY-MM-DD");
   const endDate = range[1].format("YYYY-MM-DD");
   const rangeDays = range[1].diff(range[0], "day") + 1;
@@ -364,69 +373,119 @@ export function OverviewClient({
   useEffect(() => {
     const availableIds = organizations.map((item) => item.id);
     selectOrganization(
-      readStoredOrganizationId(availableIds) || organizations[0]?.id || "",
+      selectScopeId(
+        requestedOrganizationId,
+        readStoredOrganizationId(availableIds),
+        availableIds,
+      ),
     );
     setScopeRestored(true);
-  }, [organizations, selectOrganization]);
+  }, [organizations, requestedOrganizationId, selectOrganization]);
 
   useEffect(() => {
     if (!scopeRestored || !organizationId) return;
     storeOrganizationId(organizationId);
-  }, [organizationId, message, scopeRestored]);
+  }, [organizationId, scopeRestored]);
+
+  const brandRead = useDirectoryRead<Brand[]>(
+    scopeRestored && teamId
+      ? `/api/v1/answerbit/brands?${qs({ organizationId, teamBindingId: teamId })}`
+      : null,
+  );
+  const platformRead = useDirectoryRead<Record<string, string>>(
+    scopeRestored && teamId
+      ? `/api/v1/answerbit/dashboard/platforms?${qs({ organizationId, teamBindingId: teamId })}`
+      : null,
+  );
+  useEffect(() => {
+    if (!brandRead.data) return;
+    const nextBrands = brandRead.data;
+    setBrands(nextBrands);
+    setBrandId((current) =>
+      selectScopeId(
+        requestedBrandId,
+        nextBrands.some((item) => item.id === current)
+          ? current
+          : readStoredBrandId(
+              organizationId,
+              nextBrands.map((item) => item.id),
+            ),
+        nextBrands.map((item) => item.id),
+      ),
+    );
+    setBrandScopeKey(currentScopeKey);
+  }, [brandRead.data, currentScopeKey, organizationId, requestedBrandId]);
+  useEffect(() => {
+    setPlatforms(platformRead.data ?? {});
+  }, [platformRead.data]);
 
   useEffect(() => {
-    if (!scopeRestored || !teamId) return;
-    const requestId = ++scopeRequestIdRef.current;
-    setBrandId("");
-    setBrandScopeKey("");
-    setBrands([]);
-    setPlatforms({});
-    Promise.all([
-      getApiData<Brand[]>(
-        `/answerbit/brands?${qs({ organizationId, teamBindingId: teamId })}`,
-      ),
-      getApiData<Record<string, string>>(
-        `/answerbit/dashboard/platforms?${qs({ organizationId, teamBindingId: teamId })}`,
-      ),
-    ])
-      .then(([nextBrands, nextPlatforms]) => {
-        if (scopeRequestIdRef.current !== requestId) return;
-        setBrands(nextBrands);
-        setBrandId(
-          readStoredBrandId(
-            organizationId,
-            nextBrands.map((item) => item.id),
-          ) ||
-            nextBrands[0]?.id ||
-            "",
-        );
-        setBrandScopeKey(currentScopeKey);
-        setPlatforms(nextPlatforms);
-      })
-      .catch((error) => {
-        if (scopeRequestIdRef.current === requestId)
-          void message.error(error.message);
-      });
-    return () => {
-      if (scopeRequestIdRef.current === requestId)
-        scopeRequestIdRef.current += 1;
-    };
-  }, [currentScopeKey, organizationId, scopeRestored, teamId, message]);
+    if (organizationId && brandId && scopeReady) {
+      storeBrandId(organizationId, brandId);
+      const url = new URL(window.location.href);
+      if (
+        url.searchParams.get("organizationId") !== organizationId ||
+        url.searchParams.get("brandId") !== brandId
+      ) {
+        url.searchParams.set("organizationId", organizationId);
+        url.searchParams.set("brandId", brandId);
+        window.history.replaceState(window.history.state, "", url);
+      }
+    }
+  }, [organizationId, brandId, scopeReady]);
 
-  useEffect(() => {
-    if (organizationId && brandId) storeBrandId(organizationId, brandId);
-  }, [organizationId, brandId]);
-
+  const analyticsInput = JSON.stringify(
+    scopeReady && brands.some((item) => item.id === brandId)
+      ? {
+          organizationId,
+          teamId,
+          brandId,
+          beginDate,
+          endDate,
+          selectedPlatforms,
+          competitorIds,
+          directoryReady: Boolean(competitorRead.data || competitorRead.error),
+          directoryVersion: competitorRead.successVersion,
+        }
+      : null,
+  );
   const loadAnalytics = useCallback(async () => {
-    if (
-      !brandId ||
-      !teamId ||
-      !scopeReady ||
-      !brands.some((item) => item.id === brandId)
-    )
-      return;
+    const input = JSON.parse(analyticsInput) as {
+      organizationId: string;
+      teamId: string;
+      brandId: string;
+      beginDate: string;
+      endDate: string;
+      selectedPlatforms: string[];
+      competitorIds: string;
+      directoryReady: boolean;
+    } | null;
+    if (!input?.directoryReady) return;
+    const {
+      organizationId,
+      teamId,
+      brandId,
+      beginDate,
+      endDate,
+      selectedPlatforms,
+      competitorIds,
+    } = input;
     const requestId = ++analyticsRequestIdRef.current;
+    const snapshot = JSON.stringify([
+      organizationId,
+      teamId,
+      brandId,
+      beginDate,
+      endDate,
+      selectedPlatforms,
+      competitorIds,
+    ]);
+    if (analyticsSnapshotRef.current !== snapshot) {
+      clearAnalytics();
+      analyticsSnapshotRef.current = snapshot;
+    }
     setLoading(true);
+    setAnalyticsError("");
     const common: Record<string, string> = {
       organizationId,
       teamBindingId: teamId,
@@ -437,44 +496,100 @@ export function OverviewClient({
     if (selectedPlatforms.length)
       common.platforms = selectedPlatforms.join(",");
     try {
-      const nextCompetitors = await getApiData<Competitor[]>(
-        `/answerbit/competitors?${qs({ organizationId, teamBindingId: teamId, brandId })}`,
+      const ids = competitorIds ? competitorIds.split(",") : [];
+      const batches: string[][] = [];
+      for (let offset = 0; offset < ids.length; offset += 100)
+        batches.push(ids.slice(offset, offset + 100));
+      if (!batches.length) batches.push([]);
+      const comparisons = batches.map((items) =>
+        items.length ? { ...common, competitorIds: items.join(",") } : common,
       );
-      if (analyticsRequestIdRef.current !== requestId) return;
-      setCompetitors(nextCompetitors);
-      const comparison = nextCompetitors.map((item) => item.id).join(",");
-      const all = comparison
-        ? { ...common, competitorIds: comparison }
-        : common;
+      const readComparisons = <T,>(path: string) =>
+        Promise.all(
+          comparisons.map((query) => getApiData<T>(`${path}?${qs(query)}`)),
+        );
       const [
         nextMetrics,
         nextTrends,
         nextRanks,
         nextScoreTrends,
         nextScoreRanks,
-      ] = await Promise.all([
+      ] = await Promise.allSettled([
         getApiData<Metrics>(`/answerbit/dashboard?${qs(common)}`),
-        getApiData<ExposureTrends>(
-          `/answerbit/dashboard/exposure-trends?${qs(all)}`,
+        readComparisons<ExposureTrends>(
+          "/answerbit/dashboard/exposure-trends",
+        ).then((rows) => ({
+          ...rows[0],
+          competitor_statistics: rows.flatMap(
+            (row) => row.competitor_statistics,
+          ),
+        })),
+        readComparisons<Rank[]>("/answerbit/dashboard/exposure-rank").then(
+          (rows) => [
+            ...new Map(
+              rows.flat().map((row) => [row.competitor_id, row]),
+            ).values(),
+          ],
         ),
-        getApiData<Rank[]>(`/answerbit/dashboard/exposure-rank?${qs(all)}`),
-        getApiData<ScoreTrends>(
-          `/answerbit/dashboard/score-trends?${qs(all)}`,
-        ).catch(() => null),
-        getApiData<ScoreRank[]>(
-          `/answerbit/dashboard/score-rank?${qs(all)}`,
-        ).catch(() => []),
+        readComparisons<ScoreTrends>("/answerbit/dashboard/score-trends").then(
+          (rows) => ({
+            ...rows[0],
+            competitor_statistics: rows.flatMap(
+              (row) => row.competitor_statistics,
+            ),
+          }),
+        ),
+        readComparisons<ScoreRank[]>("/answerbit/dashboard/score-rank").then(
+          (rows) => [
+            ...new Map(
+              rows.flat().map((row) => [row.competitor_id, row]),
+            ).values(),
+          ],
+        ),
       ]);
       if (analyticsRequestIdRef.current !== requestId) return;
-      setMetrics(nextMetrics);
-      setTrends(nextTrends);
-      setScoreTrends(nextScoreTrends);
-      setRanks(nextRanks);
-      setScoreRanks(nextScoreRanks);
-      setLastSyncedAt(new Date());
+      setMetrics(nextMetrics.status === "fulfilled" ? nextMetrics.value : null);
+      setTrends(nextTrends.status === "fulfilled" ? nextTrends.value : null);
+      setScoreTrends(
+        nextScoreTrends.status === "fulfilled" ? nextScoreTrends.value : null,
+      );
+      setRanks(nextRanks.status === "fulfilled" ? nextRanks.value : []);
+      setScoreRanks(
+        nextScoreRanks.status === "fulfilled" ? nextScoreRanks.value : [],
+      );
+      const outcomes = [
+        nextMetrics,
+        nextTrends,
+        nextRanks,
+        nextScoreTrends,
+        nextScoreRanks,
+      ];
+      const labels = [
+        "核心指标",
+        "曝光趋势",
+        "曝光排行",
+        "得分趋势",
+        "得分排行",
+      ];
+      setAnalyticsError(
+        outcomes
+          .flatMap((outcome, index) =>
+            outcome.status === "rejected"
+              ? [
+                  `${labels[index]}：${outcome.reason instanceof Error ? outcome.reason.message : "请求失败"}`,
+                ]
+              : [],
+          )
+          .join("；"),
+      );
+      setLastSyncedAt(
+        outcomes.some((outcome) => outcome.status === "fulfilled")
+          ? new Date()
+          : null,
+      );
     } catch (error) {
       if (analyticsRequestIdRef.current !== requestId) return;
-      message.error(
+      setAnalyticsError(
         error instanceof Error ? error.message : "概览数据加载失败",
       );
       setMetrics(null);
@@ -485,59 +600,14 @@ export function OverviewClient({
     } finally {
       if (analyticsRequestIdRef.current === requestId) setLoading(false);
     }
-  }, [
-    organizationId,
-    teamId,
-    brandId,
-    scopeReady,
-    brands,
-    beginDate,
-    endDate,
-    selectedPlatforms,
-    message,
-  ]);
+  }, [analyticsInput, clearAnalytics]);
 
   useEffect(() => {
     void loadAnalytics();
-  }, [loadAnalytics]);
-
-  function openEditor(item?: Competitor) {
-    setEditing(item ?? null);
-    setEditorOpen(true);
-  }
-
-  useEffect(() => {
-    if (!editorOpen) return;
-    form.setFieldsValue({
-      name: editing?.name ?? "",
-      alias: editing?.alias ?? "",
-    });
-  }, [editing, editorOpen, form]);
-
-  async function saveCompetitor(values: { name: string; alias: string }) {
-    const payload = {
-      organizationId,
-      teamBindingId: teamId,
-      brandId,
-      competitorName: values.name,
-      competitorAlias: values.alias,
+    return () => {
+      analyticsRequestIdRef.current += 1;
     };
-    if (editing)
-      await apiClient.patch(`/answerbit/competitors/${editing.id}`, payload);
-    else await apiClient.post("/answerbit/competitors", payload);
-    message.success(editing ? "竞品已更新" : "竞品已添加");
-    setEditorOpen(false);
-    form.resetFields();
-    await loadAnalytics();
-  }
-
-  async function removeCompetitor(id: string) {
-    await apiClient.delete(
-      `/answerbit/competitors/${id}?${qs({ organizationId, teamBindingId: teamId, brandId })}`,
-    );
-    message.success("竞品已删除");
-    await loadAnalytics();
-  }
+  }, [loadAnalytics, analysisRefresh]);
 
   const rankRows = [...ranks].sort((a, b) => b.exposure - a.exposure);
   const topRank = rankRows[0];
@@ -575,14 +645,6 @@ export function OverviewClient({
   );
   const modelScopeCount =
     selectedPlatforms.length || Object.keys(platforms).length;
-  const filteredCompetitors = competitors.filter((item) => {
-    const keyword = competitorQuery.trim().toLocaleLowerCase();
-    return (
-      !keyword ||
-      item.name.toLocaleLowerCase().includes(keyword) ||
-      item.alias.toLocaleLowerCase().includes(keyword)
-    );
-  });
   const analysisSignal = !metrics
     ? {
         color: "default",
@@ -726,7 +788,10 @@ export function OverviewClient({
               icon={<ReloadOutlined />}
               loading={loading}
               disabled={!scopeReady}
-              onClick={() => void loadAnalytics()}
+              onClick={() => {
+                void competitorRead.reload();
+                setAnalysisRefresh((value) => value + 1);
+              }}
             >
               重新查询
             </Button>
@@ -734,6 +799,57 @@ export function OverviewClient({
         </div>
       </Card>
 
+      {brandRead.error ? (
+        <Alert
+          showIcon
+          type="error"
+          message="品牌目录请求失败"
+          description={brandRead.error}
+          action={
+            <Button
+              aria-label="重试品牌目录"
+              loading={brandRead.loading}
+              onClick={() => void brandRead.reload()}
+            >
+              重试品牌
+            </Button>
+          }
+        />
+      ) : null}
+      {platformRead.error ? (
+        <Alert
+          showIcon
+          type="error"
+          message="模型目录请求失败"
+          description={platformRead.error}
+          action={
+            <Button
+              aria-label="重试模型目录"
+              loading={platformRead.loading}
+              onClick={() => void platformRead.reload()}
+            >
+              重试模型
+            </Button>
+          }
+        />
+      ) : null}
+      {analyticsError ? (
+        <Alert
+          showIcon
+          type="error"
+          message="分析数据请求失败"
+          description={analyticsError}
+          action={
+            <Button
+              aria-label="重试分析数据"
+              loading={loading}
+              onClick={() => void loadAnalytics()}
+            >
+              重试分析
+            </Button>
+          }
+        />
+      ) : null}
       <Card
         className="overview-panel overview-workspace-card"
         styles={{ body: { padding: 0 } }}
@@ -743,7 +859,7 @@ export function OverviewClient({
           animated={{ inkBar: true, tabPane: false }}
           className="overview-tabs"
           onChange={(key) => setActiveTab(key as OverviewTab)}
-          tabBarGutter={compact ? 20 : 32}
+          tabBarGutter={compact ? 8 : 32}
           tabBarStyle={{
             margin: 0,
             paddingInline: compact ? 12 : 20,
@@ -759,7 +875,7 @@ export function OverviewClient({
             {
               key: "trend",
               label: (
-                <Space size={8}>
+                <Space size={compact ? 4 : 8}>
                   <LineChartOutlined />
                   趋势洞察
                 </Space>
@@ -989,11 +1105,11 @@ export function OverviewClient({
             {
               key: "competition",
               label: (
-                <Space size={8}>
+                <Space size={compact ? 4 : 8}>
                   <AimOutlined />
                   竞品管理
                   <Badge
-                    count={competitors.length}
+                    count={competitorRead.data ? competitors.length : "—"}
                     overflowCount={99}
                     showZero
                     size="small"
@@ -1001,131 +1117,47 @@ export function OverviewClient({
                 </Space>
               ),
               children: (
-                <div className="overview-tab-panel">
-                  <div className="overview-table-toolbar">
-                    <SectionTitle
-                      description="维护用于趋势和排名对比的品牌对象"
-                      title="竞品目录"
-                    />
-                    <Space wrap>
-                      <Input
-                        allowClear
-                        aria-label="搜索竞品"
-                        className="overview-competitor-search"
-                        onChange={(event) =>
-                          setCompetitorQuery(event.target.value)
-                        }
-                        placeholder="搜索名称或别名"
-                        prefix={<SearchOutlined />}
-                        value={competitorQuery}
-                      />
-                      {canEdit ? (
-                        <Button
-                          icon={<PlusOutlined />}
-                          onClick={() => openEditor()}
-                          type="primary"
-                        >
-                          添加竞品
-                        </Button>
-                      ) : null}
-                    </Space>
-                  </div>
-                  <Table<Competitor>
-                    key={`competitors-${organizationId}-${brandId}-${competitorQuery}`}
-                    dataSource={filteredCompetitors}
-                    loading={loading}
-                    pagination={{
-                      defaultPageSize: 10,
-                      pageSizeOptions: [5, 10, 20],
-                      showSizeChanger: true,
-                      showTotal: (total) => `共 ${total} 个竞品`,
-                    }}
-                    rowKey="id"
-                    tableLayout="fixed"
-                    columns={[
-                      {
-                        title: "竞品名称",
-                        dataIndex: "name",
-                        ellipsis: true,
-                        sorter: (a, b) => a.name.localeCompare(b.name, "zh-CN"),
-                        render: (value: string) => (
-                          <Typography.Text strong>{value}</Typography.Text>
-                        ),
-                      },
-                      {
-                        title: "别名",
-                        dataIndex: "alias",
-                        responsive: ["md" as const],
-                        render: (value: string) =>
-                          value ? (
-                            <Tag>{value}</Tag>
-                          ) : (
-                            <Typography.Text type="secondary">
-                              未设置
-                            </Typography.Text>
-                          ),
-                      },
-                      ...(canEdit
-                        ? [
-                            {
-                              title: "操作",
-                              width: compact ? 112 : 184,
-                              align: "right" as const,
-                              render: (_value: unknown, row: Competitor) => (
-                                <Space size={4}>
-                                  <Button
-                                    aria-label={`编辑${row.name}`}
-                                    icon={<EditOutlined />}
-                                    onClick={() => openEditor(row)}
-                                    size="small"
-                                    type="text"
-                                  >
-                                    {compact ? null : "编辑"}
-                                  </Button>
-                                  <Popconfirm
-                                    cancelText="取消"
-                                    description="该操作会更新 AnswerBit 中的竞品数据"
-                                    okButtonProps={{ danger: true }}
-                                    okText="删除"
-                                    onConfirm={() => removeCompetitor(row.id)}
-                                    title="删除这个竞品？"
-                                  >
-                                    <Button
-                                      aria-label={`删除${row.name}`}
-                                      danger
-                                      icon={<DeleteOutlined />}
-                                      size="small"
-                                      type="text"
-                                    >
-                                      {compact ? null : "删除"}
-                                    </Button>
-                                  </Popconfirm>
-                                </Space>
-                              ),
-                            },
-                          ]
-                        : []),
-                    ]}
-                    locale={{
-                      emptyText: (
-                        <Empty
-                          image={Empty.PRESENTED_IMAGE_SIMPLE}
-                          description={
-                            competitorQuery
-                              ? "没有匹配的竞品"
-                              : "还没有添加竞品"
-                          }
-                        />
-                      ),
-                    }}
-                  />
-                </div>
+                <CompetitorDirectory
+                  key={`${organizationId}:${teamId}:${brandId}`}
+                  userId={userId}
+                  organizationId={organizationId}
+                  teamBindingId={teamId}
+                  brandId={scopeReady ? brandId : ""}
+                  catalog={competitorRead}
+                  canCreate={
+                    scopeReady &&
+                    workspacePermission(
+                      workspace,
+                      selectedBrand?.accessRole,
+                      "resource.create",
+                      "geo_insights",
+                    )
+                  }
+                  canUpdate={
+                    scopeReady &&
+                    workspacePermission(
+                      workspace,
+                      selectedBrand?.accessRole,
+                      "resource.update",
+                      "geo_insights",
+                    )
+                  }
+                  canDelete={
+                    scopeReady &&
+                    workspacePermission(
+                      workspace,
+                      selectedBrand?.accessRole,
+                      "resource.delete",
+                      "geo_insights",
+                    )
+                  }
+                />
               ),
             },
             {
               key: "actions",
               label: (
-                <Space size={8}>
+                <Space size={compact ? 4 : 8}>
                   <ThunderboltOutlined />
                   增长行动
                 </Space>
@@ -1157,7 +1189,11 @@ export function OverviewClient({
                           定位品牌缺席或排名下降的主题
                         </Typography.Text>
                       </div>
-                      <Button href="/dashboard/monitoring">查看问题</Button>
+                      <Button
+                        href={`/dashboard/monitoring?${qs({ organizationId, brandId })}`}
+                      >
+                        查看问题
+                      </Button>
                     </div>
                     <div className="overview-action-row">
                       <span>02</span>
@@ -1167,23 +1203,41 @@ export function OverviewClient({
                           对比模型回答、引用域名与文章来源
                         </Typography.Text>
                       </div>
-                      <Button href="/dashboard/answers">查看证据</Button>
-                    </div>
-                    <div className="overview-action-row">
-                      <span>03</span>
-                      <div>
-                        <Typography.Text strong>推进内容生产</Typography.Text>
-                        <Typography.Text type="secondary">
-                          把已确认机会转成可审核的内容任务
-                        </Typography.Text>
-                      </div>
                       <Button
-                        href="/dashboard/content?stage=generate"
-                        type="primary"
+                        href={`/dashboard/answers?${qs({ organizationId, brandId })}`}
                       >
-                        生成内容
+                        查看证据
                       </Button>
                     </div>
+                    {workspacePermission(
+                      workspace,
+                      selectedBrand?.accessRole,
+                      "resource.read",
+                      "content",
+                    ) ? (
+                      <div className="overview-action-row">
+                        <span>03</span>
+                        <div>
+                          <Typography.Text strong>推进内容生产</Typography.Text>
+                          <Typography.Text type="secondary">
+                            把已确认机会转成可审核的内容任务
+                          </Typography.Text>
+                        </div>
+                        <Button
+                          href={`/dashboard/content?${qs({ stage: workspacePermission(workspace, selectedBrand?.accessRole, "resource.create", "content") ? "generate" : "library", organizationId, brandId })}`}
+                          type="primary"
+                        >
+                          {workspacePermission(
+                            workspace,
+                            selectedBrand?.accessRole,
+                            "resource.create",
+                            "content",
+                          )
+                            ? "生成内容"
+                            : "查看内容库"}
+                        </Button>
+                      </div>
+                    ) : null}
                   </div>
                 </div>
               ),
@@ -1191,35 +1245,6 @@ export function OverviewClient({
           ]}
         />
       </Card>
-
-      <Modal
-        title={editing ? "编辑竞品" : "添加竞品"}
-        open={editorOpen}
-        onCancel={() => setEditorOpen(false)}
-        onOk={() => form.submit()}
-        okText={editing ? "保存" : "添加"}
-        cancelText="取消"
-        width={720}
-      >
-        <Form
-          form={form}
-          layout="vertical"
-          onFinish={saveCompetitor}
-          requiredMark={false}
-          size="large"
-        >
-          <Form.Item
-            label="竞品名称"
-            name="name"
-            rules={[{ required: true, message: "请输入竞品名称" }]}
-          >
-            <Input maxLength={255} placeholder="例如：竞品品牌名称" />
-          </Form.Item>
-          <Form.Item label="竞品别名" name="alias">
-            <Input maxLength={255} placeholder="可选，用于匹配品牌称呼" />
-          </Form.Item>
-        </Form>
-      </Modal>
     </div>
   );
 }

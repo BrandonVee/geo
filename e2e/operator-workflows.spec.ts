@@ -167,6 +167,57 @@ async function mockMonitoringApis(
   });
 }
 
+async function mockOverviewApis(
+  page: Page,
+  handler?: (route: Route, path: string, index: number) => Promise<boolean>,
+) {
+  await mockBusinessApis(page);
+  await page.route("**/api/v1/answerbit/**", async (route) => {
+    const url = new URL(route.request().url());
+    const body =
+      route.request().method() !== "GET" && route.request().postData()
+        ? route.request().postDataJSON()
+        : {};
+    const index = fixture.scopes.findIndex(
+      (scope) =>
+        scope.organizationId ===
+        (url.searchParams.get("organizationId") ?? body.organizationId),
+    );
+    if (handler && (await handler(route, url.pathname, index))) return;
+    if (route.request().method() !== "GET") return route.fallback();
+    if (url.pathname === "/api/v1/answerbit/competitors")
+      return fulfill(route, [
+        {
+          id: `competitor-${index}`,
+          name: `${fixture.scopes[index].name} 的竞品`,
+          alias: "原别名",
+        },
+      ]);
+    if (url.pathname.endsWith("/dashboard/platforms"))
+      return fulfill(route, { DeepSeek: "deepseek" });
+    if (url.pathname === "/api/v1/answerbit/dashboard")
+      return fulfill(route, {
+        exposure: { value: index ? 55 : 22.5, fluctuation: 0 },
+        avg_rank: { value: 2, fluctuation: 0 },
+        score: { value: 70, fluctuation: 0 },
+      });
+    if (
+      url.pathname.endsWith("/exposure-trends") ||
+      url.pathname.endsWith("/score-trends")
+    )
+      return fulfill(route, {
+        brand_statistics: [],
+        competitor_statistics: [],
+      });
+    if (
+      url.pathname.endsWith("/exposure-rank") ||
+      url.pathname.endsWith("/score-rank")
+    )
+      return fulfill(route, []);
+    return route.fallback();
+  });
+}
+
 const scopedPath = (path: string, index = 0) =>
   `${path}?${new URLSearchParams({ organizationId: fixture.scopes[index].organizationId, brandId: fixture.scopes[index].brandId })}`;
 
@@ -7447,5 +7498,446 @@ test.describe("真实运营操作闭环", () => {
         exact: true,
       }),
     ).toBeVisible();
+  });
+  test("竞品校验和明确失败保留输入，提交锁生效，保存完成后正常继续", async ({
+    page,
+  }) => {
+    let writes = 0,
+      failure = true,
+      release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await mockOverviewApis(page, async (route, path) => {
+      if (
+        path !== "/api/v1/answerbit/competitors" ||
+        route.request().method() !== "POST"
+      )
+        return false;
+      writes++;
+      expect(route.request().postDataJSON().competitorName).toBe("测试竞品");
+      if (failure)
+        await route.fulfill({
+          status: 422,
+          json: { error: { message: "竞品名称暂不可用，请修改后重试" } },
+        });
+      else {
+        await held;
+        await fulfill(route, { competitorId: "new-competitor" });
+      }
+      return true;
+    });
+    await page.goto(scopedPath("/dashboard"));
+    await page.getByRole("tab", { name: /竞品管理/ }).click();
+    await expect(
+      page.getByText("流程测试企业 A 的竞品", { exact: true }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "添加竞品", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "添加竞品", exact: true });
+    await dialog.getByLabel("竞品名称", { exact: true }).fill(" ".repeat(3));
+    await expect(
+      dialog.getByRole("button", { name: "添加竞品", exact: true }),
+    ).toBeDisabled();
+    await dialog.getByLabel("竞品名称", { exact: true }).fill("长".repeat(256));
+    await dialog.getByRole("button", { name: "添加竞品", exact: true }).click();
+    await expect(
+      dialog.getByText("竞品名称须为 1–255 字，别名最多 255 字。", {
+        exact: true,
+      }),
+    ).toBeVisible();
+    expect(writes).toBe(0);
+    await dialog.getByLabel("竞品名称", { exact: true }).fill("  测试竞品  ");
+    await dialog.getByLabel("竞品别名", { exact: true }).fill("暂存别名");
+    await dialog.getByRole("button", { name: "添加竞品", exact: true }).click();
+    await expect(
+      dialog.getByText("竞品名称暂不可用，请修改后重试", { exact: true }),
+    ).toBeVisible();
+    await expect(dialog.getByLabel("竞品名称", { exact: true })).toHaveValue(
+      "  测试竞品  ",
+    );
+    failure = false;
+    await dialog.getByRole("button", { name: "添加竞品", exact: true }).click();
+    await expect.poll(() => writes).toBe(2);
+    await expect(dialog.getByLabel("竞品名称", { exact: true })).toBeDisabled();
+    await expect(
+      dialog.getByRole("button", { name: /取\s*消/ }),
+    ).toBeDisabled();
+    release();
+    await expect(dialog).not.toBeVisible();
+    await expect(page.getByText("竞品已添加", { exact: true })).toBeVisible();
+    expect(writes).toBe(2);
+  });
+
+  test("竞品响应丢失刷新恢复，新增人工核对，编辑与删除按真实目录确认，不重复写入", async ({
+    page,
+  }) => {
+    let creates = 0,
+      edits = 0,
+      deletes = 0,
+      changed = false,
+      removed = false;
+    await mockOverviewApis(page, async (route, path) => {
+      if (!path.startsWith("/api/v1/answerbit/competitors")) return false;
+      const method = route.request().method();
+      if (method === "POST") creates++;
+      if (method === "PATCH") {
+        edits++;
+        changed = true;
+      }
+      if (method === "DELETE") {
+        deletes++;
+        removed = true;
+      }
+      if (method !== "GET") {
+        await route.fulfill({
+          status: 502,
+          json: { error: { message: "腾讯结果暂未返回，请核对目录" } },
+        });
+        return true;
+      }
+      if (changed || removed) {
+        await fulfill(
+          route,
+          removed
+            ? []
+            : [{ id: "competitor-0", name: "更新后的竞品", alias: "新别名" }],
+        );
+        return true;
+      }
+      return false;
+    });
+    await page.goto(scopedPath("/dashboard"));
+    await page.getByRole("tab", { name: /竞品管理/ }).click();
+    await page.getByRole("button", { name: "添加竞品", exact: true }).click();
+    let dialog = page.getByRole("dialog", { name: "添加竞品", exact: true });
+    await dialog.getByLabel("竞品名称", { exact: true }).fill("原新增的竞品");
+    await dialog.getByRole("button", { name: "添加竞品", exact: true }).click();
+    await expect(
+      dialog.getByText("腾讯结果暂未返回，请核对目录", { exact: true }),
+    ).toBeVisible();
+    await dialog.getByRole("button", { name: /取\s*消/ }).click();
+    await page.reload();
+    await page.getByRole("tab", { name: /竞品管理/ }).click();
+    await expect(
+      page.getByText("竞品名称：原新增的竞品", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "添加竞品", exact: true }),
+    ).toBeDisabled();
+    await page
+      .getByRole("button", { name: "核对竞品目录", exact: true })
+      .click();
+    await expect(
+      page.getByRole("button", { name: "已核对，结束本次操作", exact: true }),
+    ).toBeEnabled();
+    await page
+      .getByRole("button", { name: "已核对，结束本次操作", exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: "结束本次操作", exact: true })
+      .click();
+    await expect(
+      page.getByText("上次竞品操作结果待核对", { exact: true }),
+    ).toHaveCount(0);
+    await page.getByRole("button", { name: "添加竞品", exact: true }).click();
+    await expect(dialog.getByLabel("竞品名称", { exact: true })).toHaveValue(
+      "原新增的竞品",
+    );
+    await dialog.getByRole("button", { name: /取\s*消/ }).click();
+    await page
+      .getByRole("button", { name: "编辑流程测试企业 A 的竞品", exact: true })
+      .click();
+    dialog = page.getByRole("dialog", { name: "编辑竞品", exact: true });
+    await dialog.getByLabel("竞品名称", { exact: true }).fill("更新后的竞品");
+    await dialog.getByLabel("竞品别名", { exact: true }).fill("新别名");
+    await dialog.getByRole("button", { name: "保存竞品", exact: true }).click();
+    await expect(
+      dialog.getByText("腾讯结果暂未返回，请核对目录", { exact: true }),
+    ).toBeVisible();
+    await dialog.getByRole("button", { name: /取\s*消/ }).click();
+    await page.reload();
+    await page.getByRole("tab", { name: /竞品管理/ }).click();
+    await page
+      .getByRole("button", { name: "核对竞品目录", exact: true })
+      .click();
+    await expect(
+      page.getByText("目录已确认竞品名称与别名已更新", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("上次竞品操作结果待核对", { exact: true }),
+    ).toHaveCount(0);
+    await page
+      .getByRole("button", { name: "删除更新后的竞品", exact: true })
+      .click();
+    dialog = page.getByRole("dialog", { name: "删除这个竞品？", exact: true });
+    await dialog.getByRole("button", { name: "删除竞品", exact: true }).click();
+    await expect(
+      dialog.getByText("腾讯结果暂未返回，请核对目录", { exact: true }),
+    ).toBeVisible();
+    await dialog.getByRole("button", { name: /取\s*消/ }).click();
+    await page
+      .getByRole("button", { name: "核对竞品目录", exact: true })
+      .click();
+    await expect(
+      page.getByText("目录已确认该竞品不存在", { exact: true }),
+    ).toBeVisible();
+    expect({ creates, edits, deletes }).toEqual({
+      creates: 1,
+      edits: 1,
+      deletes: 1,
+    });
+  });
+
+  test("竞品目录模型与指标独立重试，超过百个竞品分批查询全部，明暗多尺寸可访问", async ({
+    page,
+  }) => {
+    let failModels = true,
+      failCatalog = true,
+      failTrends = true;
+    const compared = new Set<string>(),
+      runtime: string[] = [];
+    page.on("pageerror", (error) => runtime.push(error.message));
+    await mockOverviewApis(page, async (route, path) => {
+      if (path.endsWith("/dashboard/platforms") && failModels) {
+        await route.fulfill({
+          status: 503,
+          json: { error: { message: "模型独立失败" } },
+        });
+        return true;
+      }
+      if (path === "/api/v1/answerbit/competitors") {
+        if (failCatalog)
+          await route.fulfill({
+            status: 503,
+            json: { error: { message: "竞品独立失败" } },
+          });
+        else
+          await fulfill(
+            route,
+            Array.from({ length: 123 }, (_, i) => ({
+              id: `comp-${i}`,
+              name: `对比品牌 ${i}`,
+              alias: i === 122 ? "目标别名" : "",
+            })),
+          );
+        return true;
+      }
+      if (path.endsWith("/exposure-trends") && failTrends) {
+        await route.fulfill({
+          status: 503,
+          json: { error: { message: "曝光趋势独立失败" } },
+        });
+        return true;
+      }
+      if (path.endsWith("/exposure-rank")) {
+        const ids =
+          new URL(route.request().url()).searchParams
+            .get("competitorIds")
+            ?.split(",") ?? [];
+        expect(ids.length).toBeLessThanOrEqual(100);
+        ids.forEach((id) => compared.add(id));
+        await fulfill(
+          route,
+          ids.map((id) => ({
+            competitor_id: id,
+            competitor_name: `排名品牌 ${id}`,
+            exposure: 1,
+            fluctuation: 0,
+            avg_rank: { value: 2, fluctuation: 0 },
+          })),
+        );
+        return true;
+      }
+      return false;
+    });
+    await page.goto(scopedPath("/dashboard"));
+    await expect(page.getByText("模型独立失败", { exact: true })).toBeVisible();
+    await expect(page.getByText(/曝光趋势：曝光趋势独立失败/)).toBeVisible();
+    await expect(page.locator(".overview-metric-grid")).toContainText("22.5");
+    await page.getByRole("tab", { name: /竞品管理/ }).click();
+    await expect(page.getByText("竞品独立失败", { exact: true })).toBeVisible();
+    await expect(
+      page.getByText("竞品尚未加载，请重试", { exact: true }),
+    ).toBeVisible();
+    failCatalog = false;
+    failModels = false;
+    failTrends = false;
+    await page
+      .getByRole("button", { name: "重试竞品目录", exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: "重试模型目录", exact: true })
+      .click();
+    await expect.poll(() => compared.size).toBe(123);
+    expect(compared).toEqual(
+      new Set(Array.from({ length: 123 }, (_, i) => `comp-${i}`)),
+    );
+    await page.getByLabel("搜索竞品", { exact: true }).fill("目标别名");
+    await expect(page.getByText("对比品牌 122", { exact: true })).toBeVisible();
+    for (const theme of ["light", "dark"]) {
+      await page.evaluate(
+        (value) => localStorage.setItem("ab-theme", value),
+        theme,
+      );
+      await page.reload();
+      await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
+      await page.getByRole("tab", { name: /竞品管理/ }).click();
+      await expect(
+        page.getByRole("button", { name: "添加竞品", exact: true }),
+      ).toBeEnabled();
+      await expect(page.getByText("对比品牌 0", { exact: true })).toBeVisible();
+      for (const width of [390, 768, 1440]) {
+        await page.setViewportSize({ width, height: 1000 });
+        await expect
+          .poll(() =>
+            page.evaluate(
+              () => document.documentElement.scrollWidth <= window.innerWidth,
+            ),
+          )
+          .toBeTruthy();
+        await page.evaluate(async () => {
+          await Promise.all(
+            document
+              .getAnimations()
+              .filter(
+                (animation) =>
+                  animation.effect?.getComputedTiming().iterations !== Infinity,
+              )
+              .map((animation) => animation.finished.catch(() => {})),
+          );
+        });
+        await page.evaluate(axe.source);
+        const results = await page.evaluate(async () =>
+          (window as unknown as { axe: typeof axe }).axe.run(document, {
+            runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa"] },
+          }),
+        );
+        expect(
+          results.violations.map(({ id, nodes }) => ({
+            id,
+            targets: nodes.map(({ target }) => target),
+          })),
+        ).toEqual([]);
+        if (width === 390 || width === 1440) {
+          await page
+            .getByText("竞品目录", { exact: true })
+            .scrollIntoViewIfNeeded();
+          await page.screenshot({
+            path: `/tmp/geo-competitor-${theme}-${width}.png`,
+            fullPage: true,
+          });
+        }
+      }
+    }
+    expect(runtime).toEqual([]);
+  });
+
+  test("竞品删除响应迟到不能关闭新企业编辑，查看者没有写入口，增长行动携带当前范围", async ({
+    page,
+  }) => {
+    let release!: () => void,
+      requested = false;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await mockOverviewApis(page, async (route) => {
+      if (route.request().method() !== "DELETE") return false;
+      requested = true;
+      await held;
+      await fulfill(route, {}).catch(() => {});
+      return true;
+    });
+    await page.goto(scopedPath("/dashboard/metering"));
+    await page.getByRole("menuitem", { name: /数据总览/ }).click();
+    await page.getByRole("tab", { name: /竞品管理/ }).click();
+    await page
+      .getByRole("button", { name: "删除流程测试企业 A 的竞品", exact: true })
+      .click();
+    const confirmation = page.getByRole("dialog", {
+      name: "删除这个竞品？",
+      exact: true,
+    });
+    await confirmation
+      .getByRole("button", { name: "删除竞品", exact: true })
+      .click();
+    await expect.poll(() => requested).toBeTruthy();
+    await expect(
+      confirmation.getByRole("button", { name: /取\s*消/ }),
+    ).toBeDisabled();
+    await page.goBack();
+    await expect(page).toHaveURL(/\/dashboard\/metering/);
+    await page.locator("#answerbit-scope-organization").focus();
+    await page.locator("#answerbit-scope-organization").press("ArrowDown");
+    await page.getByTitle("流程测试企业 B", { exact: true }).click();
+    await page.getByRole("menuitem", { name: /数据总览/ }).click();
+    await page.getByRole("tab", { name: /竞品管理/ }).click();
+    await expect(
+      page.getByText("流程测试企业 B 的竞品", { exact: true }),
+    ).toBeVisible();
+    await page
+      .getByRole("button", { name: "编辑流程测试企业 B 的竞品", exact: true })
+      .click();
+    const editor = page.getByRole("dialog", { name: "编辑竞品", exact: true });
+    await editor
+      .getByLabel("竞品名称", { exact: true })
+      .fill("新企业尚未提交的竞品");
+    release();
+    await expect(editor).toBeVisible();
+    await expect(editor.getByLabel("竞品名称", { exact: true })).toHaveValue(
+      "新企业尚未提交的竞品",
+    );
+    await expect(
+      editor.getByRole("button", { name: "保存竞品", exact: true }),
+    ).toBeEnabled();
+    await editor.getByRole("button", { name: /取\s*消/ }).click();
+    await page.getByRole("tab", { name: /增长行动/ }).click();
+    const href = await page
+      .getByRole("link", { name: "查看问题", exact: true })
+      .getAttribute("href");
+    expect(
+      new URL(href!, "http://localhost").searchParams.get("organizationId"),
+    ).toBe(fixture.scopes[1].organizationId);
+    expect(new URL(href!, "http://localhost").searchParams.get("brandId")).toBe(
+      fixture.scopes[1].brandId,
+    );
+    await database.db
+      .update(database.brandAccess)
+      .set({ role: "brand_viewer" })
+      .where(operators.eq(database.brandAccess.userId, fixture.userId));
+    await page.reload();
+    await page.getByRole("tab", { name: /竞品管理/ }).click();
+    await expect(
+      page.getByText("流程测试企业 B 的竞品", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "添加竞品", exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole("button", {
+        name: "编辑流程测试企业 B 的竞品",
+        exact: true,
+      }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole("button", {
+        name: "删除流程测试企业 B 的竞品",
+        exact: true,
+      }),
+    ).toHaveCount(0);
+    const { organizationId, teamBindingId, brandId } = fixture.scopes[1];
+    const authorizedShape = await page.request.post(
+      "/api/v1/answerbit/competitors",
+      {
+        data: {
+          organizationId,
+          teamBindingId,
+          brandId,
+          competitorName: "不可创建",
+          competitorAlias: "",
+        },
+      },
+    );
+    expect(authorizedShape.status()).toBe(403);
+    expect((await authorizedShape.json()).error.code).toBe("PERMISSION_DENIED");
   });
 });

@@ -2,12 +2,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 // @project-doc docs/domains/geo_operations.md#monitoring_workflow
-export function useMonitoringRead<T>(url: string | null) {
+// @project-doc docs/domains/geo_operations.md#competitor_workflow
+export function useDirectoryRead<T>(url: string | null) {
   const [snapshot, setSnapshot] = useState<{
     url: string;
     data?: T;
     error: string;
     failures: number;
+    successVersion: number;
   } | null>(null);
   const [loading, setLoading] = useState(false);
   const controllerRef = useRef<AbortController | null>(null);
@@ -37,7 +39,13 @@ export function useMonitoringRead<T>(url: string | null) {
       if (!response.ok)
         throw new Error(body.error?.message ?? "请求失败，请重试");
       if (!current()) return false;
-      setSnapshot({ url, data: body.data, error: "", failures: 0 });
+      setSnapshot({
+        url,
+        data: body.data,
+        error: "",
+        failures: 0,
+        successVersion: run,
+      });
       return true;
     } catch (error) {
       if (!current()) return false;
@@ -46,6 +54,7 @@ export function useMonitoringRead<T>(url: string | null) {
         data: previous?.url === url ? previous.data : undefined,
         error: error instanceof Error ? error.message : "请求失败，请重试",
         failures: (previous?.url === url ? previous.failures : 0) + 1,
+        successVersion: previous?.url === url ? previous.successVersion : 0,
       }));
       return false;
     } finally {
@@ -62,6 +71,7 @@ export function useMonitoringRead<T>(url: string | null) {
     error: current?.error ?? "",
     failures: current?.failures ?? 0,
     loading,
+    successVersion: current?.successVersion ?? 0,
     reload,
   };
 }

@@ -42,11 +42,11 @@ import {
   ModelLabel,
   modelSelectOptions,
 } from "../model-display";
-import { useMonitoringRead } from "./monitoring-read";
+import { useDirectoryRead } from "../directory-read";
 import {
-  useMonitoringAttempt,
-  type MonitoringAttempt,
-} from "./monitoring-attempt";
+  useDirectoryAttempt,
+  type DirectoryAttempt,
+} from "../directory-attempt";
 import {
   createCategorySchema,
   updateCategorySchema,
@@ -151,7 +151,7 @@ function MonitoringWorkspace({
   const [editingPromptText, setEditingPromptText] = useState("");
   const mountedRef = useRef(false);
   const mutationRef = useRef("");
-  const attempt = useMonitoringAttempt(
+  const attempt = useDirectoryAttempt(
     `geo-monitoring-attempt:${userId}:${organizationId}:${teamBindingId}:${brandId}`,
   );
   const [reviewed, setReviewed] = useState(false);
@@ -176,10 +176,10 @@ function MonitoringWorkspace({
     };
   }, []);
   const base = { organizationId, teamBindingId, brandId };
-  const categoryRead = useMonitoringRead<Category[]>(
+  const categoryRead = useDirectoryRead<Category[]>(
     brandId ? `/api/v1/answerbit/categories?${scopeQuery(base)}` : null,
   );
-  const platformRead = useMonitoringRead<Record<string, string>>(
+  const platformRead = useDirectoryRead<Record<string, string>>(
     teamBindingId
       ? `/api/v1/answerbit/dashboard/platforms?${scopeQuery({ organizationId, teamBindingId })}`
       : null,
@@ -204,7 +204,7 @@ function MonitoringWorkspace({
           : {}),
       })}`
     : null;
-  const promptRead = useMonitoringRead<{
+  const promptRead = useDirectoryRead<{
     titles: Group[];
     total_prompts: number;
   }>(promptUrl);
@@ -324,7 +324,7 @@ function MonitoringWorkspace({
     key: string,
     action: () => Promise<unknown>,
     successMessage: string,
-    details?: MonitoringAttempt["details"],
+    details?: DirectoryAttempt["details"],
   ) {
     if (mutationRef.current || mutationDisabled) return false;
     mutationRef.current = key;

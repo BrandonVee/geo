@@ -106,7 +106,16 @@ export function Providers({
             fontSize: 15,
           },
           components: {
+            Badge: {
+              colorTextLightSolid: mode === "dark" ? "#171d2a" : "#ffffff",
+            },
             Button: {
+              // Filled primary actions need a darker background than the dark
+              // theme accent to keep white labels readable in every state.
+              colorPrimary: "#4f46e5",
+              colorPrimaryHover: "#4338ca",
+              colorPrimaryActive: "#3730a3",
+              primaryColor: "#ffffff",
               dangerColor: mode === "dark" ? "#171d2a" : "#ffffff",
               contentFontSize: 14,
               contentFontSizeLG: 14,

@@ -28,6 +28,7 @@ export default async function DashboardPage() {
       />
       {organizations.length ? (
         <OverviewClient
+          userId={session.user.id}
           organizations={organizations.map(
             ({ id, name, role, teamBindingId }) => ({
               id,
