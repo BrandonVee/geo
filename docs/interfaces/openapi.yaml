@@ -2147,6 +2147,7 @@ paths:
           description: 企业不存在
     patch:
       summary: 更新企业状态、服务有效期和积分有效期
+      description: 只保存提交的字段。可选 expected 在行锁内核对原值，提供时必须包含所有修改字段的原值；平台客户端始终提供。状态、期限与审计原子提交。恢复到期企业须同时提供未来服务期限。
       tags:
         - Platform Admin
       security:
@@ -2166,6 +2167,10 @@ paths:
               type: object
               additionalProperties: false
               minProperties: 1
+              anyOf:
+                - required: [status]
+                - required: [serviceExpiresAt]
+                - required: [pointsExpiresAt]
               properties:
                 serviceExpiresAt:
                   type: string
@@ -2180,15 +2185,35 @@ paths:
                   enum:
                     - active
                     - suspended
+                expected:
+                  type: object
+                  additionalProperties: false
+                  description: 管理员读到的原值；可额外核对未修改字段以防并发冻结或续期
+                  properties:
+                    status:
+                      type: string
+                      enum: [active, suspended]
+                    serviceExpiresAt:
+                      type: string
+                      format: date-time
+                      nullable: true
+                    pointsExpiresAt:
+                      type: string
+                      format: date-time
+                      nullable: true
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
         "415":
           $ref: "#/components/responses/UnsupportedMediaType"
         "200":
-          description: 企业状态或有效期已更新并审计
+          description: 企业状态或有效期与审计已在同一事务提交
+        "409":
+          description: ORGANIZATION_SETTINGS_CONFLICT；原值与当前设置不符，details.current 返回最新企业设置，不写入或审计
+        "422":
+          description: ORGANIZATION_SERVICE_EXPIRED；恢复后的服务期限已过，须续期后恢复，details.current 返回当前企业设置
         "404":
-          description: 企业不存在
+          description: 企业不存在或已关闭
   /v1/admin/organizations/{organizationId}/answerbit-brand:
     put:
       summary: 旧版企业手工绑定 Tencent BrandID 入口

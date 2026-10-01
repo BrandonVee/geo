@@ -32,6 +32,8 @@ JSON 请求使用 `Content-Type: application/json`；允许标准的 `applicatio
 
 账号 `PATCH /v1/admin/users/{userId}` 主动停用或把代理商调整为当前不可用时，会逐家校验有效企业管理员；`409 LAST_TENANT_ADMIN` 的 `details.organizations` 返回需交接企业的 ID 与名称，拒绝时不更新账号、Session 或功能范围。租户成员目录在成员 `status` 之外、平台企业详情的 `members` 在 `memberStatus` 之外返回 `accountState`（active/disabled/scheduled/expired），两者分别代表企业成员关系和全局账号当前可用状态。
 
+企业 `PATCH /v1/admin/organizations/{organizationId}` 只保存提交字段；可选 `expected` 提供原状态和原期限（历史空期限用 `null`），包含所有修改字段的原值，也可增加未修改字段校验。平台客户端始终传原值；行锁内不一致返回 `409 ORGANIZATION_SETTINGS_CONFLICT` 和 `details.current`，不变更也不审计。恢复仍到期的企业返回 `422 ORGANIZATION_SERVICE_EXPIRED`，可同时提交未来服务期限与 `status=active` 完成续期恢复；更新与审计在同一事务内提交。
+
 ## 响应格式
 
 成功响应：

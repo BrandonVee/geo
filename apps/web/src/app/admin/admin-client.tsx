@@ -27,6 +27,7 @@ import {
 } from "@ant-design/icons";
 import {
   Alert,
+  App,
   Avatar,
   Badge,
   Button,
@@ -65,6 +66,8 @@ import dayjs, { type Dayjs } from "dayjs";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { EnterpriseValidity } from "./enterprise-validity";
+import { EnterpriseStatus } from "./enterprise-status";
+import type { EnterpriseSettings } from "./enterprise-command";
 import { AdminDocumentLibrary } from "./admin-document-library";
 import { AdminAccountStatusAction } from "./admin-account-status";
 import {
@@ -652,6 +655,7 @@ export function AdminClient({
   userName: string;
 }) {
   const { token } = theme.useToken();
+  const { message: notification } = App.useApp();
   const screens = Grid.useBreakpoint();
   const mobile = !screens.md;
   const desktopNavigation = Boolean(screens.lg);
@@ -667,7 +671,10 @@ export function AdminClient({
   const grantOperation = Form.useWatch("operation", grantForm);
   const grantKey = useRef(crypto.randomUUID());
   const [validityOrganization, setValidityOrganization] =
-    useState<Organization | null>(null);
+    useState<EnterpriseSettings | null>(null);
+  const [validityRestore, setValidityRestore] = useState(false);
+  const [statusOrganization, setStatusOrganization] =
+    useState<EnterpriseSettings | null>(null);
   const [costForm] = Form.useForm<CostForm>();
   const [channelForm] = Form.useForm<ChannelForm>();
   const [pricingTierRuleForm] = Form.useForm<PricingTierRuleForm>();
@@ -2003,7 +2010,14 @@ export function AdminClient({
       width: compactTable ? 240 : 400,
       render: (_, item) => (
         <Space size={compactTable ? 6 : 8}>
-          <Button onClick={() => setValidityOrganization(item)}>有效期</Button>
+          <Button
+            onClick={() => {
+              setValidityRestore(false);
+              setValidityOrganization(item);
+            }}
+          >
+            有效期
+          </Button>
           <Button
             aria-label={`管理企业 ${item.name}`}
             icon={compactTable ? <SettingOutlined /> : undefined}
@@ -2025,15 +2039,7 @@ export function AdminClient({
               ) : undefined
             }
             loading={busy === item.id}
-            onClick={() =>
-              void patch(
-                "/api/v1/admin/organizations/" + item.id,
-                {
-                  status: item.status === "active" ? "suspended" : "active",
-                },
-                item.id,
-              )
-            }
+            onClick={() => setStatusOrganization(item)}
           >
             {compactTable ? null : item.status === "active" ? "冻结" : "恢复"}
           </Button>
@@ -2425,13 +2431,39 @@ export function AdminClient({
         <EnterpriseValidity
           key={validityOrganization.id}
           organization={validityOrganization}
+          restoreOnSave={validityRestore}
           onClose={() => setValidityOrganization(null)}
           onSaved={() => {
             setValidityOrganization(null);
-            setMessage("企业有效期已更新");
+            notification.success("企业有效期已更新");
             void load();
             if (organizationDetail)
-              void openOrganization(organizationDetail.organization.id);
+              void openOrganization(
+                organizationDetail.organization.id,
+                true,
+              ).catch(() => {});
+          }}
+        />
+      ) : null}
+      {statusOrganization ? (
+        <EnterpriseStatus
+          key={statusOrganization.id}
+          organization={statusOrganization}
+          onClose={() => setStatusOrganization(null)}
+          onSaved={() => {
+            setStatusOrganization(null);
+            notification.success("企业状态已更新");
+            void load();
+            if (organizationDetail)
+              void openOrganization(
+                organizationDetail.organization.id,
+                true,
+              ).catch(() => {});
+          }}
+          onRenew={(organization) => {
+            setStatusOrganization(null);
+            setValidityRestore(true);
+            setValidityOrganization(organization);
           }}
         />
       ) : null}
@@ -5550,9 +5582,10 @@ export function AdminClient({
               />
             ) : null}
             <Button
-              onClick={() =>
-                setValidityOrganization(organizationDetail.organization)
-              }
+              onClick={() => {
+                setValidityRestore(false);
+                setValidityOrganization(organizationDetail.organization);
+              }}
             >
               设置企业 / 积分有效期
             </Button>

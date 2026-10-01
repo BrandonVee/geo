@@ -298,20 +298,62 @@ export const adminRepository = {
     ]);
     return { list, pagination: pageMeta(input, count?.value ?? 0) };
   },
+  // @project-doc docs/domains/identity_and_access.md#enterprise_validity
   updateOrganization(
     id: string,
     input: {
       status?: "active" | "suspended";
       serviceExpiresAt?: Date;
       pointsExpiresAt?: Date;
+      expected?: {
+        status?: "active" | "suspended";
+        serviceExpiresAt?: Date | null;
+        pointsExpiresAt?: Date | null;
+      };
     },
+    afterUpdate?: (executor: Pick<typeof db, "insert">) => Promise<void>,
   ) {
-    return db
-      .update(organizations)
-      .set({ ...input, updatedAt: new Date() })
-      .where(and(eq(organizations.id, id), ne(organizations.status, "closed")))
-      .returning()
-      .then((rows) => rows[0]);
+    return db.transaction(
+      async (tx) => {
+        const [current] = await tx
+          .select()
+          .from(organizations)
+          .where(
+            and(eq(organizations.id, id), ne(organizations.status, "closed")),
+          )
+          .for("update");
+        if (!current) return { status: "not_found" as const };
+        const { expected, ...changes } = input;
+        if (
+          expected &&
+          ((expected.status !== undefined &&
+            expected.status !== current.status) ||
+            (expected.serviceExpiresAt !== undefined &&
+              expected.serviceExpiresAt?.getTime() !==
+                current.serviceExpiresAt?.getTime()) ||
+            (expected.pointsExpiresAt !== undefined &&
+              expected.pointsExpiresAt?.getTime() !==
+                current.pointsExpiresAt?.getTime()))
+        )
+          return { status: "conflict" as const, current };
+        const serviceExpiry =
+          input.serviceExpiresAt ?? current.serviceExpiresAt;
+        if (
+          input.status === "active" &&
+          serviceExpiry &&
+          serviceExpiry <= new Date()
+        )
+          return { status: "service_expired" as const, current };
+        const [organization] = await tx
+          .update(organizations)
+          .set({ ...changes, updatedAt: new Date() })
+          .where(eq(organizations.id, id))
+          .returning();
+        await afterUpdate?.(tx);
+        return { status: "updated" as const, organization };
+      },
+      { isolationLevel: "read committed" },
+    );
   },
   async findOrganization(id: string) {
     const [organization] = await db

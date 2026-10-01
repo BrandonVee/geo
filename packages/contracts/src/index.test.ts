@@ -10,6 +10,7 @@ import {
   adminUpdateAnswerBitBrandIconSchema,
   adminUpdateAnswerBitBrandSchema,
   adminUpdateUserSchema,
+  adminUpdateOrganizationSchema,
   adminUserPageQuerySchema,
   balanceTransactionQuerySchema,
   pointUsageQuerySchema,
@@ -118,6 +119,35 @@ describe("发布订单查询契约", () => {
 });
 
 describe("平台资源管理契约", () => {
+  it("企业只更新指定字段，原值支持历史空期限与额外状态校验", () => {
+    expect(
+      adminUpdateOrganizationSchema.parse({
+        serviceExpiresAt: "2027-01-01T00:00:00Z",
+        expected: { status: "active", serviceExpiresAt: null },
+      }),
+    ).toEqual({
+      serviceExpiresAt: "2027-01-01T00:00:00Z",
+      expected: { status: "active", serviceExpiresAt: null },
+    });
+    expect(
+      adminUpdateOrganizationSchema.safeParse({ status: "suspended" }).success,
+    ).toBe(true);
+  });
+  it.each([
+    {},
+    { expected: {} },
+    { status: "active", expected: {} },
+    {
+      serviceExpiresAt: "2027-01-01T00:00:00Z",
+      expected: { status: "active" },
+    },
+    { serviceExpiresAt: null },
+    { status: "closed" },
+    { pointsExpiresAt: "bad" },
+    { status: "active", expected: { status: "closed" } },
+  ])("企业设置拒绝空修改、非法期限与不完整原值 %j", (value) => {
+    expect(adminUpdateOrganizationSchema.safeParse(value).success).toBe(false);
+  });
   it("媒体发布配置只接受 HTTP(S) Origin", () => {
     expect(
       adminSetFrogCredentialSchema.safeParse({

@@ -2,6 +2,7 @@ import type {
   AdminAddOrganizationMemberInput,
   AdminCreateUserInput,
   AdminUpdateUserInput,
+  AdminUpdateOrganizationInput,
 } from "@geo/contracts";
 import type { Permission } from "@geo/core";
 import type { AuditContext } from "@/server/audit/write-audit";
@@ -83,35 +84,68 @@ export const adminService = {
   },
   async updateOrganization(
     id: string,
-    input: {
-      status?: "active" | "suspended";
-      serviceExpiresAt?: string;
-      pointsExpiresAt?: string;
-    },
+    input: AdminUpdateOrganizationInput,
     userId: string,
     audit: AuditContext,
   ) {
     await allowed(userId, "platform.tenant.manage");
-    const row = await adminRepository.updateOrganization(id, {
-      status: input.status,
-      serviceExpiresAt: input.serviceExpiresAt
-        ? new Date(input.serviceExpiresAt)
-        : undefined,
-      pointsExpiresAt: input.pointsExpiresAt
-        ? new Date(input.pointsExpiresAt)
-        : undefined,
-    });
-    if (!row) throw new ApiError(404, "ORGANIZATION_NOT_FOUND", "企业不存在");
-    await writeAudit(
-      { ...audit, organizationId: id },
+    const result = await adminRepository.updateOrganization(
+      id,
       {
-        operation: "platform.organization.update",
-        resourceType: "organization",
-        resourceId: id,
-        summary: `企业设置：${input.status ?? "状态不变"}；服务到期 ${input.serviceExpiresAt ?? "不变"}；积分到期 ${input.pointsExpiresAt ?? "不变"}`,
+        status: input.status,
+        serviceExpiresAt: input.serviceExpiresAt
+          ? new Date(input.serviceExpiresAt)
+          : undefined,
+        pointsExpiresAt: input.pointsExpiresAt
+          ? new Date(input.pointsExpiresAt)
+          : undefined,
+        expected: input.expected
+          ? {
+              status: input.expected.status,
+              serviceExpiresAt:
+                input.expected.serviceExpiresAt === undefined
+                  ? undefined
+                  : input.expected.serviceExpiresAt === null
+                    ? null
+                    : new Date(input.expected.serviceExpiresAt),
+              pointsExpiresAt:
+                input.expected.pointsExpiresAt === undefined
+                  ? undefined
+                  : input.expected.pointsExpiresAt === null
+                    ? null
+                    : new Date(input.expected.pointsExpiresAt),
+            }
+          : undefined,
       },
+      (executor) =>
+        writeAudit(
+          { ...audit, organizationId: id },
+          {
+            operation: "platform.organization.update",
+            resourceType: "organization",
+            resourceId: id,
+            summary: `企业设置：${input.status ?? "状态不变"}；服务到期 ${input.serviceExpiresAt ?? "不变"}；积分到期 ${input.pointsExpiresAt ?? "不变"}`,
+          },
+          executor,
+        ),
     );
-    return row;
+    if (result.status === "not_found")
+      throw new ApiError(404, "ORGANIZATION_NOT_FOUND", "企业不存在或已关闭");
+    if (result.status === "conflict")
+      throw new ApiError(
+        409,
+        "ORGANIZATION_SETTINGS_CONFLICT",
+        "企业设置已被其他管理员修改，请核对最新设置后再保存",
+        { current: result.current },
+      );
+    if (result.status === "service_expired")
+      throw new ApiError(
+        422,
+        "ORGANIZATION_SERVICE_EXPIRED",
+        "企业服务已到期，请续期后再恢复企业",
+        { current: result.current },
+      );
+    return result.organization;
   },
   async users(input: UserPage, userId: string) {
     await allowed(userId, "platform.user.read");

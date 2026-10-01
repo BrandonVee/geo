@@ -841,9 +841,40 @@ export const adminUpdateOrganizationSchema = z
     status: z.enum(["active", "suspended"]).optional(),
     serviceExpiresAt: z.string().datetime({ offset: true }).optional(),
     pointsExpiresAt: z.string().datetime({ offset: true }).optional(),
+    expected: z
+      .object({
+        status: z.enum(["active", "suspended"]).optional(),
+        serviceExpiresAt: z
+          .string()
+          .datetime({ offset: true })
+          .nullable()
+          .optional(),
+        pointsExpiresAt: z
+          .string()
+          .datetime({ offset: true })
+          .nullable()
+          .optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict()
-  .refine((value) => Object.keys(value).length > 0, "至少提供一个更新字段");
+  .superRefine((value, context) => {
+    const fields = ["status", "serviceExpiresAt", "pointsExpiresAt"] as const;
+    if (!fields.some((field) => value[field] !== undefined))
+      context.addIssue({ code: "custom", message: "至少提供一个更新字段" });
+    if (value.expected)
+      for (const field of fields)
+        if (value[field] !== undefined && value.expected[field] === undefined)
+          context.addIssue({
+            code: "custom",
+            message: "需提供修改字段的原值以核对最新设置",
+            path: ["expected", field],
+          });
+  });
+export type AdminUpdateOrganizationInput = z.infer<
+  typeof adminUpdateOrganizationSchema
+>;
 const agentValidityDateSchema = z.string().datetime({ offset: true });
 type AgentValidityInput = {
   accountType?: "admin" | "agent" | "customer";

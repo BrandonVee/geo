@@ -1718,6 +1718,386 @@ test.describe("真实运营操作闭环", () => {
     ).toHaveCount(0);
   });
 
+  test("企业续期保留空积分期限，失败保留输入，冻结与续期响应丢失只读核对一次写入", async ({
+    page,
+  }) => {
+    await makePlatformAdministrator();
+    await mockAdminReads(page);
+    const scope = fixture.scopes[0];
+    const { db, organizations, operationLogs } = database;
+    const { eq, and } = operators;
+    await db
+      .update(organizations)
+      .set({ serviceExpiresAt: null, pointsExpiresAt: null })
+      .where(eq(organizations.id, scope.organizationId));
+    let writes = 0,
+      readsFail = false;
+    const commands: Record<string, unknown>[] = [];
+    await page.route(
+      `**/api/v1/admin/organizations/${scope.organizationId}`,
+      async (route) => {
+        if (route.request().method() === "GET") {
+          if (readsFail)
+            return route.fulfill({
+              status: 503,
+              json: { error: { message: "企业读取暂不可用" } },
+            });
+          return route.continue();
+        }
+        writes++;
+        commands.push(route.request().postDataJSON());
+        if (writes === 1)
+          return route.fulfill({
+            status: 422,
+            json: { error: { message: "请保留输入后重试" } },
+          });
+        const response = await route.fetch();
+        expect(response.ok()).toBeTruthy();
+        readsFail = true;
+        await route.abort("failed");
+      },
+    );
+    await page.goto("/admin?section=organizations");
+    const row = page.locator("tr").filter({ hasText: scope.brandId });
+    await row.getByRole("button", { name: "有效期", exact: true }).click();
+    const validity = page.getByRole("dialog", {
+      name: `${scope.name} · 企业有效期`,
+      exact: true,
+    });
+    await expect(validity.getByLabel("积分到期", { exact: true })).toHaveValue(
+      "",
+    );
+    await expect(
+      validity.getByRole("button", { name: "保存有效期", exact: true }),
+    ).toBeDisabled();
+    await validity
+      .getByRole("button", { name: "续 1 个月", exact: true })
+      .click();
+    await expect(
+      validity.getByLabel("企业服务到期", { exact: true }),
+    ).not.toHaveValue("");
+    const original = await validity
+      .getByLabel("企业服务到期", { exact: true })
+      .inputValue();
+    await validity
+      .getByRole("button", { name: "保存有效期", exact: true })
+      .click();
+    await expect(validity.getByText("请保留输入后重试")).toBeVisible();
+    await expect(
+      validity.getByLabel("企业服务到期", { exact: true }),
+    ).toHaveValue(original);
+    for (const selectedTheme of ["dark", "light"]) {
+      await validity.getByRole("button", { name: /取\s*消/ }).click();
+      if (
+        (await page.locator("html").getAttribute("data-theme")) !==
+        selectedTheme
+      )
+        await page.getByRole("button", { name: "切换亮暗色模式" }).click();
+      await expect(page.locator("html")).toHaveAttribute(
+        "data-theme",
+        selectedTheme,
+      );
+      await row.getByRole("button", { name: "有效期", exact: true }).click();
+      await validity
+        .getByRole("button", { name: "续 1 个月", exact: true })
+        .click();
+      for (const width of [390, 768, 1440]) {
+        await page.setViewportSize({ width, height: 1000 });
+        expect(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth,
+          ),
+        ).toBeTruthy();
+        await page.evaluate(async () => {
+          await Promise.all(
+            document
+              .getAnimations()
+              .filter(
+                (animation) =>
+                  animation.effect?.getComputedTiming().iterations !== Infinity,
+              )
+              .map((animation) => animation.finished.catch(() => {})),
+          );
+        });
+        await page.evaluate(axe.source);
+        const scan = await page.evaluate(() =>
+          (window as unknown as { axe: typeof axe }).axe.run(
+            document.querySelector(
+              '.ant-modal [role="dialog"], .ant-modal[role="dialog"]',
+            )!,
+            {
+              runOnly: {
+                type: "tag",
+                values: ["wcag2a", "wcag2aa", "wcag21aa"],
+              },
+            },
+          ),
+        );
+        expect(scan.violations.map(({ id }) => id)).toEqual([]);
+        if (width === 390)
+          await page.screenshot({
+            path: test
+              .info()
+              .outputPath(`enterprise-validity-${selectedTheme}.png`),
+          });
+      }
+    }
+    await validity
+      .getByRole("button", { name: "保存有效期", exact: true })
+      .click();
+    await expect(
+      validity.getByRole("button", { name: "核对操作结果", exact: true }),
+    ).toBeVisible();
+    await expect(
+      validity.getByLabel("企业服务到期", { exact: true }),
+    ).toBeDisabled();
+    await expect(
+      validity.getByRole("button", { name: /取\s*消/ }),
+    ).toBeDisabled();
+    const failedCheck = page.waitForResponse(
+      (response) =>
+        response
+          .url()
+          .endsWith(`/api/v1/admin/organizations/${scope.organizationId}`) &&
+        response.request().method() === "GET" &&
+        response.status() === 503,
+    );
+    await validity
+      .getByRole("button", { name: "核对操作结果", exact: true })
+      .click();
+    await failedCheck;
+    await expect(
+      validity.getByRole("button", { name: "核对操作结果", exact: true }),
+    ).toBeEnabled();
+    expect(writes).toBe(2);
+    readsFail = false;
+    await validity
+      .getByRole("button", { name: "核对操作结果", exact: true })
+      .click();
+    await expect(validity).not.toBeVisible();
+    expect(writes).toBe(2);
+    expect(commands[1]).not.toHaveProperty("pointsExpiresAt");
+    const [renewed] = await db
+      .select()
+      .from(organizations)
+      .where(eq(organizations.id, scope.organizationId));
+    expect(renewed.pointsExpiresAt).toBeNull();
+    expect(renewed.serviceExpiresAt!.toISOString()).toBe(
+      commands[1].serviceExpiresAt,
+    );
+    await row
+      .getByRole("button", { name: `冻结企业 ${scope.name}`, exact: true })
+      .click();
+    const freeze = page.getByRole("dialog", {
+      name: "冻结此企业？",
+      exact: true,
+    });
+    await expect(
+      freeze.getByText(/所有成员将暂停本企业的新业务操作/),
+    ).toBeVisible();
+    await freeze.getByRole("button", { name: /取\s*消/ }).click();
+    expect(writes).toBe(2);
+    await row
+      .getByRole("button", { name: `冻结企业 ${scope.name}`, exact: true })
+      .click();
+    for (const selectedTheme of ["dark", "light"]) {
+      await freeze.getByRole("button", { name: /取\s*消/ }).click();
+      if (
+        (await page.locator("html").getAttribute("data-theme")) !==
+        selectedTheme
+      )
+        await page.getByRole("button", { name: "切换亮暗色模式" }).click();
+      await expect(page.locator("html")).toHaveAttribute(
+        "data-theme",
+        selectedTheme,
+      );
+      await row
+        .getByRole("button", { name: `冻结企业 ${scope.name}`, exact: true })
+        .click();
+      for (const width of [390, 768, 1440]) {
+        await page.setViewportSize({ width, height: 1000 });
+        expect(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth,
+          ),
+        ).toBeTruthy();
+        await page.evaluate(async () => {
+          await Promise.all(
+            document
+              .getAnimations()
+              .filter(
+                (animation) =>
+                  animation.effect?.getComputedTiming().iterations !== Infinity,
+              )
+              .map((animation) => animation.finished.catch(() => {})),
+          );
+        });
+        await page.evaluate(axe.source);
+        const scan = await page.evaluate(() =>
+          (window as unknown as { axe: typeof axe }).axe.run(
+            document.querySelector(
+              '.ant-modal [role="dialog"], .ant-modal[role="dialog"]',
+            )!,
+            {
+              runOnly: {
+                type: "tag",
+                values: ["wcag2a", "wcag2aa", "wcag21aa"],
+              },
+            },
+          ),
+        );
+        expect(scan.violations.map(({ id }) => id)).toEqual([]);
+        if (width === 390)
+          await page.screenshot({
+            path: test
+              .info()
+              .outputPath(`enterprise-freeze-${selectedTheme}.png`),
+          });
+      }
+    }
+    await freeze.getByRole("button", { name: "确认冻结", exact: true }).click();
+    await expect(
+      freeze.getByRole("button", { name: "核对操作结果", exact: true }),
+    ).toBeVisible();
+    readsFail = false;
+    await freeze
+      .getByRole("button", { name: "核对操作结果", exact: true })
+      .click();
+    await expect(freeze).not.toBeVisible();
+    expect(writes).toBe(3);
+    await expect(row.getByText("已冻结", { exact: true })).toBeVisible();
+    const audit = await db
+      .select()
+      .from(operationLogs)
+      .where(
+        and(
+          eq(operationLogs.organizationId, scope.organizationId),
+          eq(operationLogs.operation, "platform.organization.update"),
+        ),
+      );
+    expect(audit).toHaveLength(2);
+  });
+
+  test("已到期企业从恢复直接续期，积分期限独立，多人续期冲突保留输入并从最新日期继续", async ({
+    page,
+  }) => {
+    await makePlatformAdministrator();
+    await mockAdminReads(page);
+    const scope = fixture.scopes[0];
+    const { db, organizations } = database;
+    const { eq } = operators;
+    const expired = new Date("2020-01-01T00:00:00Z");
+    await db
+      .update(organizations)
+      .set({
+        status: "suspended",
+        serviceExpiresAt: expired,
+        pointsExpiresAt: expired,
+      })
+      .where(eq(organizations.id, scope.organizationId));
+    await page.goto("/admin?section=organizations");
+    const row = page.locator("tr").filter({ hasText: scope.brandId });
+    await row
+      .getByRole("button", { name: `恢复企业 ${scope.name}`, exact: true })
+      .click();
+    const restore = page.getByRole("dialog", {
+      name: "恢复此企业？",
+      exact: true,
+    });
+    await expect(
+      restore.getByText("企业服务已到期", { exact: true }),
+    ).toBeVisible();
+    await restore
+      .getByRole("button", { name: "续期并恢复", exact: true })
+      .click();
+    const validity = page.getByRole("dialog", {
+      name: `${scope.name} · 企业有效期`,
+      exact: true,
+    });
+    await expect(
+      validity.getByRole("checkbox", { name: "保存时一并恢复企业业务" }),
+    ).toBeChecked();
+    await expect(
+      validity.getByRole("button", { name: "续期并恢复企业", exact: true }),
+    ).toBeDisabled();
+    await validity
+      .getByRole("button", { name: "续 1 个月", exact: true })
+      .click();
+    await validity
+      .getByRole("button", { name: "续期并恢复企业", exact: true })
+      .click();
+    await expect(validity).not.toBeVisible();
+    const [renewed] = await db
+      .select()
+      .from(organizations)
+      .where(eq(organizations.id, scope.organizationId));
+    expect(renewed.status).toBe("active");
+    expect(renewed.serviceExpiresAt!.getTime()).toBeGreaterThan(Date.now());
+    expect(renewed.pointsExpiresAt).toEqual(expired);
+    await row.getByRole("button", { name: "有效期", exact: true }).click();
+    const beforeRenew = await validity
+      .getByLabel("企业服务到期", { exact: true })
+      .inputValue();
+    await validity
+      .getByRole("button", { name: "续 1 个月", exact: true })
+      .click();
+    await expect(
+      validity.getByLabel("企业服务到期", { exact: true }),
+    ).not.toHaveValue(beforeRenew);
+    const draft = await validity
+      .getByLabel("企业服务到期", { exact: true })
+      .inputValue();
+    const concurrentExpiry = "2038-01-01T00:00:00.123Z";
+    const response = await page.request.patch(
+      `/api/v1/admin/organizations/${scope.organizationId}`,
+      {
+        headers: { Origin: process.env.APP_URL! },
+        data: {
+          serviceExpiresAt: concurrentExpiry,
+          expected: {
+            serviceExpiresAt: renewed.serviceExpiresAt!.toISOString(),
+          },
+        },
+      },
+    );
+    expect(response.ok()).toBeTruthy();
+    await validity
+      .getByRole("button", { name: "保存有效期", exact: true })
+      .click();
+    await expect(
+      validity.getByText("请核对最新设置", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      validity.getByLabel("企业服务到期", { exact: true }),
+    ).toHaveValue(draft);
+    await expect(
+      validity.getByRole("button", { name: "保存有效期", exact: true }),
+    ).toBeDisabled();
+    const [conflicted] = await db
+      .select()
+      .from(organizations)
+      .where(eq(organizations.id, scope.organizationId));
+    expect(conflicted.serviceExpiresAt!.toISOString()).toBe(concurrentExpiry);
+    await validity
+      .getByRole("button", { name: "使用最新设置继续", exact: true })
+      .click();
+    await validity
+      .getByRole("button", { name: "续 1 个月", exact: true })
+      .click();
+    await validity
+      .getByRole("button", { name: "保存有效期", exact: true })
+      .click();
+    await expect(validity).not.toBeVisible();
+    const [final] = await db
+      .select()
+      .from(organizations)
+      .where(eq(organizations.id, scope.organizationId));
+    expect(final.serviceExpiresAt!.getTime()).toBeGreaterThan(
+      new Date(concurrentExpiry).getTime(),
+    );
+    expect(final.pointsExpiresAt).toEqual(expired);
+  });
+
   test("平台企业成员停用与移除保留失败确认，授权和停用响应丢失只读核对，刷新失败可恢复", async ({
     page,
   }) => {
