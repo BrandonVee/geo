@@ -6567,6 +6567,159 @@ test.describe("真实运营操作闭环", () => {
     expect((await views.json()).data).toEqual([]);
   });
 
+  test("个人视图创建、改名和删除响应丢失后确认原操作，不重复写入审计", async ({
+    page,
+  }) => {
+    await mockBusinessApis(page);
+    await mockAnswerReads(page);
+    const keys: string[] = [],
+      payloads: Record<string, unknown>[] = [];
+    let viewId = "";
+    const lost = new Set<string>();
+    await page.route("**/api/v1/saved-views**", async (route) => {
+      const method = route.request().method();
+      if (method === "GET") return route.continue();
+      if (method === "POST") {
+        keys.push(route.request().headers()["idempotency-key"]);
+        payloads.push(route.request().postDataJSON());
+      }
+      const response = await route.fetch();
+      expect(response.ok()).toBe(true);
+      if (method === "POST") viewId = (await response.json()).data.id;
+      if (!lost.has(method)) {
+        lost.add(method);
+        return route.abort("failed");
+      }
+      return route.fulfill({ response });
+    });
+    await page.goto(scopedPath("/dashboard/answers"));
+    await expect(
+      page.getByRole("button", { name: "保存当前条件" }),
+    ).toBeEnabled();
+    await page.getByPlaceholder("问题、文章或域名").fill("原视图完整条件");
+    await page.getByRole("button", { name: "保存当前条件" }).click();
+    await page.getByLabel("视图名称", { exact: true }).fill("原分析视图");
+    await page.getByRole("button", { name: /^保\s*存$/ }).click();
+    const confirm = page.getByRole("button", {
+      name: "确认原视图操作",
+      exact: true,
+    });
+    await expect(confirm).toBeEnabled();
+    await page
+      .getByRole("dialog")
+      .getByRole("button", { name: /取\s*消/ })
+      .click();
+    await page.reload();
+    await page.getByPlaceholder("问题、文章或域名").fill("当前继续分析条件");
+    await expect(
+      page.getByRole("button", { name: "保存当前条件" }),
+    ).toBeDisabled();
+    await confirm.click();
+    await expect(confirm).toHaveCount(0);
+    await expect(page.getByPlaceholder("问题、文章或域名")).toHaveValue(
+      "当前继续分析条件",
+    );
+    expect(keys).toHaveLength(2);
+    expect(keys[1]).toBe(keys[0]);
+    expect(payloads[1]).toEqual(payloads[0]);
+    await page
+      .getByRole("button", { name: "重命名视图 原分析视图", exact: true })
+      .click();
+    await page.getByLabel("视图名称", { exact: true }).fill("修改后的视图");
+    await page.getByRole("button", { name: /^保\s*存$/ }).click();
+    await expect(confirm).toBeEnabled();
+    await page.reload();
+    await confirm.click();
+    await expect(confirm).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "修改后的视图", exact: true }),
+    ).toBeVisible();
+    await page
+      .getByRole("button", { name: "删除视图 修改后的视图", exact: true })
+      .click();
+    await page.getByRole("button", { name: /^删\s*除$/ }).click();
+    await expect(confirm).toBeEnabled();
+    await page.reload();
+    await confirm.click();
+    await expect(confirm).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "修改后的视图", exact: true }),
+    ).toHaveCount(0);
+    const { db, operationLogs } = database;
+    const logs = await db
+      .select()
+      .from(operationLogs)
+      .where(operators.eq(operationLogs.resourceId, viewId));
+    expect(logs.map((row) => row.operation).sort()).toEqual([
+      "saved-view.create",
+      "saved-view.delete",
+      "saved-view.update",
+    ]);
+    const replay = await page.request.post("/api/v1/saved-views", {
+      headers: { "Idempotency-Key": keys[0] },
+      data: payloads[0],
+    });
+    expect(replay.status()).toBe(409);
+    expect((await replay.json()).error.code).toBe("SAVED_VIEW_REMOVED");
+  });
+
+  test("个人视图改名冲突保留输入，核对最新版后明确保存", async ({ page }) => {
+    await mockBusinessApis(page);
+    await mockAnswerReads(page);
+    const target = fixture.scopes[0];
+    const response = await page.request.post("/api/v1/saved-views", {
+      headers: { "Idempotency-Key": randomUUID() },
+      data: {
+        organizationId: target.organizationId,
+        name: "打开时名称",
+        page: "answers",
+        filters: {
+          teamBindingId: target.teamBindingId,
+          brandId: target.brandId,
+        },
+      },
+    });
+    expect(response.status()).toBe(201);
+    const original = (await response.json()).data;
+    await page.goto(scopedPath("/dashboard/answers"));
+    await page
+      .getByRole("button", { name: "重命名视图 打开时名称", exact: true })
+      .click();
+    await page.getByLabel("视图名称", { exact: true }).fill("我的输入");
+    const changed = await page.request.patch(
+      `/api/v1/saved-views/${original.id}`,
+      {
+        data: {
+          organizationId: target.organizationId,
+          name: "其他页面最新名称",
+          expected: {
+            name: original.name,
+            filters: original.filters,
+            isDefault: original.isDefault,
+          },
+        },
+      },
+    );
+    expect(changed.status()).toBe(200);
+    await page.getByRole("button", { name: /^保\s*存$/ }).click();
+    await expect(
+      page.getByText("最新视图名称：其他页面最新名称", { exact: true }),
+    ).toBeVisible();
+    await expect(page.getByLabel("视图名称", { exact: true })).toHaveValue(
+      "我的输入",
+    );
+    await expect(
+      page.getByRole("button", { name: /^保\s*存$/ }),
+    ).toBeDisabled();
+    await page
+      .getByRole("button", { name: "采用最新配置继续编辑", exact: true })
+      .click();
+    await page.getByRole("button", { name: /^保\s*存$/ }).click();
+    await expect(
+      page.getByRole("button", { name: "我的输入", exact: true }),
+    ).toBeVisible();
+  });
+
   for (const mode of ["响应丢失", "执行中切换"] as const) {
     test(`报告原请求${mode}后保留原条件与键，真实队列和额度只创建一次`, async ({
       page,

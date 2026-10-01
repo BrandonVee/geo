@@ -77,6 +77,18 @@ try {
       "exec",
       "vitest",
       "run",
+      "src/server/repositories/saved-views.integration.test.ts",
+    ],
+    { SAVED_VIEW_DB_TESTS: "1" },
+  );
+  await run(
+    pnpm,
+    [
+      "--filter",
+      "@geo/web",
+      "exec",
+      "vitest",
+      "run",
       "src/server/repositories/content-documents.integration.test.ts",
     ],
     { CONTENT_DOCUMENT_DB_TESTS: "1" },

@@ -71,7 +71,15 @@ describe("database release readiness", () => {
       "utf8",
     );
     expect(migration).toContain(`('schema', '${CURRENT_SCHEMA_VERSION}')`);
-    expect(migration).toContain("provider_action");
+    expect(migration).toContain("creation_key");
+    expect(migration).toContain("creation_fingerprint");
+    expect(migration).toContain("deleted_at");
+    expect(migration).toContain("saved_views_org_creation_key_ux");
+    const publicationActionMigration = await readFile(
+      new URL("../drizzle/v12.sql", import.meta.url),
+      "utf8",
+    );
+    expect(publicationActionMigration).toContain("provider_action");
     const actorMigration = await readFile(
       new URL("../drizzle/v11.sql", import.meta.url),
       "utf8",

@@ -1,6 +1,11 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { z } from "zod";
+import {
+  createSavedViewSchema,
+  updateSavedViewSchema,
+  savedViewActionSchema,
+} from "@geo/contracts";
 
 const attemptSchema = z.object({
   id: z.string().uuid(),
@@ -26,6 +31,25 @@ const attemptSchema = z.object({
         resourceId: z.string().optional(),
       }),
       z.object({
+        kind: z.literal("saved_view"),
+        action: z.discriminatedUnion("operation", [
+          z.object({
+            operation: z.literal("create"),
+            input: createSavedViewSchema,
+          }),
+          z.object({
+            operation: z.literal("rename"),
+            viewId: z.string().uuid(),
+            input: updateSavedViewSchema,
+          }),
+          z.object({
+            operation: z.literal("delete"),
+            viewId: z.string().uuid(),
+            input: savedViewActionSchema,
+          }),
+        ]),
+      }),
+      z.object({
         kind: z.literal("publication_action"),
         orderId: z.string().uuid(),
         title: z.string(),
@@ -43,6 +67,7 @@ const activeAttempts = new Set<string>();
 
 // @project-doc docs/domains/geo_operations.md#monitoring_workflow
 // @project-doc docs/domains/geo_operations.md#competitor_workflow
+// @project-doc docs/domains/geo_operations.md#report_exports
 // @project-doc docs/domains/geo_operations.md#publication_orders
 export function useDirectoryAttempt(
   storageKey: string,

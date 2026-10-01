@@ -52,6 +52,10 @@ try {
         AND to_regclass('public.article_tracking_submissions') IS NOT NULL
         AND to_regprocedure('public.tenant_balance_actors(text,uuid)') IS NOT NULL
         AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'publication_orders' AND column_name = 'provider_action')
+        AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'saved_views' AND column_name = 'creation_key')
+        AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'saved_views' AND column_name = 'creation_fingerprint')
+        AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'saved_views' AND column_name = 'deleted_at')
+        AND to_regclass('public.saved_views_org_creation_key_ux') IS NOT NULL
         AND to_regclass('public.article_tracking_submissions_org_key_ux') IS NOT NULL
         AND to_regclass('public.platform_frog_credentials') IS NOT NULL
         AND to_regclass('public.pricing_tier_rules') IS NOT NULL
@@ -93,7 +97,7 @@ try {
     `)
     ).rows[0]?.complete
   )
-    throw new Error("DATABASE_V12_STRUCTURE_INCOMPLETE");
+    throw new Error("DATABASE_V13_STRUCTURE_INCOMPLETE");
 
   const currentVRevision = currentVersion?.match(/^v([1-9]\d*)$/);
   if (

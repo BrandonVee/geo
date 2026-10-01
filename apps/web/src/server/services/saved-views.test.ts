@@ -58,9 +58,16 @@ beforeEach(() => {
     role: null,
   });
   m.team.mockResolvedValue({ id: team });
-  m.create.mockResolvedValue({ id: "view", ...input });
+  m.create.mockResolvedValue({
+    kind: "created",
+    row: { id: "view", ...input },
+  });
+  m.list.mockResolvedValue([]);
   m.find.mockResolvedValue({ id: "view", ...input });
-  m.update.mockResolvedValue(input);
+  m.update.mockResolvedValue({
+    kind: "updated",
+    row: { id: "view", ...input },
+  });
 });
 describe("个人保存视图", () => {
   it("旧客户端只给品牌也会解析内部绑定并验证品牌授权", async () => {
@@ -78,6 +85,8 @@ describe("个人保存视图", () => {
         filters: expect.objectContaining({ teamBindingId: team }),
       }),
       "user",
+      undefined,
+      expect.any(Function),
     );
   });
   it("企业内不存在的品牌不能跳过归属校验", async () => {
@@ -120,9 +129,13 @@ describe("个人保存视图", () => {
       "user",
       audit,
     );
-    expect(m.update).toHaveBeenCalledWith("view", org, "user", {
-      name: "新名称",
-    });
+    expect(m.update).toHaveBeenCalledWith(
+      "view",
+      org,
+      "user",
+      { name: "新名称" },
+      expect.any(Function),
+    );
     await savedViewService.update(
       "view",
       { organizationId: org, filters: input.filters },
@@ -137,5 +150,63 @@ describe("个人保存视图", () => {
       "resource.read",
       "geo_insights",
     );
+  });
+  it("重放返回当前视图并隐藏内部创建记录", async () => {
+    m.create.mockResolvedValue({
+      kind: "replayed",
+      row: {
+        id: "view",
+        ...input,
+        name: "已经改名",
+        creationKey: "key",
+        creationFingerprint: "hash",
+        deletedAt: null,
+      },
+    });
+    const result = await savedViewService.create(input, "user", audit, "key");
+    expect(result).toMatchObject({ name: "已经改名", replayed: true });
+    expect(result).not.toHaveProperty("creationKey");
+    expect(result).not.toHaveProperty("creationFingerprint");
+    expect(result).not.toHaveProperty("deletedAt");
+    expect(m.audit).not.toHaveBeenCalled();
+  });
+  it.each([
+    ["conflict", "SAVED_VIEW_IDEMPOTENCY_CONFLICT"],
+    ["removed", "SAVED_VIEW_REMOVED"],
+  ])("创建 %s 返回可恢复错误", async (kind, code) => {
+    m.create.mockResolvedValue({ kind });
+    await expect(
+      savedViewService.create(input, "user", audit, "key"),
+    ).rejects.toMatchObject({ status: 409, code });
+  });
+  it("配置冲突返回安全的最新配置", async () => {
+    m.update.mockResolvedValue({
+      kind: "conflict",
+      row: {
+        id: "view",
+        ...input,
+        creationKey: "secret",
+        creationFingerprint: "secret",
+        deletedAt: null,
+      },
+    });
+    await expect(
+      savedViewService.update(
+        "view",
+        { organizationId: org, name: "新名称" },
+        "user",
+        audit,
+      ),
+    ).rejects.toMatchObject({
+      code: "SAVED_VIEW_VERSION_CONFLICT",
+      details: { current: { id: "view", ...input } },
+    });
+  });
+  it("重复删除成功，不单独补写审计", async () => {
+    m.remove.mockResolvedValue(undefined);
+    await expect(
+      savedViewService.remove("view", org, "user", audit),
+    ).resolves.toBeUndefined();
+    expect(m.audit).not.toHaveBeenCalled();
   });
 });

@@ -91,29 +91,64 @@ async function validateFilters(
   }
   return filters;
 }
+const present = (
+  row: NonNullable<Awaited<ReturnType<typeof savedViewRepository.find>>>,
+) => {
+  const {
+    creationKey: _,
+    creationFingerprint: __,
+    deletedAt: ___,
+    ...view
+  } = row;
+  void _;
+  void __;
+  void ___;
+  return view;
+};
 export const savedViewService = {
   async list(organizationId: string, page: string | undefined, userId: string) {
     await member(organizationId, userId, page);
-    return savedViewRepository.list(organizationId, userId, page);
+    return (await savedViewRepository.list(organizationId, userId, page)).map(
+      present,
+    );
   },
   async create(
     input: CreateSavedViewInput,
     userId: string,
     audit: AuditContext,
+    creationKey?: string,
   ) {
     const filters = await validateFilters(input, userId);
     try {
-      const row = await savedViewRepository.create(
+      const result = await savedViewRepository.create(
         { ...input, filters },
         userId,
+        creationKey,
+        (tx, row) =>
+          writeAudit(
+            audit,
+            {
+              operation: "saved-view.create",
+              resourceType: "saved_view",
+              resourceId: row.id,
+              summary: `保存视图：${row.name}`,
+            },
+            tx,
+          ),
       );
-      await writeAudit(audit, {
-        operation: "saved-view.create",
-        resourceType: "saved_view",
-        resourceId: row.id,
-        summary: `保存视图：${row.name}`,
-      });
-      return row;
+      if (result.kind === "conflict")
+        throw new ApiError(
+          409,
+          "SAVED_VIEW_IDEMPOTENCY_CONFLICT",
+          "原保存请求与本次内容或操作者不一致，请先确认原请求",
+        );
+      if (result.kind === "removed")
+        throw new ApiError(
+          409,
+          "SAVED_VIEW_REMOVED",
+          "原保存的视图已被删除，请重新创建新视图",
+        );
+      return { ...present(result.row), replayed: result.kind === "replayed" };
     } catch (error) {
       if (databaseErrorCode(error) === "23505")
         throw new ApiError(409, "SAVED_VIEW_NAME_EXISTS", "同名保存视图已存在");
@@ -143,24 +178,43 @@ export const savedViewService = {
           userId,
         )
       : undefined;
+    if (
+      input.expected &&
+      JSON.stringify(input.expected.filters).length > 20_000
+    )
+      throw new ApiError(400, "SAVED_VIEW_TOO_LARGE", "原视图筛选条件过大");
     if (!input.filters)
       await member(input.organizationId, userId, current.page);
     const { organizationId: _, ...changes } = input;
     void _;
     try {
-      const row = await savedViewRepository.update(
+      const result = await savedViewRepository.update(
         id,
         input.organizationId,
         userId,
         { ...changes, ...(filters ? { filters } : {}) },
+        (tx, row) =>
+          writeAudit(
+            audit,
+            {
+              operation: "saved-view.update",
+              resourceType: "saved_view",
+              resourceId: id,
+              summary: `更新保存视图：${row.name}`,
+            },
+            tx,
+          ),
       );
-      await writeAudit(audit, {
-        operation: "saved-view.update",
-        resourceType: "saved_view",
-        resourceId: id,
-        summary: `更新保存视图：${row!.name}`,
-      });
-      return row!;
+      if (result.kind === "missing")
+        throw new ApiError(404, "SAVED_VIEW_NOT_FOUND", "保存视图不存在");
+      if (result.kind === "conflict")
+        throw new ApiError(
+          409,
+          "SAVED_VIEW_VERSION_CONFLICT",
+          "视图已在其他页面修改，请核对最新配置后再保存",
+          { current: present(result.row) },
+        );
+      return present(result.row);
     } catch (error) {
       if (databaseErrorCode(error) === "23505")
         throw new ApiError(409, "SAVED_VIEW_NAME_EXISTS", "同名保存视图已存在");
@@ -174,13 +228,17 @@ export const savedViewService = {
     audit: AuditContext,
   ) {
     await member(organizationId, userId);
-    const row = await savedViewRepository.remove(id, organizationId, userId);
-    if (!row) throw new ApiError(404, "SAVED_VIEW_NOT_FOUND", "保存视图不存在");
-    await writeAudit(audit, {
-      operation: "saved-view.delete",
-      resourceType: "saved_view",
-      resourceId: id,
-      summary: `删除保存视图：${row.name}`,
-    });
+    await savedViewRepository.remove(id, organizationId, userId, (tx, row) =>
+      writeAudit(
+        audit,
+        {
+          operation: "saved-view.delete",
+          resourceType: "saved_view",
+          resourceId: id,
+          summary: `删除保存视图：${row.name}`,
+        },
+        tx,
+      ),
+    );
   },
 };

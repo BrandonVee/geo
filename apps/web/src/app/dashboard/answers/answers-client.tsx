@@ -33,7 +33,14 @@ import {
 } from "antd";
 import dayjs from "dayjs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { answersSavedViewFiltersSchema } from "@geo/contracts";
+import {
+  answersSavedViewFiltersSchema,
+  createSavedViewSchema,
+} from "@geo/contracts";
+import {
+  useDirectoryAttempt,
+  type DirectoryAttempt,
+} from "../directory-attempt";
 import {
   reportTypes,
   useReportAttempts,
@@ -174,6 +181,8 @@ function AnswersWorkspace({
   );
   const [viewOpen, setViewOpen] = useState(false);
   const [viewName, setViewName] = useState("");
+  const [recoveredViewFilters, setRecoveredViewFilters] =
+    useState<SavedView["filters"]>();
   const [editingView, setEditingView] = useState<SavedView | null>(null);
   const [detailLoading, setDetailLoading] = useState("");
   const reads = useRef<{
@@ -187,6 +196,13 @@ function AnswersWorkspace({
     teamBindingId: scope.teamBindingId,
     brandId: scope.brandId,
   });
+  const viewAttempt = useDirectoryAttempt(
+    `geo.saved-view.${userId}.${scope.organizationId}.${scope.teamBindingId}.${scope.brandId}`,
+    true,
+  );
+  const viewBlocked = !viewAttempt.ready || Boolean(viewAttempt.pending);
+  const [viewError, setViewError] = useState("");
+  const [viewConflict, setViewConflict] = useState<SavedView>();
   const canRead = scope.can("answerbit.resource.read");
   const canExport = scope.can("report.export");
   const reportHistory = useReportHistory(
@@ -258,6 +274,9 @@ function AnswersWorkspace({
   useEffect(() => {
     void loadTools();
   }, [loadTools]);
+  useEffect(() => {
+    if (viewAttempt.resolvedVersion) void loadTools();
+  }, [viewAttempt.resolvedVersion, loadTools]);
   const base: Record<string, string> = {
     organizationId: scope.organizationId,
     teamBindingId: scope.teamBindingId,
@@ -370,57 +389,184 @@ function AnswersWorkspace({
       if (!controller.signal.aborted && mounted.current) setDetailLoading("");
     }
   }
-  async function saveView() {
-    const name = viewName.trim();
-    if (!name || toolSubmitting.current || !canRead || !scope.brandId) return;
+  type ViewAction = Extract<
+    NonNullable<DirectoryAttempt["form"]>,
+    { kind: "saved_view" }
+  >["action"];
+  async function runViewAction(
+    action: ViewAction,
+    original?: DirectoryAttempt,
+    displayName?: string,
+  ) {
+    if (
+      !canRead ||
+      !scope.brandId ||
+      toolSubmitting.current ||
+      viewAttempt.inFlight ||
+      (!original && viewBlocked)
+    )
+      return;
+    const operation = action.operation;
+    const name = "name" in action.input ? (action.input.name ?? "") : "原视图";
+    const pending: DirectoryAttempt = original ?? {
+      id: crypto.randomUUID(),
+      operation:
+        operation === "create"
+          ? "保存筛选视图"
+          : operation === "rename"
+            ? "重命名视图"
+            : "删除视图",
+      submittedAt: new Date().toISOString(),
+      details: [{ label: "视图名称", value: displayName ?? name }],
+      form: { kind: "saved_view", action },
+    };
+    if (!viewAttempt.begin(pending)) return;
     toolSubmitting.current = true;
-    setToolBusy("view");
+    setToolBusy(operation === "delete" ? `delete:${action.viewId}` : "view");
+    setViewError("");
+    setViewConflict(undefined);
     try {
       const response = await fetch(
-        editingView
-          ? `/api/v1/saved-views/${editingView.id}`
-          : "/api/v1/saved-views",
+        operation === "create"
+          ? "/api/v1/saved-views"
+          : `/api/v1/saved-views/${action.viewId}`,
         {
-          method: editingView ? "PATCH" : "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            organizationId: scope.organizationId,
-            name,
-            ...(!editingView
-              ? {
-                  page: "answers",
-                  filters: {
-                    teamBindingId: scope.teamBindingId,
-                    brandId: scope.brandId,
-                    beginDate,
-                    endDate,
-                    platforms: selectedPlatforms,
-                    keyword,
-                    mentionBrand,
-                  },
-                }
+          method:
+            operation === "create"
+              ? "POST"
+              : operation === "rename"
+                ? "PATCH"
+                : "DELETE",
+          headers: {
+            "content-type": "application/json",
+            ...(operation === "create"
+              ? { "Idempotency-Key": pending.id }
               : {}),
-          }),
+          },
+          body: JSON.stringify(action.input),
         },
       );
-      const body = await response.json();
+      const body = response.status === 204 ? undefined : await response.json();
+      if (!response.ok) {
+        const code = body?.error?.code;
+        if (code === "SAVED_VIEW_REMOVED") {
+          viewAttempt.finish(pending.id);
+          if (mounted.current) {
+            setViewOpen(false);
+            setMessageType("info");
+            setMessage(
+              "原保存的视图已被删除，本次确认已结束；如需保存请新建视图。",
+            );
+            await loadTools();
+          }
+          return;
+        }
+        if (
+          response.status >= 400 &&
+          response.status < 500 &&
+          (!original ||
+            code === "SAVED_VIEW_VERSION_CONFLICT" ||
+            code === "SAVED_VIEW_NOT_FOUND" ||
+            code === "SAVED_VIEW_NAME_EXISTS")
+        )
+          viewAttempt.finish(pending.id);
+        if (
+          mounted.current &&
+          code === "SAVED_VIEW_VERSION_CONFLICT" &&
+          body?.error?.details?.current
+        ) {
+          const current = body.error.details.current as SavedView;
+          setEditingView(current);
+          if (action.operation === "rename")
+            setViewName(action.input.name ?? current.name);
+          setViewConflict(current);
+          setViewOpen(true);
+        }
+        if (
+          mounted.current &&
+          code === "SAVED_VIEW_NAME_EXISTS" &&
+          action.operation === "create"
+        ) {
+          setEditingView(null);
+          setViewName(action.input.name);
+          setRecoveredViewFilters(action.input.filters);
+          setViewOpen(true);
+        }
+        throw new Error(
+          body?.error?.message ?? "视图操作未确认，请确认原操作。",
+        );
+      }
+      if (
+        operation !== "delete" &&
+        (!body?.data?.id || typeof body.data.name !== "string")
+      )
+        throw new Error("视图操作响应未确认，请继续确认原操作。");
+      if (!viewAttempt.finish(pending.id)) return;
       if (!mounted.current) return;
-      if (!response.ok) throw new Error(body.error?.message);
-      setViewName("");
       setViewOpen(false);
-      setMessageType("success");
-      setMessage(editingView ? "视图名称已更新" : "当前条件已保存");
       setEditingView(null);
+      setViewName("");
+      setMessageType("success");
+      setMessage(
+        operation === "delete"
+          ? "视图已删除"
+          : operation === "rename"
+            ? "视图名称已更新"
+            : "当前条件已保存",
+      );
       await loadTools();
     } catch (error) {
       if (mounted.current) {
+        const message =
+          error instanceof TypeError
+            ? "视图结果暂未确认，请确认原操作，避免重复保存。"
+            : error instanceof Error
+              ? error.message
+              : "视图操作未确认";
+        setViewError(message);
         setMessageType("error");
-        setMessage(error instanceof Error ? error.message : "视图保存失败");
+        setMessage(message);
       }
     } finally {
+      viewAttempt.settle(pending.id);
       toolSubmitting.current = false;
       if (mounted.current) setToolBusy("");
     }
+  }
+  async function saveView() {
+    const name = viewName.trim();
+    if (!name || viewBlocked || !canRead || !scope.brandId) return;
+    if (editingView)
+      return runViewAction({
+        operation: "rename",
+        viewId: editingView.id,
+        input: {
+          organizationId: scope.organizationId,
+          name,
+          expected: {
+            name: editingView.name,
+            filters: editingView.filters,
+            isDefault: editingView.isDefault,
+          },
+        },
+      });
+    const parsed = createSavedViewSchema.safeParse({
+      organizationId: scope.organizationId,
+      name,
+      page: "answers",
+      filters: recoveredViewFilters ?? {
+        teamBindingId: scope.teamBindingId,
+        brandId: scope.brandId,
+        beginDate,
+        endDate,
+        platforms: selectedPlatforms,
+        keyword: keyword.trim(),
+        mentionBrand,
+      },
+    });
+    if (parsed.success)
+      return runViewAction({ operation: "create", input: parsed.data });
+    setViewError("请检查视图名称及当前筛选条件。");
   }
   function applyView(view: SavedView) {
     const parsed = answersSavedViewFiltersSchema.safeParse(view.filters);
@@ -452,32 +598,15 @@ function AnswersWorkspace({
     setMessage("");
   }
   async function deleteView(view: SavedView) {
-    if (toolSubmitting.current) return;
-    toolSubmitting.current = true;
-    setToolBusy(`delete:${view.id}`);
-    try {
-      const response = await fetch(`/api/v1/saved-views/${view.id}`, {
-        method: "DELETE",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ organizationId: scope.organizationId }),
-      });
-      if (!mounted.current) return;
-      if (!response.ok) {
-        const body = await response.json();
-        throw new Error(body.error?.message ?? "视图删除失败");
-      }
-      setViews((items) => items.filter((item) => item.id !== view.id));
-      setMessageType("success");
-      setMessage("视图已删除");
-    } catch (error) {
-      if (mounted.current) {
-        setMessageType("error");
-        setMessage(error instanceof Error ? error.message : "视图删除失败");
-      }
-    } finally {
-      toolSubmitting.current = false;
-      if (mounted.current) setToolBusy("");
-    }
+    return runViewAction(
+      {
+        operation: "delete",
+        viewId: view.id,
+        input: { organizationId: scope.organizationId },
+      },
+      undefined,
+      view.name,
+    );
   }
   async function createExport(reportType: ReportType, previous?: ExportJob) {
     const attempt = reportAttempts.get(reportType);
@@ -949,10 +1078,15 @@ function AnswersWorkspace({
             <Button
               icon={<SaveOutlined />}
               loading={toolBusy === "view"}
-              disabled={!canRead || !scope.brandId || Boolean(toolBusy)}
+              disabled={
+                !canRead || !scope.brandId || Boolean(toolBusy) || viewBlocked
+              }
               onClick={() => {
                 setEditingView(null);
+                setRecoveredViewFilters(undefined);
                 setViewName("");
+                setViewError("");
+                setViewConflict(undefined);
                 setViewOpen(true);
               }}
             >
@@ -964,9 +1098,11 @@ function AnswersWorkspace({
                 <Button
                   aria-label={`重命名视图 ${view.name}`}
                   icon={<EditOutlined />}
-                  disabled={Boolean(toolBusy)}
+                  disabled={Boolean(toolBusy) || viewBlocked || !canRead}
                   onClick={() => {
                     setEditingView(view);
+                    setViewError("");
+                    setViewConflict(undefined);
                     setViewName(view.name);
                     setViewOpen(true);
                   }}
@@ -983,7 +1119,7 @@ function AnswersWorkspace({
                     danger
                     icon={<DeleteOutlined />}
                     loading={toolBusy === `delete:${view.id}`}
-                    disabled={Boolean(toolBusy)}
+                    disabled={Boolean(toolBusy) || viewBlocked || !canRead}
                   />
                 </Popconfirm>
               </Space.Compact>
@@ -1013,6 +1149,77 @@ function AnswersWorkspace({
             </Space>
           ) : null}
         </Flex>
+        {viewAttempt.storageError ? (
+          <Alert
+            type="warning"
+            showIcon
+            message={viewAttempt.storageError}
+            style={{ marginTop: 16 }}
+          />
+        ) : null}
+        {viewAttempt.pending?.form?.kind === "saved_view" ? (
+          <Alert
+            type="warning"
+            showIcon
+            message={
+              viewAttempt.inFlight ? "原视图操作仍在提交" : "视图操作结果待确认"
+            }
+            style={{ marginTop: 16 }}
+            description={
+              <Space direction="vertical" style={{ width: "100%" }}>
+                <Typography.Text>
+                  原操作：{viewAttempt.pending.operation}
+                </Typography.Text>
+                {viewAttempt.pending.details.map((item) => (
+                  <Typography.Text key={item.label}>
+                    {item.label}：{item.value}
+                  </Typography.Text>
+                ))}
+                {viewAttempt.pending.form.action.operation === "create" ? (
+                  <Typography.Text>
+                    原筛选：
+                    {String(
+                      viewAttempt.pending.form.action.input.filters.beginDate ??
+                        "",
+                    )}{" "}
+                    至{" "}
+                    {String(
+                      viewAttempt.pending.form.action.input.filters.endDate ??
+                        "",
+                    )}
+                    ；关键词：
+                    {String(
+                      viewAttempt.pending.form.action.input.filters.keyword ||
+                        "全部",
+                    )}
+                  </Typography.Text>
+                ) : null}
+                {viewError ? (
+                  <Typography.Text type="danger">{viewError}</Typography.Text>
+                ) : null}
+                {!canRead ? (
+                  <Typography.Text>
+                    当前没有视图权限，原记录已保留；恢复权限后可继续确认。
+                  </Typography.Text>
+                ) : null}
+                <Button
+                  aria-label="确认原视图操作"
+                  disabled={
+                    !canRead || viewAttempt.inFlight || Boolean(toolBusy)
+                  }
+                  loading={viewAttempt.inFlight}
+                  onClick={() => {
+                    const pending = viewAttempt.pending;
+                    if (pending?.form?.kind === "saved_view")
+                      void runViewAction(pending.form.action, pending);
+                  }}
+                >
+                  确认原视图操作
+                </Button>
+              </Space>
+            }
+          />
+        ) : null}
         {reportAttempts.errors.map(({ type, attempt, message }) => (
           <Alert
             key={type}
@@ -1211,7 +1418,13 @@ function AnswersWorkspace({
         closable={!toolBusy}
         maskClosable={!toolBusy}
         keyboard={!toolBusy}
-        okButtonProps={{ disabled: !viewName.trim() }}
+        okButtonProps={{
+          disabled:
+            !viewName.trim() ||
+            !canRead ||
+            viewBlocked ||
+            Boolean(viewConflict),
+        }}
         okText="保存"
         onCancel={() => setViewOpen(false)}
         onOk={() => void saveView()}
@@ -1224,10 +1437,64 @@ function AnswersWorkspace({
             保存当前企业、品牌、日期和筛选条件。
           </Typography.Paragraph>
         ) : null}
+        {recoveredViewFilters && !editingView ? (
+          <Typography.Paragraph>
+            本次保存沿用原筛选：{String(recoveredViewFilters.beginDate ?? "")}{" "}
+            至 {String(recoveredViewFilters.endDate ?? "")}；关键词：
+            {String(recoveredViewFilters.keyword || "全部")}。
+          </Typography.Paragraph>
+        ) : null}
+        {viewError ? (
+          <Alert
+            type="error"
+            showIcon
+            message={viewError}
+            style={{ marginBottom: 16 }}
+          />
+        ) : null}
+        {viewConflict ? (
+          <Alert
+            type="warning"
+            showIcon
+            message={`最新视图名称：${viewConflict.name}`}
+            description="你的输入已保留，请先核对最新配置。"
+            action={
+              <Button
+                onClick={() => {
+                  setEditingView(viewConflict);
+                  setViewConflict(undefined);
+                  setViewError("");
+                }}
+              >
+                采用最新配置继续编辑
+              </Button>
+            }
+            style={{ marginBottom: 16 }}
+          />
+        ) : null}
+        {viewAttempt.pending ? (
+          <Alert
+            type="warning"
+            showIcon
+            message="上次操作结果待确认，请到视图与导出区确认原操作。"
+            style={{ marginBottom: 16 }}
+          />
+        ) : null}
+        {!canRead ? (
+          <Alert
+            type="warning"
+            showIcon
+            message="当前没有保存视图权限，输入已保留。"
+            style={{ marginBottom: 16 }}
+          />
+        ) : null}
         <label htmlFor="saved-view-name">视图名称</label>
         <Input
           id="saved-view-name"
           autoFocus
+          disabled={
+            !canRead || Boolean(toolBusy) || Boolean(viewAttempt.pending)
+          }
           maxLength={100}
           onChange={(event) => setViewName(event.target.value)}
           placeholder="视图名称"

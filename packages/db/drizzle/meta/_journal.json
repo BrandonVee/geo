@@ -85,6 +85,13 @@
       "when": 1790853989477,
       "tag": "v12",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1790859861224,
+      "tag": "v13",
+      "breakpoints": true
     }
   ]
 }

@@ -3187,6 +3187,16 @@ paths:
           description: 用户在企业内的保存视图
     post:
       summary: 保存当前筛选组合
+      description: 创建与审计原子提交；相同企业、用户、键和原创建内容重放返回当前视图，不重复创建。删除后原创建重放返回 SAVED_VIEW_REMOVED，不复活视图。响应不包含内部创建键、指纹或删除标记。
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: false
+          schema:
+            type: string
+            minLength: 8
+            maxLength: 128
+            pattern: "^[A-Za-z0-9._:-]+$"
       tags:
         - Workspace Extensions
       requestBody:
@@ -3200,13 +3210,16 @@ paths:
           $ref: "#/components/responses/PayloadTooLarge"
         "415":
           $ref: "#/components/responses/UnsupportedMediaType"
+        "200":
+          description: 原创建请求重放成功，data.replayed=true
         "201":
-          description: 保存视图已创建
+          description: 保存视图已创建，data.replayed=false
         "409":
-          description: 同名视图冲突
+          description: SAVED_VIEW_NAME_EXISTS、SAVED_VIEW_IDEMPOTENCY_CONFLICT 或 SAVED_VIEW_REMOVED
   /v1/saved-views/{viewId}:
     patch:
       summary: 更新自己的保存视图
+      description: 至少提供 name、filters、isDefault 中一个更新字段。可选 expected 用于比较原配置；已达到目标的重试直接返回当前视图，否则并发变更返回409，保留原配置。
       tags:
         - Workspace Extensions
       parameters:
@@ -3234,13 +3247,19 @@ paths:
                   type: object
                 isDefault:
                   type: boolean
+                expected:
+                  $ref: "#/components/schemas/SavedViewExpected"
       responses:
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
         "415":
           $ref: "#/components/responses/UnsupportedMediaType"
         "200":
-          description: 保存视图已更新
+          description: 保存视图已更新或目标配置已达到
+        "404":
+          description: SAVED_VIEW_NOT_FOUND
+        "409":
+          description: SAVED_VIEW_NAME_EXISTS 或 SAVED_VIEW_VERSION_CONFLICT；版本冲突的 error.details.current 为最新视图
     delete:
       summary: 删除自己的保存视图
       tags:
@@ -3264,7 +3283,7 @@ paths:
         "415":
           $ref: "#/components/responses/UnsupportedMediaType"
         "204":
-          description: 保存视图已删除
+          description: 保存视图已删除或当前用户范围内已经不存在；重复删除不重复审计
   /v1/report-exports:
     get:
       description: 要求当前企业、绑定、品牌的 report.export 权限，可见同品牌历史任务；筛选参数取交集。
@@ -5263,6 +5282,23 @@ components:
             - brand_admin
             - brand_editor
             - brand_viewer
+    SavedViewExpected:
+      type: object
+      additionalProperties: false
+      required:
+        - name
+        - filters
+        - isDefault
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        filters:
+          type: object
+          maxProperties: 50
+        isDefault:
+          type: boolean
     CreateSavedView:
       type: object
       additionalProperties: false

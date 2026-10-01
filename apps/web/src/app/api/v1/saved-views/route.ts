@@ -1,5 +1,6 @@
 import {
   createSavedViewSchema,
+  idempotencyKeySchema,
   savedViewListQuerySchema,
 } from "@geo/contracts";
 import { createRequestId } from "@geo/core";
@@ -47,6 +48,11 @@ export async function POST(request: Request) {
         "保存视图参数有误",
         parsed.error.issues,
       );
+    const rawKey = request.headers.get("Idempotency-Key");
+    const key =
+      rawKey === null ? undefined : idempotencyKeySchema.safeParse(rawKey);
+    if (key && !key.success)
+      throw new ApiError(400, "VALIDATION_ERROR", "Idempotency-Key 格式错误");
     const row = await savedViewService.create(
       parsed.data,
       user.id,
@@ -56,10 +62,14 @@ export async function POST(request: Request) {
         user.id,
         requestId,
       ),
+      key?.success ? key.data : undefined,
     );
     return apiJson(
       { data: row, requestId },
-      { status: 201, headers: { Location: `/api/v1/saved-views/${row.id}` } },
+      {
+        status: row.replayed ? 200 : 201,
+        headers: { Location: `/api/v1/saved-views/${row.id}` },
+      },
     );
   } catch (error) {
     return errorResponse(error, requestId);

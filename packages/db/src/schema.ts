@@ -1403,17 +1403,23 @@ export const savedViews = pgTable(
     page: varchar("page", { length: 64 }).notNull(),
     filters: jsonb("filters").$type<Record<string, unknown>>().notNull(),
     isDefault: boolean("is_default").default(false).notNull(),
+    creationKey: varchar("creation_key", { length: 200 }),
+    creationFingerprint: varchar("creation_fingerprint", { length: 64 }),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
     ...timestamps,
   },
   (t) => [
-    uniqueIndex("saved_views_org_user_name_ux").on(
+    uniqueIndex("saved_views_org_user_name_ux")
+      .on(t.organizationId, t.userId, t.name)
+      .where(sql`${t.deletedAt} is null`),
+    uniqueIndex("saved_views_org_creation_key_ux").on(
       t.organizationId,
       t.userId,
-      t.name,
+      t.creationKey,
     ),
     uniqueIndex("saved_views_one_default_ux")
       .on(t.organizationId, t.userId, t.page)
-      .where(sql`${t.isDefault} = true`),
+      .where(sql`${t.isDefault} = true and ${t.deletedAt} is null`),
     index("saved_views_user_page_idx").on(t.userId, t.page, t.updatedAt),
   ],
 );

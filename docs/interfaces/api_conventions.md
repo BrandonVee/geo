@@ -103,6 +103,8 @@ JSON 请求使用 `Content-Type: application/json`；允许标准的 `applicatio
 
 文档新建和导入支持可选的 `Idempotency-Key` 请求头；工作台和平台文档库必须提供稳定键。首次创建返回 `201` 和 `data.replayed=false`，相同键、操作者、范围及创建内容重放返回当前文档、`200` 和 `data.replayed=true`，不新建版本；参数或操作者不一致返回 `409 CONTENT_DOCUMENT_IDEMPOTENCY_CONFLICT`。原始创建指纹不随后续编辑改变。兼容不带键的调用，但此类调用每次都是独立创建，不能安全重试。
 
+个人视图创建支持可选 `Idempotency-Key`，工作台必须使用稳定键。键按企业和用户隔离，首次返回 201 和 `replayed=false`，相同创建内容重放返回当前视图、200 和 `replayed=true`；不同内容返回 `SAVED_VIEW_IDEMPOTENCY_CONFLICT`，原视图已删除返回 `SAVED_VIEW_REMOVED`，名称重复返回 `SAVED_VIEW_NAME_EXISTS`，均为409。修改可携带 `expected` 原名称、筛选和默认标记；并发冲突返回409 `SAVED_VIEW_VERSION_CONFLICT` 和 `details.current`，目标已达到则直接返回200。DELETE 和重复DELETE均返回204；内部创建键、指纹和删除标记不出现在视图响应中。
+
 文档编辑与历史恢复请求体、归档查询参数必须包含正整数 `expectedVersion`。版本不一致返回 `409 CONTENT_DOCUMENT_VERSION_CONFLICT` 和 `details.currentVersion`，不写入内容或版本；客户端保留未保存编辑，核对最新版后重新提交。
 
 报告创建、额度、入队和审计原子提交，首次成功返回 201，原任务重放返回 200；额度不足返回 402 且不保留新建半成品。旧的不完整提交会补全原任务或返回明确失败的原任务，客户端可使用新键重新导出。报告导出同样校验原操作者、品牌、内部绑定、报告类型和完整筛选；不一致返回 `409 REPORT_EXPORT_IDEMPOTENCY_CONFLICT`。网络失败重试保留原键，确认失败或文件过期后按原条件重新导出使用新键。报告元数据返回规范化的原筛选、即时过期状态、下载地址和 `errorMessage`；元数据响应不包含 CSV 正文。

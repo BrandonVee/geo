@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  updateSavedViewSchema,
   addOrganizationMemberSchema,
   adminAddOrganizationMemberSchema,
   adminBalanceTransactionQuerySchema,
@@ -1245,6 +1246,39 @@ describe("报告历史检索契约", () => {
         teamBindingId,
         brandId: "brand",
         ...patch,
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe("个人视图并发修改契约", () => {
+  const expected = {
+    name: "原视图",
+    filters: { keyword: "原条件" },
+    isDefault: false,
+  };
+  it("接受完整原配置并兼容无 expected 的旧客户端", () => {
+    expect(
+      updateSavedViewSchema.parse({
+        organizationId,
+        name: " 新名称 ",
+        expected,
+      }),
+    ).toMatchObject({ name: "新名称", expected });
+    expect(
+      updateSavedViewSchema.safeParse({ organizationId, isDefault: false })
+        .success,
+    ).toBe(true);
+  });
+  it("expected 不能代替修改内容或缺少原配置字段", () => {
+    expect(
+      updateSavedViewSchema.safeParse({ organizationId, expected }).success,
+    ).toBe(false);
+    expect(
+      updateSavedViewSchema.safeParse({
+        organizationId,
+        name: "新名称",
+        expected: { name: "原视图", filters: {} },
       }).success,
     ).toBe(false);
   });

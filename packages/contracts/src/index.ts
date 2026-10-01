@@ -1524,15 +1524,29 @@ export const createSavedViewSchema = z
     isDefault: z.boolean().optional().default(false),
   })
   .strict();
+export const savedViewExpectedSchema = z
+  .object({
+    name: z.string().min(1).max(100),
+    filters: savedViewFiltersSchema,
+    isDefault: z.boolean(),
+  })
+  .strict();
 export const updateSavedViewSchema = z
   .object({
     organizationId: z.string().uuid(),
     name: z.string().trim().min(1).max(100).optional(),
     filters: savedViewFiltersSchema.optional(),
     isDefault: z.boolean().optional(),
+    expected: savedViewExpectedSchema.optional(),
   })
   .strict()
-  .refine((value) => Object.keys(value).length > 1, "至少提供一个更新字段");
+  .refine(
+    (value) =>
+      value.name !== undefined ||
+      value.filters !== undefined ||
+      value.isDefault !== undefined,
+    "至少提供一个更新字段",
+  );
 export const savedViewActionSchema = z
   .object({ organizationId: z.string().uuid() })
   .strict();
