@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   authorize: vi.fn(),
+  listMemberRows: vi.fn(),
+  listBrandAccess: vi.fn(),
   assertEntitlementCapacity: vi.fn(),
   findActiveBrandScope: vi.fn(),
   findUserByUsername: vi.fn(),
@@ -65,6 +67,32 @@ describe("企业成员开户与授权", () => {
       member: { id: "member-1" },
     });
     mocks.addExistingMember.mockResolvedValue({ id: "member-2" });
+  });
+
+  it("成员目录区分账号有效状态和成员状态", async () => {
+    mocks.listMemberRows.mockResolvedValue([
+      {
+        memberId: "member-1",
+        userId: "user-1",
+        name: "停用账号",
+        username: "disabled_1",
+        memberStatus: "active",
+        accountStatus: "disabled",
+        accountType: "agent",
+        organizationRole: "tenant_admin",
+      },
+    ]);
+    mocks.listBrandAccess.mockResolvedValue([]);
+    mocks.getUserAccessState.mockReturnValue("disabled");
+    const result = await memberService.list(organizationId, actorUserId);
+    expect(result.members[0]).toMatchObject({
+      status: "active",
+      accountState: "disabled",
+      organizationRoles: ["tenant_admin"],
+    });
+    expect(mocks.getUserAccessState).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "disabled", accountType: "agent" }),
+    );
   });
 
   it("企业管理员一步创建客户账号并授予本企业品牌角色", async () => {
@@ -376,6 +404,25 @@ describe("企业成员开户与授权", () => {
       "agent-1",
     );
     expect(mocks.writeAudit).toHaveBeenCalledOnce();
+  });
+
+  it("成员在查询后被并发移除，更新返回 404 而非成功审计", async () => {
+    mocks.findMember.mockResolvedValue({
+      id: "member-2",
+      userId: "agent-1",
+      status: "active",
+    });
+    mocks.updateMember.mockResolvedValue(undefined);
+    await expect(
+      memberService.update(
+        organizationId,
+        "member-2",
+        { status: "disabled" },
+        actorUserId,
+        audit,
+      ),
+    ).rejects.toMatchObject({ status: 404, code: "MEMBER_NOT_FOUND" });
+    expect(mocks.writeAudit).not.toHaveBeenCalled();
   });
 
   it("不能恢复已过期代理商的成员关系", async () => {

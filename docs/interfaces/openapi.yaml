@@ -364,7 +364,7 @@ paths:
         - cookieSession: []
       responses:
         "200":
-          description: 成员目录
+          description: 成员目录；status 表示成员状态，accountState 为全局账号当前可用状态（active、disabled、scheduled、expired）
         "403":
           $ref: "#/components/responses/Forbidden"
     post:
@@ -2524,7 +2524,7 @@ paths:
         "200":
           description: 用户状态、类型、有效期、额度或企业功能范围已更新；类型切换与停用会撤销现有 Session
         "409":
-          description: 当前企业管理员或品牌权限与目标账户类型冲突
+          description: 当前角色与目标类型冲突，或主动变更账号会让企业失去最后可用管理员（LAST_TENANT_ADMIN，details.organizations 为需交接企业 ID/名称）
         "422":
           description: 禁止停用当前管理员自身、有效时间范围无效、非代理商设置额度，或目标企业不属于该用户
   /v1/admin/audit-logs:

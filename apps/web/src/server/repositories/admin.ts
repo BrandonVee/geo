@@ -26,6 +26,11 @@ import {
   type OrganizationFeature,
   type RuntimeTaskName,
 } from "@geo/core";
+import {
+  lockMemberAccount,
+  lockUserOrganizations,
+  assertAccountAdministratorHandover,
+} from "./member-lifecycle";
 
 type Page = { page: number; pageSize: number; q?: string; status?: string };
 type UserPage = Page & {
@@ -423,29 +428,90 @@ export const adminRepository = {
     featureScopes?: UserFeatureScope[],
     updatedBy?: string,
   ) {
-    return db.transaction(async (tx) => {
-      const [user] = await tx
-        .update(users)
-        .set({ ...input, updatedAt: new Date() })
-        .where(eq(users.id, id))
-        .returning();
-      if (user && (input.status === "disabled" || input.accountType))
-        await tx.delete(sessions).where(eq(sessions.userId, id));
-      if (user && featureScopes) {
-        await tx
-          .delete(organizationUserFeatureScopes)
-          .where(eq(organizationUserFeatureScopes.userId, id));
-        if (featureScopes.length)
-          await tx.insert(organizationUserFeatureScopes).values(
-            featureScopes.map((scope) => ({
-              ...scope,
-              userId: id,
-              updatedBy,
-            })),
-          );
-      }
-      return user;
-    });
+    return db.transaction(
+      async (tx) => {
+        const current = await lockMemberAccount(tx, id);
+        if (!current) return undefined;
+        const memberships = await lockUserOrganizations(tx, id);
+        if (
+          featureScopes?.some(
+            (scope) =>
+              !memberships.some(
+                (organization) => organization.id === scope.organizationId,
+              ),
+          )
+        )
+          throw new Error("USER_ORGANIZATION_SCOPE_INVALID");
+        if (input.accountType && input.accountType !== current.accountType) {
+          const tenantRoles =
+            input.accountType === "customer"
+              ? await tx
+                  .select({ id: organizationMembers.id })
+                  .from(organizationMembers)
+                  .innerJoin(
+                    memberRoles,
+                    eq(memberRoles.memberId, organizationMembers.id),
+                  )
+                  .innerJoin(roles, eq(roles.id, memberRoles.roleId))
+                  .innerJoin(
+                    organizations,
+                    eq(organizations.id, organizationMembers.organizationId),
+                  )
+                  .where(
+                    and(
+                      eq(organizationMembers.userId, id),
+                      eq(roles.code, "tenant_admin"),
+                      ne(organizations.status, "closed"),
+                    ),
+                  )
+                  .limit(1)
+              : await tx
+                  .select({ id: brandAccess.id })
+                  .from(brandAccess)
+                  .innerJoin(
+                    organizations,
+                    eq(organizations.id, brandAccess.organizationId),
+                  )
+                  .where(
+                    and(
+                      eq(brandAccess.userId, id),
+                      ne(organizations.status, "closed"),
+                    ),
+                  )
+                  .limit(1);
+          if (tenantRoles.length) throw new Error("ACCOUNT_TYPE_ROLE_CONFLICT");
+        }
+        const next = {
+          ...current,
+          ...Object.fromEntries(
+            Object.entries(input).filter(([, value]) => value !== undefined),
+          ),
+        };
+        await assertAccountAdministratorHandover(tx, id, current, next);
+        const [user] = await tx
+          .update(users)
+          .set({ ...input, updatedAt: new Date() })
+          .where(eq(users.id, id))
+          .returning();
+        if (user && (input.status === "disabled" || input.accountType))
+          await tx.delete(sessions).where(eq(sessions.userId, id));
+        if (user && featureScopes) {
+          await tx
+            .delete(organizationUserFeatureScopes)
+            .where(eq(organizationUserFeatureScopes.userId, id));
+          if (featureScopes.length)
+            await tx.insert(organizationUserFeatureScopes).values(
+              featureScopes.map((scope) => ({
+                ...scope,
+                userId: id,
+                updatedBy,
+              })),
+            );
+        }
+        return user;
+      },
+      { isolationLevel: "read committed" },
+    );
   },
   async findUser(id: string) {
     const [user] = await db

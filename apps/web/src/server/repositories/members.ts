@@ -16,7 +16,13 @@ import {
   subscriptionEntitlements,
   users,
 } from "@geo/db";
-import { and, count, eq, gt, ne, sql } from "drizzle-orm";
+import { and, eq, gt, ne, sql } from "drizzle-orm";
+import {
+  lockMemberAccount,
+  assertMemberAccountEffective,
+  assertAdministratorRemains,
+  effectiveTenantAdministrators,
+} from "./member-lifecycle";
 import { insertLocalAccount } from "@/server/modules/identity/identity.repository";
 
 type MemberScopeInput = {
@@ -39,31 +45,6 @@ async function lockOrganization(tx: Transaction, organizationId: string) {
     .where(eq(organizations.id, organizationId))
     .for("update");
   if (!organization) throw new Error("ORGANIZATION_NOT_FOUND");
-}
-
-// @project-doc docs/domains/identity_and_access.md#member_lifecycle
-async function assertAdministratorRemains(
-  tx: Transaction,
-  organizationId: string,
-  memberId: string,
-) {
-  const administrators = await tx
-    .select({ id: organizationMembers.id })
-    .from(organizationMembers)
-    .innerJoin(memberRoles, eq(memberRoles.memberId, organizationMembers.id))
-    .innerJoin(roles, eq(roles.id, memberRoles.roleId))
-    .where(
-      and(
-        eq(organizationMembers.organizationId, organizationId),
-        eq(organizationMembers.status, "active"),
-        eq(roles.code, "tenant_admin"),
-      ),
-    );
-  if (
-    administrators.some((member) => member.id === memberId) &&
-    administrators.length <= 1
-  )
-    throw new Error("LAST_TENANT_ADMIN");
 }
 
 async function assertMemberCapacity(tx: Transaction, organizationId: string) {
@@ -128,6 +109,12 @@ async function upsertMember(
   userId: string,
   input: MemberScopeInput,
 ) {
+  const account = await lockMemberAccount(tx, userId);
+  assertMemberAccountEffective(account);
+  if (input.role === "tenant_admin" && account?.accountType === "customer")
+    throw new Error("ACCOUNT_TYPE_MISMATCH");
+  if (input.role !== "tenant_admin" && account?.accountType === "agent")
+    throw new Error("ACCOUNT_TYPE_MISMATCH");
   await lockOrganization(tx, organizationId);
   const [existing] = await tx
     .select({ status: organizationMembers.status })
@@ -144,23 +131,10 @@ async function upsertMember(
 
   let agentEnterpriseLimit: number | null = null;
   let priorAgentEnterpriseCount = 0;
-  if (input.role === "tenant_admin") {
-    const [account] = await tx
-      .select({
-        accountType: users.accountType,
-        agentEnterpriseLimit: users.agentEnterpriseLimit,
-      })
-      .from(users)
-      .where(eq(users.id, userId))
-      .for("update");
-    if (account?.accountType === "agent") {
-      agentEnterpriseLimit = account.agentEnterpriseLimit;
-      if (agentEnterpriseLimit !== null)
-        priorAgentEnterpriseCount = await countActiveAgentEnterprises(
-          tx,
-          userId,
-        );
-    }
+  if (input.role === "tenant_admin" && account?.accountType === "agent") {
+    agentEnterpriseLimit = account.agentEnterpriseLimit;
+    if (agentEnterpriseLimit !== null)
+      priorAgentEnterpriseCount = await countActiveAgentEnterprises(tx, userId);
   }
   const [member] = await tx
     .insert(organizationMembers)
@@ -245,6 +219,10 @@ export const memberRepository = {
         userId: users.id,
         name: users.name,
         username: users.username,
+        accountStatus: users.status,
+        accountType: users.accountType,
+        agentValidFrom: users.agentValidFrom,
+        agentExpiresAt: users.agentExpiresAt,
         memberStatus: organizationMembers.status,
         joinedAt: organizationMembers.joinedAt,
         createdAt: organizationMembers.createdAt,
@@ -296,8 +274,9 @@ export const memberRepository = {
     userId: string,
     input: MemberScopeInput,
   ) {
-    return db.transaction((tx) =>
-      upsertMember(tx, organizationId, userId, input),
+    return db.transaction(
+      (tx) => upsertMember(tx, organizationId, userId, input),
+      { isolationLevel: "read committed" },
     );
   },
 
@@ -312,17 +291,20 @@ export const memberRepository = {
       brandId: string;
     },
   ) {
-    return db.transaction(async (tx) => {
-      const user = await insertLocalAccount(tx, {
-        name: input.name,
-        username: input.username,
-        passwordHash: input.passwordHash,
-        accountType: "customer",
-        pricingTier: "retail",
-      });
-      const member = await upsertMember(tx, organizationId, user.id, input);
-      return { user, member };
-    });
+    return db.transaction(
+      async (tx) => {
+        const user = await insertLocalAccount(tx, {
+          name: input.name,
+          username: input.username,
+          passwordHash: input.passwordHash,
+          accountType: "customer",
+          pricingTier: "retail",
+        });
+        const member = await upsertMember(tx, organizationId, user.id, input);
+        return { user, member };
+      },
+      { isolationLevel: "read committed" },
+    );
   },
 
   async findMember(organizationId: string, memberId: string) {
@@ -367,21 +349,10 @@ export const memberRepository = {
   },
 
   async countActiveTenantAdmins(organizationId: string) {
-    const [row] = await db
-      .select({ value: count() })
-      .from(organizationMembers)
-      .innerJoin(memberRoles, eq(memberRoles.memberId, organizationMembers.id))
-      .innerJoin(
-        roles,
-        and(eq(roles.id, memberRoles.roleId), eq(roles.code, "tenant_admin")),
-      )
-      .where(
-        and(
-          eq(organizationMembers.organizationId, organizationId),
-          eq(organizationMembers.status, "active"),
-        ),
-      );
-    return Number(row.value);
+    return db.transaction(
+      async (tx) =>
+        (await effectiveTenantAdministrators(tx, organizationId)).length,
+    );
   },
 
   async updateMember(
@@ -389,97 +360,115 @@ export const memberRepository = {
     memberId: string,
     status: "active" | "disabled",
   ) {
-    return db.transaction(async (tx) => {
-      await lockOrganization(tx, organizationId);
-      if (status === "disabled")
-        await assertAdministratorRemains(tx, organizationId, memberId);
-      const [current] = await tx
-        .select({
-          userId: organizationMembers.userId,
-          status: organizationMembers.status,
-        })
-        .from(organizationMembers)
-        .where(
-          and(
-            eq(organizationMembers.organizationId, organizationId),
-            eq(organizationMembers.id, memberId),
-          ),
-        );
-      let agentEnterpriseLimit: number | null = null;
-      let priorAgentEnterpriseCount = 0;
-      if (current && current.status !== "active" && status === "active") {
-        if (current.status === "disabled")
-          await assertMemberCapacity(tx, organizationId);
-        const [account] = await tx
+    return db.transaction(
+      async (tx) => {
+        const [target] = await tx
           .select({
-            accountType: users.accountType,
-            agentEnterpriseLimit: users.agentEnterpriseLimit,
+            userId: organizationMembers.userId,
+            status: organizationMembers.status,
           })
-          .from(users)
-          .where(eq(users.id, current.userId))
-          .for("update");
-        if (account?.accountType === "agent") {
-          agentEnterpriseLimit = account.agentEnterpriseLimit;
-          if (agentEnterpriseLimit !== null)
-            priorAgentEnterpriseCount = await countActiveAgentEnterprises(
-              tx,
-              current.userId,
-            );
+          .from(organizationMembers)
+          .where(
+            and(
+              eq(organizationMembers.organizationId, organizationId),
+              eq(organizationMembers.id, memberId),
+            ),
+          );
+        if (!target) return undefined;
+        const account = await lockMemberAccount(tx, target.userId);
+        if (status === "active") assertMemberAccountEffective(account);
+        await lockOrganization(tx, organizationId);
+        if (status === "disabled")
+          await assertAdministratorRemains(tx, organizationId, memberId);
+        const [current] = await tx
+          .select({
+            userId: organizationMembers.userId,
+            status: organizationMembers.status,
+          })
+          .from(organizationMembers)
+          .where(
+            and(
+              eq(organizationMembers.organizationId, organizationId),
+              eq(organizationMembers.id, memberId),
+            ),
+          );
+        if (!current) return undefined;
+        let agentEnterpriseLimit: number | null = null;
+        let priorAgentEnterpriseCount = 0;
+        if (current && current.status !== "active" && status === "active") {
+          if (current.status === "disabled")
+            await assertMemberCapacity(tx, organizationId);
+          if (account?.accountType === "agent") {
+            agentEnterpriseLimit = account.agentEnterpriseLimit;
+            if (agentEnterpriseLimit !== null)
+              priorAgentEnterpriseCount = await countActiveAgentEnterprises(
+                tx,
+                current.userId,
+              );
+          }
         }
-      }
-      const [member] = await tx
-        .update(organizationMembers)
-        .set({ status })
-        .where(
-          and(
-            eq(organizationMembers.organizationId, organizationId),
-            eq(organizationMembers.id, memberId),
-          ),
-        )
-        .returning();
-      if (member && agentEnterpriseLimit !== null) {
-        const nextCount = await countActiveAgentEnterprises(tx, member.userId);
-        if (
-          nextCount > priorAgentEnterpriseCount &&
-          nextCount > agentEnterpriseLimit
-        )
-          throw new Error("AGENT_ENTERPRISE_QUOTA_EXCEEDED");
-      }
-      return member;
-    });
+        const [member] = await tx
+          .update(organizationMembers)
+          .set({ status })
+          .where(
+            and(
+              eq(organizationMembers.organizationId, organizationId),
+              eq(organizationMembers.id, memberId),
+            ),
+          )
+          .returning();
+        if (member && agentEnterpriseLimit !== null) {
+          const nextCount = await countActiveAgentEnterprises(
+            tx,
+            member.userId,
+          );
+          if (
+            nextCount > priorAgentEnterpriseCount &&
+            nextCount > agentEnterpriseLimit
+          )
+            throw new Error("AGENT_ENTERPRISE_QUOTA_EXCEEDED");
+        }
+        return member;
+      },
+      { isolationLevel: "read committed" },
+    );
   },
 
   async removeMember(organizationId: string, memberId: string, userId: string) {
-    return db.transaction(async (tx) => {
-      await lockOrganization(tx, organizationId);
-      await assertAdministratorRemains(tx, organizationId, memberId);
-      await tx
-        .delete(brandAccess)
-        .where(
-          and(
-            eq(brandAccess.organizationId, organizationId),
-            eq(brandAccess.userId, userId),
-          ),
-        );
-      await tx
-        .delete(organizationUserFeatureScopes)
-        .where(
-          and(
-            eq(organizationUserFeatureScopes.organizationId, organizationId),
-            eq(organizationUserFeatureScopes.userId, userId),
-          ),
-        );
-      const deleted = await tx
-        .delete(organizationMembers)
-        .where(
-          and(
-            eq(organizationMembers.organizationId, organizationId),
-            eq(organizationMembers.id, memberId),
-          ),
-        )
-        .returning({ id: organizationMembers.id });
-      return Boolean(deleted.length);
-    });
+    return db.transaction(
+      async (tx) => {
+        await lockMemberAccount(tx, userId);
+        await lockOrganization(tx, organizationId);
+        await assertAdministratorRemains(tx, organizationId, memberId);
+        await tx
+          .delete(brandAccess)
+          .where(
+            and(
+              eq(brandAccess.organizationId, organizationId),
+              eq(brandAccess.userId, userId),
+            ),
+          );
+        await tx
+          .delete(organizationUserFeatureScopes)
+          .where(
+            and(
+              eq(organizationUserFeatureScopes.organizationId, organizationId),
+              eq(organizationUserFeatureScopes.userId, userId),
+            ),
+          );
+        const deleted = await tx
+          .delete(organizationMembers)
+          .where(
+            and(
+              eq(organizationMembers.organizationId, organizationId),
+              eq(organizationMembers.id, memberId),
+            ),
+          )
+          .returning({ id: organizationMembers.id });
+        return Boolean(deleted.length);
+      },
+      { isolationLevel: "read committed" },
+    );
   },
 
   async addBrandAccess(
@@ -487,37 +476,63 @@ export const memberRepository = {
     userId: string,
     input: BrandAccessScopeInput,
   ) {
-    const [access] = await db
-      .insert(brandAccess)
-      .values({ organizationId, userId, ...input })
-      .onConflictDoUpdate({
-        target: [
-          brandAccess.organizationId,
-          brandAccess.teamBindingId,
-          brandAccess.brandId,
-          brandAccess.userId,
-        ],
-        set: { role: input.role },
-      })
-      .returning();
-    return access;
+    return db.transaction(
+      async (tx) => {
+        const account = await lockMemberAccount(tx, userId);
+        if (!account) throw new Error("USER_NOT_FOUND");
+        if (account.accountType === "agent")
+          throw new Error("ACCOUNT_TYPE_MISMATCH");
+        await lockOrganization(tx, organizationId);
+        const [member] = await tx
+          .select({ id: organizationMembers.id })
+          .from(organizationMembers)
+          .where(
+            and(
+              eq(organizationMembers.organizationId, organizationId),
+              eq(organizationMembers.userId, userId),
+            ),
+          );
+        if (!member) throw new Error("MEMBER_NOT_FOUND");
+        const [access] = await tx
+          .insert(brandAccess)
+          .values({ organizationId, userId, ...input })
+          .onConflictDoUpdate({
+            target: [
+              brandAccess.organizationId,
+              brandAccess.teamBindingId,
+              brandAccess.brandId,
+              brandAccess.userId,
+            ],
+            set: { role: input.role },
+          })
+          .returning();
+        return access;
+      },
+      { isolationLevel: "read committed" },
+    );
   },
-
   async removeBrandAccess(
     organizationId: string,
     userId: string,
     accessId: string,
   ) {
-    const deleted = await db
-      .delete(brandAccess)
-      .where(
-        and(
-          eq(brandAccess.organizationId, organizationId),
-          eq(brandAccess.userId, userId),
-          eq(brandAccess.id, accessId),
-        ),
-      )
-      .returning({ id: brandAccess.id });
-    return Boolean(deleted.length);
+    return db.transaction(
+      async (tx) => {
+        await lockMemberAccount(tx, userId);
+        await lockOrganization(tx, organizationId);
+        const deleted = await tx
+          .delete(brandAccess)
+          .where(
+            and(
+              eq(brandAccess.organizationId, organizationId),
+              eq(brandAccess.userId, userId),
+              eq(brandAccess.id, accessId),
+            ),
+          )
+          .returning({ id: brandAccess.id });
+        return Boolean(deleted.length);
+      },
+      { isolationLevel: "read committed" },
+    );
   },
 };

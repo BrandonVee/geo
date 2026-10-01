@@ -66,6 +66,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { EnterpriseValidity } from "./enterprise-validity";
 import { AdminDocumentLibrary } from "./admin-document-library";
+import { AdminAccountStatusAction } from "./admin-account-status";
 import { AdminPublicationOrders } from "./admin-publication-orders";
 import { MeteringClient } from "../dashboard/metering/metering-client";
 import type { ScopeOrganization } from "../dashboard/use-answerbit-scope";
@@ -789,6 +790,7 @@ export function AdminClient({
   } | null>(null);
   const [platformBrandIcon, setPlatformBrandIcon] = useState<File | null>(null);
   const [platformBrandIconError, setPlatformBrandIconError] = useState("");
+  const [userAccessError, setUserAccessError] = useState("");
   const [editingUserAccess, setEditingUserAccess] = useState<UserDetail | null>(
     null,
   );
@@ -1503,12 +1505,14 @@ export function AdminClient({
     }
   }
   function openUserAccessEditor(detail: UserDetail) {
+    setUserAccessError("");
     setEditingUserAccess(detail);
   }
   async function saveUserAccess(values: UserAccessForm) {
     if (!editingUserAccess) return;
     const userId = editingUserAccess.user.id;
     setBusy("user-access");
+    setUserAccessError("");
     try {
       await api(`/api/v1/admin/users/${userId}`, {
         method: "PATCH",
@@ -1545,6 +1549,7 @@ export function AdminClient({
       setMessage("账户、代理商额度与企业功能范围已更新，新的访问规则即时生效");
       await Promise.all([load(), openUser(userId)]);
     } catch (error) {
+      setUserAccessError((error as Error).message);
       setMessage((error as Error).message);
     } finally {
       setBusy("");
@@ -2242,32 +2247,15 @@ export function AdminClient({
           >
             管理
           </Button>
-          <Popconfirm
-            description={
-              item.status === "active"
-                ? "该用户的现有登录会话将立即失效。"
-                : "恢复后该用户可以重新登录。"
-            }
-            okButtonProps={{ danger: item.status === "active" }}
-            okText={item.status === "active" ? "确认停用" : "确认启用"}
-            onConfirm={() =>
-              void patch(
-                "/api/v1/admin/users/" + item.id,
-                {
-                  status: item.status === "active" ? "disabled" : "active",
-                },
-                item.id,
-              )
-            }
-            title={item.status === "active" ? "停用此账户？" : "启用此账户？"}
-          >
-            <Button
-              danger={item.status === "active"}
-              loading={busy === item.id}
-            >
-              {item.status === "active" ? "停用" : "启用"}
-            </Button>
-          </Popconfirm>
+          <AdminAccountStatusAction
+            user={item}
+            currentUserId={userId}
+            onChanged={async () => {
+              await load();
+              if (userDetail?.user.id === item.id) await openUser(item.id);
+            }}
+            onManageOrganization={(id) => void openOrganization(id)}
+          />
         </Space>
       ),
     },
@@ -5282,6 +5270,15 @@ export function AdminClient({
               preserve={false}
               size="large"
             >
+              {userAccessError ? (
+                <Alert
+                  type="error"
+                  showIcon
+                  message="账户设置未保存"
+                  description={userAccessError}
+                  style={{ marginBottom: 16 }}
+                />
+              ) : null}
               <Form.Item
                 label="账户类型"
                 name="accountType"
@@ -5649,6 +5646,7 @@ export function AdminClient({
             <Card size="small" title="添加成员与权限">
               <Form<MemberForm>
                 form={memberForm}
+                name="admin-enterprise-member"
                 initialValues={{ role: "tenant_admin" }}
                 layout="vertical"
                 onFinish={(values) => void addOrganizationMember(values)}

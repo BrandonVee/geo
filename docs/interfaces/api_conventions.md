@@ -30,6 +30,8 @@ JSON 请求使用 `Content-Type: application/json`；允许标准的 `applicatio
 
 管理端 `GET /v1/admin/publication-orders` 同样默认 20 条、上限 100 条，按 `q`、企业、来源、状态和成对日期筛选；`data` 为 `{ list, pagination }`，行记录包含企业名称。列表和 `GET /v1/admin/publication-orders/{orderId}` 只读本地记录，都要求 `platform.publication.manage`，不调用上游或扣费；单笔读取用于人工处理响应丢失后核对已保存状态。人工交付的 `PATCH` 仅接受 HTTP(S) 结果链接，聚合订单仍拒绝手工结单。
 
+账号 `PATCH /v1/admin/users/{userId}` 主动停用或把代理商调整为当前不可用时，会逐家校验有效企业管理员；`409 LAST_TENANT_ADMIN` 的 `details.organizations` 返回需交接企业的 ID 与名称，拒绝时不更新账号、Session 或功能范围。企业成员目录在成员 `status` 之外返回 `accountState`（active/disabled/scheduled/expired），两者分别代表企业成员关系和全局账号当前可用状态。
+
 ## 响应格式
 
 成功响应：

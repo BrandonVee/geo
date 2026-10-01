@@ -255,60 +255,64 @@ export const adminService = {
           { organizationId: invalidScope.organizationId },
         );
     }
-    const row = await adminRepository.updateUser(
-      id,
-      {
-        name: input.name,
-        status: input.status,
-        accountType: accountTypeChanged ? input.accountType : undefined,
-        pricingTier:
-          input.pricingTier !== undefined || accountTypeChanged
-            ? nextPricingTier
-            : undefined,
-        agentValidFrom:
-          nextAccountType === "customer"
-            ? accountTypeChanged
-              ? null
-              : undefined
-            : validityChanged || accountTypeChanged
-              ? agentValidFrom
+    const row = await adminRepository
+      .updateUser(
+        id,
+        {
+          name: input.name,
+          status: input.status,
+          accountType: accountTypeChanged ? input.accountType : undefined,
+          pricingTier:
+            input.pricingTier !== undefined || accountTypeChanged
+              ? nextPricingTier
               : undefined,
-        agentExpiresAt:
-          nextAccountType === "customer"
-            ? accountTypeChanged
-              ? null
-              : undefined
-            : validityChanged || accountTypeChanged
-              ? agentExpiresAt
-              : undefined,
-        agentEnterpriseLimit:
-          nextAccountType === "customer"
-            ? accountTypeChanged
-              ? null
-              : undefined
-            : input.agentQuota
-              ? input.agentQuota.enterpriseLimit
-              : undefined,
-        agentBrandLimit:
-          nextAccountType === "customer"
-            ? accountTypeChanged
-              ? null
-              : undefined
-            : input.agentQuota
-              ? input.agentQuota.brandLimit
-              : undefined,
-        agentAnswerbitPointsLimit:
-          nextAccountType === "customer"
-            ? accountTypeChanged
-              ? null
-              : undefined
-            : input.agentQuota
-              ? input.agentQuota.answerbitPointsLimit
-              : undefined,
-      },
-      input.organizationFeatureScopes,
-      userId,
-    );
+          agentValidFrom:
+            nextAccountType === "customer"
+              ? accountTypeChanged
+                ? null
+                : undefined
+              : validityChanged || accountTypeChanged
+                ? agentValidFrom
+                : undefined,
+          agentExpiresAt:
+            nextAccountType === "customer"
+              ? accountTypeChanged
+                ? null
+                : undefined
+              : validityChanged || accountTypeChanged
+                ? agentExpiresAt
+                : undefined,
+          agentEnterpriseLimit:
+            nextAccountType === "customer"
+              ? accountTypeChanged
+                ? null
+                : undefined
+              : input.agentQuota
+                ? input.agentQuota.enterpriseLimit
+                : undefined,
+          agentBrandLimit:
+            nextAccountType === "customer"
+              ? accountTypeChanged
+                ? null
+                : undefined
+              : input.agentQuota
+                ? input.agentQuota.brandLimit
+                : undefined,
+          agentAnswerbitPointsLimit:
+            nextAccountType === "customer"
+              ? accountTypeChanged
+                ? null
+                : undefined
+              : input.agentQuota
+                ? input.agentQuota.answerbitPointsLimit
+                : undefined,
+        },
+        input.organizationFeatureScopes,
+        userId,
+      )
+      .catch((error) => {
+        throw memberWriteApiError(error) ?? error;
+      });
     if (!row) throw new ApiError(404, "USER_NOT_FOUND", "用户不存在");
     const changes = [
       input.name !== undefined ? `名称 ${current.name} → ${input.name}` : null,
@@ -442,17 +446,6 @@ export const adminService = {
       if (member.status === "disabled")
         await assertEntitlementCapacity(organizationId, "members");
     }
-    if (
-      status === "disabled" &&
-      member.status === "active" &&
-      (await memberRepository.isTenantAdmin(memberId)) &&
-      (await memberRepository.countActiveTenantAdmins(organizationId)) <= 1
-    )
-      throw new ApiError(
-        409,
-        "LAST_TENANT_ADMIN",
-        "企业必须保留至少一名可用管理员",
-      );
     let updated;
     try {
       updated = await memberRepository.updateMember(
@@ -474,6 +467,7 @@ export const adminService = {
         );
       throw error;
     }
+    if (!updated) throw new ApiError(404, "MEMBER_NOT_FOUND", "企业成员不存在");
     await writeAudit(
       { ...audit, organizationId },
       {
@@ -494,16 +488,6 @@ export const adminService = {
     await allowed(userId, "platform.tenant.manage");
     const member = await memberRepository.findMember(organizationId, memberId);
     if (!member) throw new ApiError(404, "MEMBER_NOT_FOUND", "企业成员不存在");
-    if (
-      member.status === "active" &&
-      (await memberRepository.isTenantAdmin(memberId)) &&
-      (await memberRepository.countActiveTenantAdmins(organizationId)) <= 1
-    )
-      throw new ApiError(
-        409,
-        "LAST_TENANT_ADMIN",
-        "企业必须保留至少一名管理员",
-      );
     try {
       await memberRepository.removeMember(
         organizationId,

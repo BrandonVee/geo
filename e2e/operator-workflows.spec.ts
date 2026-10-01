@@ -377,7 +377,9 @@ test.describe("真实运营操作闭环", () => {
     await db
       .delete(balanceAccounts)
       .where(inArray(balanceAccounts.organizationId, ids));
-    await db.delete(brandAccess).where(eq(brandAccess.userId, fixture.userId));
+    await db
+      .delete(brandAccess)
+      .where(inArray(brandAccess.organizationId, ids));
     await db
       .delete(answerbitBrandMappings)
       .where(inArray(answerbitBrandMappings.organizationId, ids));
@@ -389,7 +391,7 @@ test.describe("真实运营操作闭环", () => {
       .where(inArray(answerbitConnections.organizationId, ids));
     await db
       .delete(organizationMembers)
-      .where(eq(organizationMembers.userId, fixture.userId));
+      .where(inArray(organizationMembers.organizationId, ids));
     await db
       .delete(database.subscriptionEntitlements)
       .where(inArray(database.subscriptionEntitlements.organizationId, ids));
@@ -1714,6 +1716,263 @@ test.describe("真实运营操作闭环", () => {
     await expect(
       page.getByRole("dialog").getByText("99", { exact: true }),
     ).toHaveCount(0);
+  });
+
+  test("多企业管理员停用先交接，失败保留确认层并可直达企业，响应丢失核对一次写入", async ({
+    page,
+  }) => {
+    const { db, users, roles, organizationMembers, memberRoles, sessions } =
+      database;
+    const { eq, and } = operators;
+    await makePlatformAdministrator();
+    const targetId = randomUUID(),
+      backupId = randomUUID();
+    const targetUsername = `handover_${randomUUID().slice(0, 8)}`;
+    const backupUsername = `backup_${randomUUID().slice(0, 8)}`;
+    await db.insert(users).values([
+      {
+        id: targetId,
+        name: "待交接代理商",
+        username: targetUsername,
+        email: `${targetId}@workflow.invalid`,
+        accountType: "agent",
+        pricingTier: "bronze",
+      },
+      {
+        id: backupId,
+        name: "接任代理商",
+        username: backupUsername,
+        email: `${backupId}@workflow.invalid`,
+        accountType: "agent",
+        pricingTier: "bronze",
+      },
+    ]);
+    const [role] = await db
+      .select()
+      .from(roles)
+      .where(eq(roles.code, "tenant_admin"));
+    for (const scope of fixture.scopes) {
+      const members = await db
+        .insert(organizationMembers)
+        .values(
+          [targetId, backupId].map((userId) => ({
+            organizationId: scope.organizationId,
+            userId,
+            status: "active" as const,
+          })),
+        )
+        .returning();
+      await db.insert(memberRoles).values({
+        memberId: members.find((member) => member.userId === targetId)!.id,
+        roleId: role.id,
+      });
+    }
+    await db.insert(sessions).values({
+      userId: targetId,
+      token: randomUUID(),
+      expiresAt: new Date(Date.now() + 86_400_000),
+    });
+    const expiry = await page.request.patch(`/api/v1/admin/users/${targetId}`, {
+      data: { agentValidFrom: new Date(Date.now() + 86_400_000).toISOString() },
+    });
+    expect(expiry.status()).toBe(409);
+    expect((await expiry.json()).error.code).toBe("LAST_TENANT_ADMIN");
+    await mockAdminReads(page);
+    await page.goto("/admin?section=users");
+    await page
+      .getByPlaceholder("搜索姓名或登录账号", { exact: true })
+      .fill(targetUsername);
+    await page
+      .getByPlaceholder("搜索姓名或登录账号", { exact: true })
+      .press("Enter");
+    await page
+      .getByRole("button", { name: "停用账号 待交接代理商", exact: true })
+      .click();
+    const dialog = page.getByRole("dialog", { name: "停用此账户？" });
+    await dialog.getByRole("button", { name: "确认停用", exact: true }).click();
+    await expect(
+      dialog.getByText("账号操作未完成", { exact: true }),
+    ).toBeVisible();
+    for (const scope of fixture.scopes)
+      await expect(
+        dialog.getByRole("button", {
+          name: `管理企业 · ${scope.name}`,
+          exact: true,
+        }),
+      ).toBeVisible();
+    expect(
+      (await db.select().from(sessions).where(eq(sessions.userId, targetId)))
+        .length,
+    ).toBe(1);
+    for (const theme of ["light", "dark"]) {
+      if (theme === "dark") {
+        await dialog.getByRole("button", { name: /取\s*消/ }).click();
+        await page.getByRole("button", { name: "切换亮暗色模式" }).click();
+        await page
+          .getByRole("button", { name: "停用账号 待交接代理商", exact: true })
+          .click();
+        await dialog
+          .getByRole("button", { name: "确认停用", exact: true })
+          .click();
+        await expect(
+          dialog.getByText("账号操作未完成", { exact: true }),
+        ).toBeVisible();
+      }
+      await expect
+        .poll(() => page.locator("html").getAttribute("data-theme"))
+        .toBe(theme);
+      for (const width of [390, 768, 1440]) {
+        await page.setViewportSize({ width, height: 1000 });
+        expect(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth,
+          ),
+        ).toBeTruthy();
+        await page.evaluate(axe.source);
+        const result = await page.evaluate(async () =>
+          (window as unknown as { axe: typeof axe }).axe.run(
+            document.querySelector('[role="dialog"]')!,
+            {
+              runOnly: {
+                type: "tag",
+                values: ["wcag2a", "wcag2aa", "wcag21aa"],
+              },
+            },
+          ),
+        );
+        expect(result.violations.map(({ id }) => id)).toEqual([]);
+      }
+    }
+    // Each protected enterprise is reachable from the rejected confirmation.
+    for (const [index, scope] of fixture.scopes.entries()) {
+      if (index) {
+        await page
+          .getByRole("button", { name: "停用账号 待交接代理商", exact: true })
+          .click();
+        await dialog
+          .getByRole("button", { name: "确认停用", exact: true })
+          .click();
+        await expect(
+          dialog.getByRole("button", {
+            name: `管理企业 · ${scope.name}`,
+            exact: true,
+          }),
+        ).toBeVisible();
+        await expect(
+          dialog.getByRole("button", {
+            name: `管理企业 · ${fixture.scopes[0].name}`,
+            exact: true,
+          }),
+        ).toHaveCount(0);
+      }
+      await dialog
+        .getByRole("button", { name: `管理企业 · ${scope.name}`, exact: true })
+        .click();
+      const drawer = page.getByRole("dialog", {
+        name: `企业详情 · ${scope.name}`,
+      });
+      await expect(drawer).toBeVisible();
+      await drawer.getByLabel("平台用户", { exact: true }).click();
+      await drawer.getByLabel("平台用户", { exact: true }).fill(backupUsername);
+      await page
+        .locator(".ant-select-item-option")
+        .filter({ hasText: backupUsername })
+        .click();
+      await drawer
+        .getByRole("button", { name: "保存成员权限", exact: true })
+        .click();
+      await expect
+        .poll(async () => {
+          const [member] = await db
+            .select()
+            .from(organizationMembers)
+            .where(
+              and(
+                eq(organizationMembers.organizationId, scope.organizationId),
+                eq(organizationMembers.userId, backupId),
+              ),
+            );
+          return (
+            await db
+              .select()
+              .from(memberRoles)
+              .where(
+                and(
+                  eq(memberRoles.memberId, member.id),
+                  eq(memberRoles.roleId, role.id),
+                ),
+              )
+          ).length;
+        })
+        .toBe(1);
+      await drawer.getByRole("button", { name: /close|关闭/i }).click();
+      await expect(drawer).not.toBeVisible();
+    }
+    let writes = 0,
+      readsFail = false;
+    await page.route(`**/api/v1/admin/users/${targetId}`, async (route) => {
+      if (route.request().method() === "GET") {
+        if (readsFail)
+          return route.fulfill({
+            status: 503,
+            json: { error: { message: "核对暂不可用" } },
+          });
+        return route.continue();
+      }
+      writes++;
+      const response = await route.fetch();
+      expect(response.ok()).toBeTruthy();
+      readsFail = true;
+      await route.abort("failed");
+    });
+    await page
+      .getByRole("button", { name: "停用账号 待交接代理商", exact: true })
+      .click();
+    await dialog.getByRole("button", { name: "确认停用", exact: true }).click();
+    await expect(
+      dialog.getByText("提交结果尚未核实，请先核对结果，避免重复操作。", {
+        exact: true,
+      }),
+    ).toBeVisible();
+    readsFail = false;
+    await dialog
+      .getByRole("button", { name: "核对操作结果", exact: true })
+      .click();
+    await expect(dialog).not.toBeVisible();
+    expect(writes).toBe(1);
+    expect(
+      (await db.select().from(sessions).where(eq(sessions.userId, targetId)))
+        .length,
+    ).toBe(0);
+    expect(
+      (await db.select().from(users).where(eq(users.id, targetId)))[0].status,
+    ).toBe("disabled");
+    const [actorMember] = await db
+      .select()
+      .from(organizationMembers)
+      .where(
+        and(
+          eq(
+            organizationMembers.organizationId,
+            fixture.scopes[0].organizationId,
+          ),
+          eq(organizationMembers.userId, fixture.userId),
+        ),
+      );
+    await db
+      .insert(memberRoles)
+      .values({ memberId: actorMember.id, roleId: role.id });
+    await page.route("**/api/v1/organizations/**", (route) => route.continue());
+    await page.goto(
+      `/dashboard/settings/members?organizationId=${fixture.scopes[0].organizationId}`,
+    );
+    await expect(page.getByText("账号已停用", { exact: true })).toBeVisible();
+    await expect(
+      page
+        .locator(".ant-statistic")
+        .filter({ hasText: "企业管理员" })
+        .locator(".ant-statistic-content-value"),
+    ).toHaveText("2");
   });
 
   test("成员写入失败保留表单，现有角色正确回填，响应丢失不重复创建，最后管理员受保护", async ({

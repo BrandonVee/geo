@@ -45,6 +45,7 @@ type Member = {
   name: string;
   username: string | null;
   status: string;
+  accountState: "active" | "disabled" | "scheduled" | "expired";
   joinedAt: string | null;
   organizationRoles: string[];
   brandAccess: Access[];
@@ -70,6 +71,13 @@ class RequestError extends Error {
     super(message);
   }
 }
+
+const accountStateLabels = {
+  active: "账号正常",
+  disabled: "账号已停用",
+  scheduled: "账号未生效",
+  expired: "账号已过期",
+};
 
 const roleMeta: Record<
   string,
@@ -498,11 +506,12 @@ export function MemberSettings({
   });
 
   const activeMemberCount = members.filter(
-    (member) => member.status === "active",
+    (member) => member.status === "active" && member.accountState === "active",
   ).length;
   const administratorCount = members.filter(
     (member) =>
       member.status === "active" &&
+      member.accountState === "active" &&
       member.organizationRoles.includes("tenant_admin"),
   ).length;
   const scopedMemberCount = members.filter(
@@ -521,6 +530,11 @@ export function MemberSettings({
           </Avatar>
           <Space direction="vertical" size={0}>
             <Typography.Text strong>{member.name}</Typography.Text>
+            {member.accountState !== "active" ? (
+              <Typography.Text type="secondary">
+                {accountStateLabels[member.accountState]}
+              </Typography.Text>
+            ) : null}
             {!compactTable ? (
               <Typography.Text type="secondary">
                 {"@" + (member.username ?? "legacy")}

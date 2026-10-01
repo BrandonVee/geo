@@ -33,6 +33,7 @@ export const memberService = {
         name: string;
         username: string | null;
         status: string;
+        accountState: ReturnType<typeof getUserAccessState>;
         joinedAt: Date | null;
         createdAt: Date;
         organizationRoles: string[];
@@ -46,6 +47,12 @@ export const memberService = {
         name: row.name,
         username: row.username,
         status: row.memberStatus,
+        accountState: getUserAccessState({
+          status: row.accountStatus,
+          accountType: row.accountType,
+          agentValidFrom: row.agentValidFrom,
+          agentExpiresAt: row.agentExpiresAt,
+        }),
         joinedAt: row.joinedAt,
         createdAt: row.createdAt,
         organizationRoles: [],
@@ -234,17 +241,6 @@ export const memberService = {
       if (member.status === "disabled")
         await assertEntitlementCapacity(organizationId, "members");
     }
-    if (
-      input.status === "disabled" &&
-      member.status === "active" &&
-      (await repository.isTenantAdmin(memberId)) &&
-      (await repository.countActiveTenantAdmins(organizationId)) <= 1
-    )
-      throw new ApiError(
-        409,
-        "LAST_TENANT_ADMIN",
-        "企业必须保留至少一名可用管理员",
-      );
     let updated;
     try {
       updated = await repository.updateMember(
@@ -266,6 +262,7 @@ export const memberService = {
         );
       throw error;
     }
+    if (!updated) throw new ApiError(404, "MEMBER_NOT_FOUND", "企业成员不存在");
     await writeAudit(audit, {
       operation: "tenant.member.update",
       resourceType: "organization_member",
@@ -287,16 +284,6 @@ export const memberService = {
     );
     const member = await repository.findMember(organizationId, memberId);
     if (!member) throw new ApiError(404, "MEMBER_NOT_FOUND", "企业成员不存在");
-    if (
-      member.status === "active" &&
-      (await repository.isTenantAdmin(memberId)) &&
-      (await repository.countActiveTenantAdmins(organizationId)) <= 1
-    )
-      throw new ApiError(
-        409,
-        "LAST_TENANT_ADMIN",
-        "企业必须保留至少一名管理员",
-      );
     try {
       await repository.removeMember(organizationId, memberId, member.userId);
     } catch (error) {
@@ -332,11 +319,14 @@ export const memberService = {
         "ENTERPRISE_BRAND_SCOPE_NOT_FOUND",
         "当前企业尚未建立可用的腾讯品牌范围",
       );
-    const access = await repository.addBrandAccess(
-      organizationId,
-      member.userId,
-      { ...input, ...brandScope },
-    );
+    const access = await repository
+      .addBrandAccess(organizationId, member.userId, {
+        ...input,
+        ...brandScope,
+      })
+      .catch((error) => {
+        throw memberWriteApiError(error) ?? error;
+      });
     await writeAudit(audit, {
       operation: "tenant.brand_access.upsert",
       resourceType: "brand_access",
