@@ -13,7 +13,7 @@ import { adminRepository } from "@/server/repositories/admin";
 import { memberRepository } from "@/server/repositories/members";
 import { identityService } from "@/server/modules/identity/identity.service";
 import { assertEntitlementCapacity } from "./billing";
-import { memberCapacityApiError } from "./member-write-error";
+import { memberWriteApiError } from "./member-write-error";
 
 type Page = { page: number; pageSize: number; q?: string; status?: string };
 type UserPage = Page & {
@@ -401,7 +401,7 @@ export const adminService = {
         { ...input, ...brandScope },
       );
     } catch (error) {
-      const capacityError = memberCapacityApiError(error);
+      const capacityError = memberWriteApiError(error);
       if (capacityError) throw capacityError;
       if (
         error instanceof Error &&
@@ -444,6 +444,7 @@ export const adminService = {
     }
     if (
       status === "disabled" &&
+      member.status === "active" &&
       (await memberRepository.isTenantAdmin(memberId)) &&
       (await memberRepository.countActiveTenantAdmins(organizationId)) <= 1
     )
@@ -460,7 +461,7 @@ export const adminService = {
         status,
       );
     } catch (error) {
-      const capacityError = memberCapacityApiError(error);
+      const capacityError = memberWriteApiError(error);
       if (capacityError) throw capacityError;
       if (
         error instanceof Error &&
@@ -494,6 +495,7 @@ export const adminService = {
     const member = await memberRepository.findMember(organizationId, memberId);
     if (!member) throw new ApiError(404, "MEMBER_NOT_FOUND", "企业成员不存在");
     if (
+      member.status === "active" &&
       (await memberRepository.isTenantAdmin(memberId)) &&
       (await memberRepository.countActiveTenantAdmins(organizationId)) <= 1
     )
@@ -502,11 +504,15 @@ export const adminService = {
         "LAST_TENANT_ADMIN",
         "企业必须保留至少一名管理员",
       );
-    await memberRepository.removeMember(
-      organizationId,
-      memberId,
-      member.userId,
-    );
+    try {
+      await memberRepository.removeMember(
+        organizationId,
+        memberId,
+        member.userId,
+      );
+    } catch (error) {
+      throw memberWriteApiError(error) ?? error;
+    }
     await writeAudit(
       { ...audit, organizationId },
       {

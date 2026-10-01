@@ -4,6 +4,7 @@ import {
   CrownOutlined,
   LockOutlined,
   SearchOutlined,
+  ReloadOutlined,
   TeamOutlined,
   UserAddOutlined,
   UserDeleteOutlined,
@@ -11,7 +12,6 @@ import {
 } from "@ant-design/icons";
 import {
   Alert,
-  App,
   Avatar,
   Button,
   Card,
@@ -25,15 +25,14 @@ import {
   Row,
   Segmented,
   Select,
-  Skeleton,
   Space,
   Statistic,
-  Table,
   Tag,
   Typography,
   type TableColumnsType,
 } from "antd";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { AccessibleTable } from "../../../accessible-table";
 
 type Access = {
   id: string;
@@ -63,6 +62,15 @@ type ApiEnvelope<T> = {
   error?: { message?: string };
 };
 
+class RequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
 const roleMeta: Record<
   string,
   { label: string; short: string; color: string; description: string }
@@ -76,7 +84,7 @@ const roleMeta: Record<
   brand_admin: {
     label: "品牌管理员",
     short: "管理",
-    color: "cyan",
+    color: "blue",
     description: "管理指定品牌资源，可创建发布单和导出报告。",
   },
   brand_editor: {
@@ -98,7 +106,10 @@ async function request<T>(url: string, init?: RequestInit) {
   if (response.status === 204) return undefined as T;
   const body = (await response.json().catch(() => ({}))) as ApiEnvelope<T>;
   if (!response.ok)
-    throw new Error(body.error?.message ?? `请求失败（${response.status}）`);
+    throw new RequestError(
+      body.error?.message ?? `请求失败（${response.status}）`,
+      response.status,
+    );
   return body.data;
 }
 
@@ -110,6 +121,7 @@ const jsonRequest = (method: string, body: unknown): RequestInit => ({
 
 export function MemberSettings({
   organizationId,
+  organizationName,
   brandId,
   brandName,
 }: {
@@ -118,7 +130,6 @@ export function MemberSettings({
   brandId: string;
   brandName: string;
 }) {
-  const { message, modal } = App.useApp();
   const screens = Grid.useBreakpoint();
   const compactTable = !screens.md;
   const [memberForm] = Form.useForm<MemberForm>();
@@ -127,6 +138,30 @@ export function MemberSettings({
   const [loading, setLoading] = useState(true);
   const [action, setAction] = useState("");
   const [error, setError] = useState("");
+  const [readError, setReadError] = useState("");
+  const [success, setSuccess] = useState("");
+  const busy = useRef(false);
+  const pendingVerification = useRef<((rows: Member[]) => boolean) | null>(
+    null,
+  );
+  const [needsVerification, setNeedsVerification] = useState(false);
+  function clearVerification() {
+    pendingVerification.current = null;
+    setNeedsVerification(false);
+  }
+  const mounted = useRef(true);
+  const readController = useRef<AbortController | null>(null);
+  const [confirmation, setConfirmation] = useState<{
+    key: string;
+    memberLabel: string;
+    title: string;
+    description: string;
+    okText: string;
+    danger: boolean;
+    success: string;
+    task: () => Promise<void>;
+    verify: (rows: Member[]) => boolean;
+  } | null>(null);
   const [memberOpen, setMemberOpen] = useState(false);
   const [accessMember, setAccessMember] = useState<Member | null>(null);
   const [query, setQuery] = useState("");
@@ -136,46 +171,136 @@ export function MemberSettings({
     "create",
   );
 
-  const load = useCallback(
-    async (showSkeleton = true) => {
-      if (showSkeleton) setLoading(true);
-      setError("");
-      try {
-        const memberData = await request<{ members: Member[] }>(
-          `/api/v1/organizations/${organizationId}/members`,
-        );
-        setMembers(memberData.members);
-      } catch (reason) {
-        setError(reason instanceof Error ? reason.message : "成员数据加载失败");
-      } finally {
-        setLoading(false);
-      }
-    },
-    [organizationId],
-  );
+  const load = useCallback(async () => {
+    readController.current?.abort();
+    const controller = new AbortController();
+    readController.current = controller;
+    setLoading(true);
+    setReadError("");
+    try {
+      const result = await request<{ members: Member[] }>(
+        `/api/v1/organizations/${organizationId}/members`,
+        { signal: controller.signal },
+      );
+      if (controller.signal.aborted || !mounted.current) return;
+      setMembers(result.members);
+    } catch (reason) {
+      if (controller.signal.aborted || !mounted.current) return;
+      setReadError(
+        reason instanceof Error ? reason.message : "成员数据加载失败",
+      );
+    } finally {
+      if (!controller.signal.aborted && mounted.current) setLoading(false);
+    }
+  }, [organizationId]);
 
   useEffect(() => {
+    mounted.current = true;
     void load();
+    return () => {
+      mounted.current = false;
+      readController.current?.abort();
+    };
   }, [load]);
 
   const runAction = useCallback(
-    async (key: string, successMessage: string, task: () => Promise<void>) => {
+    async (
+      key: string,
+      successMessage: string,
+      task: () => Promise<void>,
+      verify?: (rows: Member[]) => boolean,
+    ) => {
+      if (busy.current) return false;
+      busy.current = true;
       setAction(key);
       setError("");
+      setSuccess("");
       try {
-        await task();
-        message.success(successMessage);
-        await load(false);
-      } catch (reason) {
-        setError(reason instanceof Error ? reason.message : "操作失败，请重试");
+        if (pendingVerification.current) {
+          try {
+            const result = await request<{ members: Member[] }>(
+              `/api/v1/organizations/${organizationId}/members`,
+            );
+            if (!mounted.current) return false;
+            setMembers(result.members);
+            setReadError("");
+            const confirmed = pendingVerification.current(result.members);
+            pendingVerification.current = null;
+            setNeedsVerification(false);
+            if (!confirmed) {
+              setError("未查到已完成的变更，请再次确认提交。");
+              return false;
+            }
+            setSuccess(successMessage);
+            await load();
+            return mounted.current;
+          } catch (reason) {
+            if (mounted.current)
+              setError(
+                reason instanceof Error
+                  ? reason.message
+                  : "结果核对失败，请重试核对",
+              );
+            return false;
+          }
+        }
+        try {
+          await task();
+        } catch (reason) {
+          // A failed response can follow a successful write. Read the directory
+          // before offering another submission; never issue a second write here.
+          let confirmed = false;
+          if (
+            verify &&
+            mounted.current &&
+            (!(reason instanceof RequestError) || reason.status >= 500)
+          ) {
+            try {
+              const result = await request<{ members: Member[] }>(
+                `/api/v1/organizations/${organizationId}/members`,
+              );
+              if (!mounted.current) return false;
+              setMembers(result.members);
+              setReadError("");
+              confirmed = verify(result.members);
+            } catch (readReason) {
+              if (mounted.current) {
+                pendingVerification.current = verify;
+                setNeedsVerification(true);
+                setReadError(
+                  readReason instanceof Error
+                    ? readReason.message
+                    : "成员数据加载失败",
+                );
+              }
+            }
+          }
+          if (!confirmed) {
+            if (mounted.current)
+              setError(
+                pendingVerification.current
+                  ? "提交结果尚未核实，请先核对结果，避免重复操作。"
+                  : reason instanceof Error
+                    ? reason.message
+                    : "操作失败，请重试",
+              );
+            return false;
+          }
+        }
+        if (!mounted.current) return false;
+        setSuccess(successMessage);
+        await load();
+        return mounted.current;
       } finally {
-        setAction("");
+        busy.current = false;
+        if (mounted.current) setAction("");
       }
     },
-    [load, message],
+    [load, organizationId],
   );
 
   function openMemberModal() {
+    setError("");
     setAccountMode("create");
     setSelectedRole("brand_viewer");
     setMemberOpen(true);
@@ -187,8 +312,16 @@ export function MemberSettings({
   }, [memberForm, memberOpen]);
 
   async function addMember() {
-    const values = await memberForm.validateFields();
-    await runAction(
+    if (busy.current) return;
+    let values: MemberForm;
+    try {
+      values = await memberForm.validateFields();
+    } catch {
+      return;
+    }
+    const username = values.username.trim().toLowerCase();
+    const existed = members.some((member) => member.username === username);
+    const completed = await runAction(
       "add-member",
       accountMode === "create"
         ? "客户账号已创建并加入企业"
@@ -197,107 +330,160 @@ export function MemberSettings({
         await request(
           `/api/v1/organizations/${organizationId}/members`,
           jsonRequest("POST", {
-            username: values.username.trim().toLowerCase(),
+            username,
             role: values.role,
             ...(accountMode === "create"
               ? { name: values.name?.trim(), password: values.password }
               : {}),
           }),
         );
-        memberForm.resetFields();
-        setMemberOpen(false);
       },
+      (rows) =>
+        rows.some(
+          (member) =>
+            member.username === username &&
+            member.status === "active" &&
+            (accountMode !== "create" ||
+              (!existed && member.name === values.name?.trim())) &&
+            (values.role === "tenant_admin"
+              ? member.organizationRoles.includes("tenant_admin")
+              : member.brandAccess.some(
+                  (access) =>
+                    access.brandId === brandId && access.role === values.role,
+                )),
+        ),
     );
+    if (completed) {
+      memberForm.resetFields();
+      setMemberOpen(false);
+    }
   }
 
   function openAccessModal(member: Member) {
+    setError("");
     setAccessMember(member);
   }
 
   useEffect(() => {
     if (!accessMember) return;
-    accessForm.resetFields();
-  }, [accessForm, accessMember]);
+    accessForm.setFieldsValue({
+      role:
+        accessMember.brandAccess.find((access) => access.brandId === brandId)
+          ?.role ?? "brand_viewer",
+    });
+  }, [accessForm, accessMember, brandId]);
 
   async function addAccess() {
-    if (!accessMember) return;
-    const values = await accessForm.validateFields();
-    await runAction(
-      `add-access-${accessMember.id}`,
+    if (!accessMember || busy.current) return;
+    let values: MemberForm;
+    try {
+      values = await accessForm.validateFields();
+    } catch {
+      return;
+    }
+    const memberId = accessMember.id;
+    const completed = await runAction(
+      `add-access-${memberId}`,
       "品牌访问范围已更新",
       async () => {
         await request(
-          `/api/v1/organizations/${organizationId}/members/${accessMember.id}/brand-access`,
-          jsonRequest("POST", {
-            role: values.role,
-          }),
+          `/api/v1/organizations/${organizationId}/members/${memberId}/brand-access`,
+          jsonRequest("POST", { role: values.role }),
         );
-        accessForm.resetFields();
-        setAccessMember(null);
       },
+      (rows) =>
+        rows.some(
+          (member) =>
+            member.id === memberId &&
+            member.brandAccess.some(
+              (access) =>
+                access.brandId === brandId && access.role === values.role,
+            ),
+        ),
     );
+    if (completed) setAccessMember(null);
   }
 
-  async function toggleMember(member: Member) {
+  function confirmToggle(member: Member) {
     const status = member.status === "active" ? "disabled" : "active";
-    await runAction(
-      `status-${member.id}`,
-      status === "active" ? "成员已恢复" : "成员已停用",
-      async () => {
+    setError("");
+    setConfirmation({
+      memberLabel: `${member.name}${member.username ? `（@${member.username}）` : ""}`,
+      key: `status-${member.id}`,
+      title: status === "disabled" ? "停用这个成员？" : "恢复这个成员？",
+      description:
+        status === "disabled"
+          ? "停用后现有会话中的企业权限立即失效，历史数据和审计记录仍会保留。"
+          : "恢复后将重新获得已分配的企业与品牌权限。",
+      okText: status === "disabled" ? "确认停用" : "确认恢复",
+      danger: status === "disabled",
+      success: status === "active" ? "成员已恢复" : "成员已停用",
+      task: async () => {
         await request(
           `/api/v1/organizations/${organizationId}/members/${member.id}`,
           jsonRequest("PATCH", { status }),
         );
       },
-    );
-  }
-
-  function confirmToggle(member: Member) {
-    modal.confirm({
-      title: member.status === "active" ? "停用这个成员？" : "恢复这个成员？",
-      content:
-        member.status === "active"
-          ? "停用后现有会话中的企业权限立即失效，历史数据和审计记录仍会保留。"
-          : "恢复后将重新获得已分配的企业与品牌权限。",
-      okText: member.status === "active" ? "确认停用" : "确认恢复",
-      okButtonProps: { danger: member.status === "active" },
-      cancelText: "取消",
-      onOk: () => toggleMember(member),
+      verify: (rows) =>
+        rows.some((row) => row.id === member.id && row.status === status),
     });
   }
 
   function confirmRemove(member: Member) {
-    modal.confirm({
+    setError("");
+    setConfirmation({
+      memberLabel: `${member.name}${member.username ? `（@${member.username}）` : ""}`,
+      key: `remove-${member.id}`,
       title: "从企业移除这个成员？",
-      content: "企业成员关系及其全部品牌权限将被移除，账号本身仍由平台保留。",
+      description:
+        "企业成员关系及其全部品牌权限将被移除，账号本身仍由平台保留。",
       okText: "确认移除",
-      okButtonProps: { danger: true },
-      cancelText: "取消",
-      onOk: () =>
-        runAction(`remove-${member.id}`, "成员已从企业移除", async () => {
-          await request(
-            `/api/v1/organizations/${organizationId}/members/${member.id}`,
-            { method: "DELETE" },
-          );
-        }),
+      danger: true,
+      success: "成员已从企业移除",
+      task: async () => {
+        await request(
+          `/api/v1/organizations/${organizationId}/members/${member.id}`,
+          { method: "DELETE" },
+        );
+      },
+      verify: (rows) => !rows.some((row) => row.id === member.id),
     });
   }
 
   function confirmRemoveAccess(member: Member, access: Access) {
-    modal.confirm({
+    setError("");
+    setConfirmation({
+      memberLabel: `${member.name}${member.username ? `（@${member.username}）` : ""}`,
+      key: `remove-access-${access.id}`,
       title: "移除这个品牌权限？",
-      content: `${member.name} 将不再能够访问品牌 ${access.brandId}。`,
+      description: `${member.name} 将不再能够访问品牌 ${access.brandId}。`,
       okText: "移除权限",
-      okButtonProps: { danger: true },
-      cancelText: "取消",
-      onOk: () =>
-        runAction(`remove-access-${access.id}`, "品牌权限已移除", async () => {
-          await request(
-            `/api/v1/organizations/${organizationId}/members/${member.id}/brand-access/${access.id}`,
-            { method: "DELETE" },
-          );
-        }),
+      danger: true,
+      success: "品牌权限已移除",
+      task: async () => {
+        await request(
+          `/api/v1/organizations/${organizationId}/members/${member.id}/brand-access/${access.id}`,
+          { method: "DELETE" },
+        );
+      },
+      verify: (rows) =>
+        !rows.some(
+          (row) =>
+            row.id === member.id &&
+            row.brandAccess.some((item) => item.id === access.id),
+        ),
     });
+  }
+
+  async function submitConfirmation() {
+    if (!confirmation || busy.current) return;
+    const completed = await runAction(
+      confirmation.key,
+      confirmation.success,
+      confirmation.task,
+      confirmation.verify,
+    );
+    if (completed) setConfirmation(null);
   }
 
   const filteredMembers = members.filter((member) => {
@@ -314,8 +500,10 @@ export function MemberSettings({
   const activeMemberCount = members.filter(
     (member) => member.status === "active",
   ).length;
-  const administratorCount = members.filter((member) =>
-    member.organizationRoles.includes("tenant_admin"),
+  const administratorCount = members.filter(
+    (member) =>
+      member.status === "active" &&
+      member.organizationRoles.includes("tenant_admin"),
   ).length;
   const scopedMemberCount = members.filter(
     (member) => member.brandAccess.length > 0,
@@ -370,7 +558,7 @@ export function MemberSettings({
           <Space direction="vertical" size={4}>
             {accesses.map((access) => (
               <Tag
-                closable
+                closable={!action && !loading && !readError}
                 color={roleMeta[access.role]?.color}
                 key={access.id}
                 onClose={(event) => {
@@ -416,7 +604,13 @@ export function MemberSettings({
           <Space size={[8, 8]} wrap>
             <Button
               aria-label={"配置 " + member.name + " 的品牌权限"}
-              disabled={isAdministrator || !brandId}
+              disabled={
+                isAdministrator ||
+                !brandId ||
+                Boolean(action) ||
+                loading ||
+                Boolean(readError)
+              }
               icon={<LockOutlined />}
               onClick={() => openAccessModal(member)}
             >
@@ -427,6 +621,7 @@ export function MemberSettings({
                 (member.status === "active" ? "停用成员 " : "恢复成员 ") +
                 member.name
               }
+              disabled={Boolean(action) || loading || Boolean(readError)}
               icon={<UserSwitchOutlined />}
               onClick={() => confirmToggle(member)}
             >
@@ -439,6 +634,7 @@ export function MemberSettings({
             <Button
               aria-label={"将成员 " + member.name + " 移出企业"}
               danger
+              disabled={Boolean(action) || loading || Boolean(readError)}
               icon={<UserDeleteOutlined />}
               onClick={() => confirmRemove(member)}
             >
@@ -449,19 +645,6 @@ export function MemberSettings({
       },
     },
   ];
-
-  if (loading) {
-    return (
-      <Space direction="vertical" size="large" style={{ width: "100%" }}>
-        <Card>
-          <Skeleton active paragraph={{ rows: 3 }} />
-        </Card>
-        <Card>
-          <Skeleton active paragraph={{ rows: 8 }} />
-        </Card>
-      </Space>
-    );
-  }
 
   return (
     <Space direction="vertical" size="large" style={{ width: "100%" }}>
@@ -503,25 +686,39 @@ export function MemberSettings({
         </Col>
       </Row>
 
-      {error ? (
+      {success ? (
         <Alert
+          type="success"
+          showIcon
+          message={success}
+          closable
+          onClose={() => setSuccess("")}
+        />
+      ) : null}
+      {readError ? (
+        <Alert
+          type="error"
+          showIcon
+          message="成员目录加载失败"
+          description={readError}
           action={
-            <Button onClick={() => void load()} size="small">
-              重试
+            <Button
+              onClick={() => void load()}
+              disabled={Boolean(action)}
+              loading={loading}
+              aria-label="重试加载成员"
+            >
+              重试加载成员
             </Button>
           }
-          closable
-          description={error}
-          message="成员设置操作未完成"
-          onClose={() => setError("")}
-          showIcon
-          type="error"
         />
       ) : null}
 
       <Card
         extra={
           <Button
+            aria-label="添加成员"
+            disabled={loading || Boolean(readError) || Boolean(action)}
             icon={<UserAddOutlined />}
             onClick={openMemberModal}
             type="primary"
@@ -532,8 +729,18 @@ export function MemberSettings({
         title="成员目录"
       >
         <Flex gap={12} style={{ marginBottom: 16 }} wrap>
+          <Button
+            icon={<ReloadOutlined />}
+            onClick={() => void load()}
+            loading={loading}
+            disabled={Boolean(action)}
+            aria-label="刷新成员"
+          >
+            刷新成员
+          </Button>
           <Input
             allowClear
+            aria-label="搜索姓名或登录账号"
             onChange={(event) => setQuery(event.target.value)}
             placeholder="搜索姓名或登录账号"
             prefix={<SearchOutlined />}
@@ -552,7 +759,9 @@ export function MemberSettings({
             value={statusFilter}
           />
         </Flex>
-        <Table<Member>
+        <AccessibleTable<Member>
+          scrollRegionLabel="企业成员目录"
+          loading={loading}
           columns={columns}
           dataSource={filteredMembers}
           locale={{
@@ -576,22 +785,45 @@ export function MemberSettings({
       </Card>
 
       <Modal
+        forceRender
         cancelText="取消"
         confirmLoading={action === "add-member"}
         maskClosable={!action}
-        okText="添加并授权"
-        onCancel={() => !action && setMemberOpen(false)}
+        okText={needsVerification ? "核对操作结果" : "添加并授权"}
+        okButtonProps={{
+          disabled: Boolean(action),
+          "aria-label": needsVerification ? "核对操作结果" : "添加并授权",
+        }}
+        onCancel={() => {
+          if (!action) {
+            clearVerification();
+            setMemberOpen(false);
+          }
+        }}
         onOk={() => void addMember()}
         open={memberOpen}
         title={
           <Space>
-            <UserAddOutlined />
+            <UserAddOutlined aria-hidden />
             添加企业成员
           </Space>
         }
         width={760}
       >
+        {error ? (
+          <Alert
+            type="error"
+            showIcon
+            message="添加成员未完成"
+            description={error}
+            style={{ marginBottom: 16 }}
+          />
+        ) : null}
+        <Typography.Paragraph type="secondary">
+          当前企业：{organizationName}
+        </Typography.Paragraph>
         <Segmented
+          disabled={Boolean(action) || needsVerification}
           block
           onChange={(value) => {
             setAccountMode(value as "create" | "existing");
@@ -610,7 +842,9 @@ export function MemberSettings({
             : "输入已有账号并授权。代理商账号由平台管理员创建，绑定为企业管理员后即可负责本企业。"}
         </Typography.Paragraph>
         <Form
+          disabled={Boolean(action) || needsVerification}
           form={memberForm}
+          name="member-account"
           initialValues={{ role: "brand_viewer" }}
           layout="vertical"
           onFinish={() => void addMember()}
@@ -700,26 +934,47 @@ export function MemberSettings({
       </Modal>
 
       <Modal
+        forceRender
         cancelText="取消"
         confirmLoading={action.startsWith("add-access-")}
         maskClosable={!action}
-        okText="保存权限"
-        onCancel={() => !action && setAccessMember(null)}
+        okText={needsVerification ? "核对操作结果" : "保存权限"}
+        okButtonProps={{
+          disabled: Boolean(action),
+          "aria-label": needsVerification ? "核对操作结果" : "保存权限",
+        }}
+        onCancel={() => {
+          if (!action) {
+            clearVerification();
+            setAccessMember(null);
+          }
+        }}
         onOk={() => void addAccess()}
         open={Boolean(accessMember)}
         title={
           <Space>
-            <LockOutlined />
+            <LockOutlined aria-hidden />
             配置品牌权限
           </Space>
         }
         width={720}
       >
+        {error ? (
+          <Alert
+            type="error"
+            showIcon
+            message="保存权限未完成"
+            description={error}
+            style={{ marginBottom: 16 }}
+          />
+        ) : null}
         <Typography.Paragraph type="secondary">
           为 {accessMember?.name} 添加或更新一个品牌数据范围。
         </Typography.Paragraph>
         <Form
+          disabled={Boolean(action) || needsVerification}
           form={accessForm}
+          name="member-brand-access"
           initialValues={{ role: "brand_viewer" }}
           layout="vertical"
           onFinish={() => void addAccess()}
@@ -737,6 +992,45 @@ export function MemberSettings({
             应用范围：{brandName}（{brandId}）
           </Typography.Text>
         </Form>
+      </Modal>
+      <Modal
+        open={Boolean(confirmation)}
+        title={confirmation?.title}
+        okText={needsVerification ? "核对操作结果" : confirmation?.okText}
+        okButtonProps={{
+          danger: confirmation?.danger,
+          disabled: Boolean(action),
+          "aria-label": needsVerification
+            ? "核对操作结果"
+            : confirmation?.okText,
+        }}
+        confirmLoading={Boolean(action)}
+        cancelText="取消"
+        maskClosable={!action}
+        onCancel={() => {
+          if (!action) {
+            clearVerification();
+            setConfirmation(null);
+          }
+        }}
+        onOk={() => void submitConfirmation()}
+        width={640}
+      >
+        <Typography.Paragraph strong>
+          {confirmation?.memberLabel}
+        </Typography.Paragraph>
+        <Typography.Paragraph>{confirmation?.description}</Typography.Paragraph>
+        <Typography.Paragraph type="secondary">
+          当前企业：{organizationName}
+        </Typography.Paragraph>
+        {error ? (
+          <Alert
+            type="error"
+            showIcon
+            message="操作未完成"
+            description={error}
+          />
+        ) : null}
       </Modal>
     </Space>
   );

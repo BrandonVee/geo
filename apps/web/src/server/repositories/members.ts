@@ -41,6 +41,31 @@ async function lockOrganization(tx: Transaction, organizationId: string) {
   if (!organization) throw new Error("ORGANIZATION_NOT_FOUND");
 }
 
+// @project-doc docs/domains/identity_and_access.md#member_lifecycle
+async function assertAdministratorRemains(
+  tx: Transaction,
+  organizationId: string,
+  memberId: string,
+) {
+  const administrators = await tx
+    .select({ id: organizationMembers.id })
+    .from(organizationMembers)
+    .innerJoin(memberRoles, eq(memberRoles.memberId, organizationMembers.id))
+    .innerJoin(roles, eq(roles.id, memberRoles.roleId))
+    .where(
+      and(
+        eq(organizationMembers.organizationId, organizationId),
+        eq(organizationMembers.status, "active"),
+        eq(roles.code, "tenant_admin"),
+      ),
+    );
+  if (
+    administrators.some((member) => member.id === memberId) &&
+    administrators.length <= 1
+  )
+    throw new Error("LAST_TENANT_ADMIN");
+}
+
 async function assertMemberCapacity(tx: Transaction, organizationId: string) {
   const [entitlement] = await tx
     .select({ limitAmount: subscriptionEntitlements.limitAmount })
@@ -366,6 +391,8 @@ export const memberRepository = {
   ) {
     return db.transaction(async (tx) => {
       await lockOrganization(tx, organizationId);
+      if (status === "disabled")
+        await assertAdministratorRemains(tx, organizationId, memberId);
       const [current] = await tx
         .select({
           userId: organizationMembers.userId,
@@ -425,6 +452,7 @@ export const memberRepository = {
   async removeMember(organizationId: string, memberId: string, userId: string) {
     return db.transaction(async (tx) => {
       await lockOrganization(tx, organizationId);
+      await assertAdministratorRemains(tx, organizationId, memberId);
       await tx
         .delete(brandAccess)
         .where(

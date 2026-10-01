@@ -390,6 +390,12 @@ test.describe("真实运营操作闭环", () => {
     await db
       .delete(organizationMembers)
       .where(eq(organizationMembers.userId, fixture.userId));
+    await db
+      .delete(database.subscriptionEntitlements)
+      .where(inArray(database.subscriptionEntitlements.organizationId, ids));
+    await db
+      .delete(database.platformSubscriptions)
+      .where(inArray(database.platformSubscriptions.organizationId, ids));
     await db.delete(organizations).where(inArray(organizations.id, ids));
     await db.delete(users).where(eq(users.id, fixture.userId));
   });
@@ -1708,6 +1714,342 @@ test.describe("真实运营操作闭环", () => {
     await expect(
       page.getByRole("dialog").getByText("99", { exact: true }),
     ).toHaveCount(0);
+  });
+
+  test("成员写入失败保留表单，现有角色正确回填，响应丢失不重复创建，最后管理员受保护", async ({
+    page,
+  }) => {
+    const {
+      db,
+      users,
+      roles,
+      organizationMembers,
+      memberRoles,
+      billingPlans,
+      billingPlanVersions,
+      platformSubscriptions,
+      subscriptionEntitlements,
+    } = database;
+    const { eq, and } = operators;
+    const target = fixture.scopes[0];
+    const collection = `/api/v1/organizations/${target.organizationId}/members`;
+    await db
+      .update(users)
+      .set({ accountType: "agent" })
+      .where(eq(users.id, fixture.userId));
+    const [administrator] = await db
+      .select()
+      .from(organizationMembers)
+      .where(
+        and(
+          eq(organizationMembers.organizationId, target.organizationId),
+          eq(organizationMembers.userId, fixture.userId),
+        ),
+      );
+    const [role] = await db
+      .select()
+      .from(roles)
+      .where(eq(roles.code, "tenant_admin"));
+    await db
+      .insert(memberRoles)
+      .values({ memberId: administrator.id, roleId: role.id });
+    const [plan] = await db
+      .select({ id: billingPlanVersions.id })
+      .from(billingPlanVersions)
+      .innerJoin(billingPlans, eq(billingPlans.id, billingPlanVersions.planId))
+      .where(
+        and(
+          eq(billingPlans.code, "free"),
+          eq(billingPlanVersions.status, "published"),
+        ),
+      );
+    const periodStart = new Date(),
+      periodEnd = new Date(Date.now() + 86_400_000);
+    const [subscription] = await db
+      .insert(platformSubscriptions)
+      .values({
+        organizationId: target.organizationId,
+        planVersionId: plan.id,
+        currentPeriodStart: periodStart,
+        currentPeriodEnd: periodEnd,
+      })
+      .returning();
+    await db.insert(subscriptionEntitlements).values({
+      organizationId: target.organizationId,
+      subscriptionId: subscription.id,
+      entitlementKey: "members",
+      limitAmount: 10,
+      unit: "people",
+      periodStart,
+      periodEnd,
+    });
+    await mockBusinessApis(page);
+    await page.route("**/api/v1/organizations/**", (route) => route.continue());
+    let readsFail = false,
+      creates = 0;
+    await page.route(`**${collection}`, async (route) => {
+      if (route.request().method() === "GET") {
+        if (readsFail)
+          return route.fulfill({
+            status: 503,
+            json: { error: { message: "成员目录暂时不可用" } },
+          });
+        return route.continue();
+      }
+      if (route.request().method() !== "POST") return route.continue();
+      creates++;
+      if (creates === 1)
+        return route.fulfill({
+          status: 503,
+          json: { error: { message: "开户暂时失败" } },
+        });
+      const response = await route.fetch();
+      expect(response.status()).toBe(201);
+      readsFail = true;
+      await route.abort("failed");
+    });
+    await page.goto(
+      `/dashboard/settings/members?organizationId=${target.organizationId}`,
+    );
+    await page.getByRole("button", { name: "添加成员", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "添加企业成员" });
+    const username = `member_${randomUUID().slice(0, 8)}`;
+    await dialog.getByLabel("成员姓名").fill("新运营成员");
+    await dialog.getByLabel("登录账号").fill(username);
+    await dialog.getByLabel("初始密码").fill("WorkflowMember123");
+    await dialog.getByLabel("职责角色").press("ArrowDown");
+    await page
+      .locator(".ant-select-item-option")
+      .filter({ hasText: "品牌编辑" })
+      .click();
+    await dialog
+      .getByRole("button", { name: "添加并授权", exact: true })
+      .click();
+    await expect(
+      dialog.getByText("开户暂时失败", { exact: true }),
+    ).toBeVisible();
+    await expect(dialog.getByLabel("初始密码")).toHaveValue(
+      "WorkflowMember123",
+    );
+    await dialog
+      .getByRole("button", { name: "添加并授权", exact: true })
+      .click();
+    await expect(
+      dialog.getByText("提交结果尚未核实，请先核对结果，避免重复操作。"),
+    ).toBeVisible();
+    await expect(dialog.getByLabel("登录账号")).toBeDisabled();
+    await dialog
+      .getByRole("button", { name: "核对操作结果", exact: true })
+      .click();
+    await expect(
+      dialog.getByText("成员目录暂时不可用", { exact: true }),
+    ).toBeVisible();
+    expect(creates).toBe(2);
+    readsFail = false;
+    await dialog
+      .getByRole("button", { name: "核对操作结果", exact: true })
+      .click();
+    await expect(dialog).not.toBeVisible();
+    expect(creates).toBe(2);
+    await expect(
+      page.getByText("客户账号已创建并加入企业", { exact: true }),
+    ).toBeVisible();
+    const directory = await page.request.get(collection);
+    const created = (await directory.json()).data.members.find(
+      (member: { username: string }) => member.username === username,
+    );
+    expect(created.brandAccess[0].role).toBe("brand_editor");
+    expect(
+      (await db.select().from(users).where(eq(users.username, username)))
+        .length,
+    ).toBe(1);
+    // Existing authority must be selected when editing, rather than the default viewer.
+    await page
+      .getByRole("button", { name: "配置 新运营成员 的品牌权限", exact: true })
+      .click();
+    const accessDialog = page.getByRole("dialog", { name: "配置品牌权限" });
+    await expect(accessDialog.locator(".ant-select-selection-item")).toHaveText(
+      "品牌编辑",
+    );
+    await accessDialog.getByLabel("品牌角色").press("ArrowDown");
+    await page
+      .locator(".ant-select-item-option")
+      .filter({ hasText: "品牌管理员" })
+      .click();
+    let updates = 0;
+    await page.route(
+      `**${collection}/${created.id}/brand-access`,
+      async (route) => {
+        updates++;
+        if (updates === 1)
+          return route.fulfill({
+            status: 503,
+            json: { error: { message: "权限更新暂时失败" } },
+          });
+        const response = await route.fetch();
+        expect(response.ok()).toBeTruthy();
+        readsFail = true;
+        return route.fulfill({ response });
+      },
+    );
+    await accessDialog
+      .getByRole("button", { name: "保存权限", exact: true })
+      .click();
+    await expect(accessDialog.getByText("权限更新暂时失败")).toBeVisible();
+    await expect(accessDialog.locator(".ant-select-selection-item")).toHaveText(
+      "品牌管理员",
+    );
+    await accessDialog
+      .getByRole("button", { name: "保存权限", exact: true })
+      .click();
+    await expect(accessDialog).not.toBeVisible();
+    await expect(
+      page.getByText("品牌访问范围已更新", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("成员目录加载失败", { exact: true }),
+    ).toBeVisible();
+    readsFail = false;
+    await page
+      .getByRole("button", { name: "重试加载成员", exact: true })
+      .click();
+    await expect(
+      page.getByText("成员目录加载失败", { exact: true }),
+    ).not.toBeVisible();
+    await page
+      .getByRole("button", { name: "停用成员 操作流程测试", exact: true })
+      .click();
+    const confirmation = page.getByRole("dialog", { name: "停用这个成员？" });
+    await expect(
+      confirmation.getByText(`操作流程测试（@${fixture.username}）`, {
+        exact: true,
+      }),
+    ).toBeVisible();
+    await confirmation
+      .getByRole("button", { name: "确认停用", exact: true })
+      .click();
+    await expect(
+      confirmation.getByText("企业必须保留至少一名可用管理员"),
+    ).toBeVisible();
+    await confirmation.getByRole("button", { name: /取\s*消/ }).click();
+    await page
+      .getByRole("button", { name: "停用成员 新运营成员", exact: true })
+      .click();
+    let toggles = 0;
+    await page.route(`**${collection}/${created.id}`, async (route) => {
+      if (route.request().method() !== "PATCH") return route.continue();
+      toggles++;
+      if (toggles === 1)
+        return route.fulfill({
+          status: 503,
+          json: { error: { message: "停用暂时失败" } },
+        });
+      const response = await route.fetch();
+      expect(response.ok()).toBeTruthy();
+      await route.abort("failed");
+    });
+    await confirmation
+      .getByRole("button", { name: "确认停用", exact: true })
+      .click();
+    await expect(
+      confirmation.getByText("停用暂时失败", { exact: true }),
+    ).toBeVisible();
+    await confirmation
+      .getByRole("button", { name: "确认停用", exact: true })
+      .click();
+    await expect(confirmation).not.toBeVisible();
+    expect(toggles).toBe(2);
+    await expect(page.getByText("成员已停用", { exact: true })).toBeVisible();
+    await page
+      .getByRole("button", { name: "将成员 新运营成员 移出企业", exact: true })
+      .click();
+    const removeDialog = page.getByRole("dialog", {
+      name: "从企业移除这个成员？",
+    });
+    let removals = 0;
+    await page.route(`**${collection}/${created.id}`, async (route) => {
+      if (route.request().method() !== "DELETE") return route.fallback();
+      removals++;
+      if (removals === 1)
+        return route.fulfill({
+          status: 503,
+          json: { error: { message: "移除暂时失败" } },
+        });
+      const response = await route.fetch();
+      expect(response.status()).toBe(204);
+      await route.abort("failed");
+    });
+    await removeDialog
+      .getByRole("button", { name: "确认移除", exact: true })
+      .click();
+    await expect(
+      removeDialog.getByText("移除暂时失败", { exact: true }),
+    ).toBeVisible();
+    await removeDialog
+      .getByRole("button", { name: "确认移除", exact: true })
+      .click();
+    await expect(removeDialog).not.toBeVisible();
+    expect(removals).toBe(2);
+    await expect(
+      page.getByText("成员已从企业移除", { exact: true }),
+    ).toBeVisible();
+    expect(
+      (await db.select().from(users).where(eq(users.username, username)))
+        .length,
+    ).toBe(1);
+    expect(
+      (
+        await db
+          .select()
+          .from(organizationMembers)
+          .where(eq(organizationMembers.id, created.id))
+      ).length,
+    ).toBe(0);
+    // Platform and enterprise entry points expose the same administrator invariant.
+    await makePlatformAdministrator();
+    const platformDelete = await page.request.delete(
+      `/api/v1/admin/organizations/${target.organizationId}/members/${administrator.id}`,
+    );
+    expect(platformDelete.status()).toBe(409);
+    expect((await platformDelete.json()).error.code).toBe("LAST_TENANT_ADMIN");
+    for (const theme of ["light", "dark"]) {
+      if (theme === "dark")
+        await page.getByRole("button", { name: "切换亮暗色模式" }).click();
+      await expect
+        .poll(() => page.locator("html").getAttribute("data-theme"))
+        .toBe(theme);
+      for (const width of [390, 768, 1440]) {
+        await page.setViewportSize({ width, height: 1000 });
+        expect(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth,
+          ),
+        ).toBeTruthy();
+        await page.evaluate(async () => {
+          await Promise.all(
+            document
+              .getAnimations()
+              .filter(
+                (animation) =>
+                  animation.effect?.getComputedTiming().iterations !== Infinity,
+              )
+              .map((animation) => animation.finished.catch(() => {})),
+          );
+        });
+        await page.evaluate(axe.source);
+        const result = await page.evaluate(async () =>
+          (window as unknown as { axe: typeof axe }).axe.run(document, {
+            runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa"] },
+          }),
+        );
+        expect(
+          result.violations.map(({ id, nodes }) => ({
+            id,
+            targets: nodes.map(({ target }) => target),
+          })),
+        ).toEqual([]);
+      }
+    }
   });
 
   test("企业管理员查看整体消耗并切换品牌，品牌角色无法越权，明暗主题与多尺寸可用", async ({

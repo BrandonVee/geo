@@ -141,6 +141,18 @@ try {
     ],
     { ARTICLE_TRACKING_DB_TESTS: "1" },
   );
+  await run(
+    pnpm,
+    [
+      "--filter",
+      "@geo/web",
+      "exec",
+      "vitest",
+      "run",
+      "src/server/repositories/members.integration.test.ts",
+    ],
+    { MEMBER_CAPACITY_DB_TESTS: "1" },
+  );
   const seed = new Client({ connectionString: databaseUrl.href });
   await seed.connect();
   try {

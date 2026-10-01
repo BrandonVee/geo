@@ -12,7 +12,7 @@ import { adminRepository } from "@/server/repositories/admin";
 import { memberRepository as repository } from "@/server/repositories/members";
 import { organizationService } from "./organizations";
 import { assertEntitlementCapacity } from "./billing";
-import { memberCapacityApiError } from "./member-write-error";
+import { memberWriteApiError } from "./member-write-error";
 
 export const memberService = {
   async list(organizationId: string, userId: string) {
@@ -112,7 +112,7 @@ export const memberService = {
             "USERNAME_EXISTS",
             "该登录账号已存在，请改用绑定已有账号",
           );
-        const capacityError = memberCapacityApiError(error);
+        const capacityError = memberWriteApiError(error);
         if (capacityError) throw capacityError;
         throw error;
       }
@@ -186,7 +186,7 @@ export const memberService = {
         { ...input, ...brandScope },
       );
     } catch (error) {
-      const capacityError = memberCapacityApiError(error);
+      const capacityError = memberWriteApiError(error);
       if (capacityError) throw capacityError;
       if (
         error instanceof Error &&
@@ -236,6 +236,7 @@ export const memberService = {
     }
     if (
       input.status === "disabled" &&
+      member.status === "active" &&
       (await repository.isTenantAdmin(memberId)) &&
       (await repository.countActiveTenantAdmins(organizationId)) <= 1
     )
@@ -252,7 +253,7 @@ export const memberService = {
         input.status,
       );
     } catch (error) {
-      const capacityError = memberCapacityApiError(error);
+      const capacityError = memberWriteApiError(error);
       if (capacityError) throw capacityError;
       if (
         error instanceof Error &&
@@ -287,6 +288,7 @@ export const memberService = {
     const member = await repository.findMember(organizationId, memberId);
     if (!member) throw new ApiError(404, "MEMBER_NOT_FOUND", "企业成员不存在");
     if (
+      member.status === "active" &&
       (await repository.isTenantAdmin(memberId)) &&
       (await repository.countActiveTenantAdmins(organizationId)) <= 1
     )
@@ -295,7 +297,11 @@ export const memberService = {
         "LAST_TENANT_ADMIN",
         "企业必须保留至少一名管理员",
       );
-    await repository.removeMember(organizationId, memberId, member.userId);
+    try {
+      await repository.removeMember(organizationId, memberId, member.userId);
+    } catch (error) {
+      throw memberWriteApiError(error) ?? error;
+    }
     await writeAudit(audit, {
       operation: "tenant.member.delete",
       resourceType: "organization_member",

@@ -9,6 +9,8 @@ const mocks = vi.hoisted(() => ({
   findMember: vi.fn(),
   findUserById: vi.fn(),
   isTenantAdmin: vi.fn(),
+  countActiveTenantAdmins: vi.fn(),
+  removeMember: vi.fn(),
   addExistingMember: vi.fn(),
   createCustomerMember: vi.fn(),
   updateMember: vi.fn(),
@@ -322,6 +324,58 @@ describe("企业成员开户与授权", () => {
       status: 422,
       code: "AGENT_ENTERPRISE_QUOTA_EXCEEDED",
     });
+  });
+
+  it.each(["update", "remove"] as const)(
+    "%s 事务内最后管理员冲突返回 409 且不写成功审计",
+    async (operation) => {
+      mocks.findMember.mockResolvedValue({
+        id: "member-2",
+        userId: "agent-1",
+        status: "active",
+      });
+      mocks.isTenantAdmin.mockResolvedValue(true);
+      mocks.countActiveTenantAdmins.mockResolvedValue(2);
+      mocks.updateMember.mockRejectedValue(new Error("LAST_TENANT_ADMIN"));
+      mocks.removeMember.mockRejectedValue(new Error("LAST_TENANT_ADMIN"));
+      const result =
+        operation === "update"
+          ? memberService.update(
+              organizationId,
+              "member-2",
+              { status: "disabled" },
+              actorUserId,
+              audit,
+            )
+          : memberService.remove(
+              organizationId,
+              "member-2",
+              actorUserId,
+              audit,
+            );
+      await expect(result).rejects.toMatchObject({
+        status: 409,
+        code: "LAST_TENANT_ADMIN",
+      });
+      expect(mocks.writeAudit).not.toHaveBeenCalled();
+    },
+  );
+
+  it("移除已停用的原管理员不影响最后一个有效管理员", async () => {
+    mocks.findMember.mockResolvedValue({
+      id: "member-2",
+      userId: "agent-1",
+      status: "disabled",
+    });
+    mocks.isTenantAdmin.mockResolvedValue(true);
+    mocks.countActiveTenantAdmins.mockResolvedValue(1);
+    await memberService.remove(organizationId, "member-2", actorUserId, audit);
+    expect(mocks.removeMember).toHaveBeenCalledWith(
+      organizationId,
+      "member-2",
+      "agent-1",
+    );
+    expect(mocks.writeAudit).toHaveBeenCalledOnce();
   });
 
   it("不能恢复已过期代理商的成员关系", async () => {

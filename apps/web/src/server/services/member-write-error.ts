@@ -1,7 +1,13 @@
 import { ApiError } from "@/server/http/errors";
 
-export function memberCapacityApiError(error: unknown): ApiError | undefined {
+export function memberWriteApiError(error: unknown): ApiError | undefined {
   if (!(error instanceof Error)) return undefined;
+  if (error.message === "LAST_TENANT_ADMIN")
+    return new ApiError(
+      409,
+      "LAST_TENANT_ADMIN",
+      "企业必须保留至少一名可用管理员",
+    );
   if (error.message === "ENTITLEMENT_NOT_FOUND")
     return new ApiError(
       402,
