@@ -28,6 +28,8 @@ JSON 请求使用 `Content-Type: application/json`；允许标准的 `applicatio
 
 `GET /v1/publication-orders` 默认每页 20 条，上限 100 条；可按 `keyword`、`status` 及成对的 `beginDate`/`endDate` 筛选。`data` 保持订单数组，envelope 新增 `pagination`（`page`、`pageSize`、`total`、`pages`）；日期按北京时间计算，超出末页返回实际末页。只即时同步本次授权分页的履约状态，再读取最新匹配结果。
 
+管理端 `GET /v1/admin/publication-orders` 同样默认 20 条、上限 100 条，按 `q`、企业、来源、状态和成对日期筛选；`data` 为 `{ list, pagination }`，行记录包含企业名称。列表和 `GET /v1/admin/publication-orders/{orderId}` 只读本地记录，都要求 `platform.publication.manage`，不调用上游或扣费；单笔读取用于人工处理响应丢失后核对已保存状态。人工交付的 `PATCH` 仅接受 HTTP(S) 结果链接，聚合订单仍拒绝手工结单。
+
 ## 响应格式
 
 成功响应：

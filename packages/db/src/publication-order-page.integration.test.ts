@@ -9,7 +9,11 @@ import {
   publicationOrders,
   publicationChannels,
 } from "./schema";
-import { listPublicationOrdersPage } from "./publications";
+import {
+  findAdminPublicationOrder,
+  listAdminPublicationOrdersPage,
+  listPublicationOrdersPage,
+} from "./publications";
 
 describe.skipIf(process.env.ORDER_HISTORY_DB_TESTS !== "1")(
   "发布订单分页 PostgreSQL 回归",
@@ -175,6 +179,98 @@ describe.skipIf(process.env.ORDER_HISTORY_DB_TESTS !== "1")(
           .where(eq(publicationOrders.organizationId, other)),
       );
       expect(forbidden).toEqual([]);
+    });
+    it("平台角色可跨企业分页，保留企业名称并按企业缩小范围", async () => {
+      const all = await listAdminPublicationOrdersPage({
+        userId: user,
+        q: "order-history-qa",
+        page: 1,
+        pageSize: 100,
+      });
+      expect(all.pagination.total).toBe(38);
+      expect(new Set(all.list.map((row) => row.organization.id))).toEqual(
+        new Set([org, other]),
+      );
+      expect(
+        all.list.every((row) => row.organization.name === "order-history-qa"),
+      ).toBe(true);
+      const scoped = await listAdminPublicationOrdersPage({
+        userId: user,
+        organizationId: other,
+        page: 1,
+        pageSize: 20,
+      });
+      expect(scoped.pagination.total).toBe(1);
+      expect(scoped.list[0].order.title).toBe("其他企业文章");
+    });
+    it("平台检索按文字转义，能按品牌和订单编号核对", async () => {
+      const literal = await listAdminPublicationOrdersPage({
+        userId: user,
+        q: "%_",
+        page: 1,
+        pageSize: 20,
+      });
+      expect(literal.list.map((row) => row.order.title)).toEqual(["100%_文章"]);
+      const brand = await listAdminPublicationOrdersPage({
+        userId: user,
+        organizationId: org,
+        q: "brand-b",
+        page: 1,
+        pageSize: 20,
+      });
+      expect(brand.pagination.total).toBe(1);
+      const row = await findAdminPublicationOrder(batch[0], user);
+      expect(row?.order.id).toBe(batch[0]);
+      expect(row?.organization.id).toBe(org);
+      expect(
+        await findAdminPublicationOrder(randomUUID(), user),
+      ).toBeUndefined();
+    });
+    it("平台来源与状态过滤仍稳定分页，并回退无效页码", async () => {
+      const scoped = {
+        userId: user,
+        organizationId: org,
+        q: "批次",
+        page: 1,
+        pageSize: 10,
+        status: "processing" as const,
+        provider: "manual" as const,
+      };
+      const pages = await Promise.all(
+        [1, 2, 3].map((page) =>
+          listAdminPublicationOrdersPage({ ...scoped, page }),
+        ),
+      );
+      expect(
+        pages.flatMap((result) => result.list.map((row) => row.order.id)),
+      ).toEqual(batch);
+      expect(
+        (await listAdminPublicationOrdersPage({ ...scoped, page: 99 }))
+          .pagination.page,
+      ).toBe(3);
+      expect(
+        (
+          await listAdminPublicationOrdersPage({
+            ...scoped,
+            provider: "frog_media",
+            page: 99,
+          })
+        ).pagination,
+      ).toMatchObject({ page: 1, total: 0, pages: 0 });
+    });
+    it("平台日期同样按北京时间读取闭合区间", async () => {
+      const result = await listAdminPublicationOrdersPage({
+        userId: user,
+        organizationId: org,
+        q: "北京时间界限",
+        page: 1,
+        pageSize: 20,
+        beginDate: "2026-09-01",
+        endDate: "2026-09-01",
+      });
+      expect(
+        result.list.map((row) => row.order.createdAt.toISOString()),
+      ).toEqual(["2026-09-01T15:59:59.000Z", "2026-08-31T16:00:00.000Z"]);
     });
     it("页码超出范围回到实际末页，记录消失后回到第一页", async () => {
       const result = await listPublicationOrdersPage({

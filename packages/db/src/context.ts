@@ -30,6 +30,7 @@ export function withTenantDbContext<T>(
 export function withPlatformDbContext<T>(
   context: { userId: string },
   run: (tx: DatabaseTransaction) => Promise<T>,
+  options?: Parameters<typeof db.transaction>[1],
 ) {
   return db.transaction(async (tx) => {
     await tx.execute(sql.raw("set local role geo_platform_app"));
@@ -37,7 +38,7 @@ export function withPlatformDbContext<T>(
       sql`select set_config('app.organization_id', '', true), set_config('app.user_id', ${context.userId}, true), set_config('app.team_binding_id', '', true), set_config('app.brand_id', '', true)`,
     );
     return run(tx);
-  });
+  }, options);
 }
 
 export type SqlExecutor = {

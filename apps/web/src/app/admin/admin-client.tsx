@@ -66,6 +66,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { EnterpriseValidity } from "./enterprise-validity";
 import { AdminDocumentLibrary } from "./admin-document-library";
+import { AdminPublicationOrders } from "./admin-publication-orders";
 import { MeteringClient } from "../dashboard/metering/metering-client";
 import type { ScopeOrganization } from "../dashboard/use-answerbit-scope";
 import { ThemeToggle } from "../theme-toggle";
@@ -308,23 +309,6 @@ type PublicationProviderConfiguration = {
   lastCheckedAt: string | null;
   updatedAt: string | null;
 };
-type PublicationRow = {
-  order: {
-    id: string;
-    organizationId: string;
-    brandId: string;
-    title: string;
-    status: "submitted" | "processing" | "published" | "failed" | "cancelled";
-    priceAmount: number;
-    resultUrl: string | null;
-    providerOrderId: string | null;
-    providerStatus: number | null;
-    providerMessage: string | null;
-    providerSyncedAt: string | null;
-    createdAt: string;
-  };
-  channel: Channel;
-};
 type AuditRow = {
   log: {
     id: string;
@@ -530,13 +514,6 @@ const pricingTierMeta: Record<
   gold: { label: "金牌代理", color: "gold", order: 3 },
 };
 const pricingTiers = ["retail", "bronze", "silver", "gold"] as const;
-const publicationOrderStatusMeta = {
-  submitted: { color: "blue", label: "已提交" },
-  processing: { color: "processing", label: "发布中" },
-  published: { color: "success", label: "已交付" },
-  failed: { color: "error", label: "失败已退款" },
-  cancelled: { color: "default", label: "已取消退款" },
-} as const;
 const roleLabels: Record<string, string> = {
   super_admin: "超级管理员",
   tenant_admin: "企业管理员",
@@ -766,9 +743,7 @@ export function AdminClient({
     publicationProviderConfiguration,
     setPublicationProviderConfiguration,
   ] = useState<PublicationProviderConfiguration | null>(null);
-  const [publicationOrders, setPublicationOrders] = useState<PublicationRow[]>(
-    [],
-  );
+  const [publicationOrderRefresh, setPublicationOrderRefresh] = useState(0);
   const [audits, setAudits] = useState<AuditRow[]>([]);
   const [auditPage, setAuditPage] = useState(1);
   const [auditPageSize, setAuditPageSize] = useState(20);
@@ -833,12 +808,6 @@ export function AdminClient({
   const [channelTierPrices, setChannelTierPrices] = useState<
     Record<PricingTier, number | null>
   >({ retail: null, bronze: null, silver: null, gold: null });
-  const [processingOrder, setProcessingOrder] = useState<{
-    row: PublicationRow;
-    status: "processing" | "published" | "failed" | "cancelled";
-  } | null>(null);
-  const [orderResultUrl, setOrderResultUrl] = useState("");
-  const [orderNote, setOrderNote] = useState("");
   const loadRunRef = useRef(0);
   const channelLoadRunRef = useRef(0);
   const channelPageRef = useRef(1);
@@ -935,25 +904,45 @@ export function AdminClient({
       },
     ];
     return (
-      <Card
-        className="admin-platform-panel admin-publication-flow"
-        title="发布业务链路"
-      >
+      <Card className="admin-platform-panel" title="发布业务链路">
         <Row gutter={[12, 12]}>
           {items.map((item, index) => (
             <Col key={item.key} lg={6} sm={12} xs={24}>
-              <button
-                className={
-                  "admin-publication-flow-step" +
-                  (tab === item.key ? " is-active" : "")
-                }
+              <Button
+                block
+                aria-current={tab === item.key ? "step" : undefined}
                 onClick={() => selectTab(item.key)}
-                type="button"
+                type={tab === item.key ? "primary" : "default"}
+                style={{
+                  height: "auto",
+                  minHeight: 78,
+                  padding: 14,
+                  whiteSpace: "normal",
+                  textAlign: "left",
+                }}
               >
-                <span>{String(index + 1).padStart(2, "0")}</span>
-                <strong>{item.title}</strong>
-                <small>{item.description}</small>
-              </button>
+                <Flex align="center" gap={12}>
+                  <Typography.Text
+                    strong
+                    style={{ color: "inherit", flexShrink: 0 }}
+                  >
+                    {String(index + 1).padStart(2, "0")}
+                  </Typography.Text>
+                  <Space
+                    direction="vertical"
+                    size={2}
+                    align="start"
+                    style={{ minWidth: 0 }}
+                  >
+                    <Typography.Text strong style={{ color: "inherit" }}>
+                      {item.title}
+                    </Typography.Text>
+                    <Typography.Text style={{ color: "inherit", fontSize: 12 }}>
+                      {item.description}
+                    </Typography.Text>
+                  </Space>
+                </Flex>
+              </Button>
             </Col>
           ))}
         </Row>
@@ -1134,13 +1123,8 @@ export function AdminClient({
           channelPageRef.current,
           channelPageSizeRef.current,
         );
-      if (tab === "publication-orders") {
-        const nextOrders = await api<PublicationRow[]>(
-          "/api/v1/admin/publication-orders",
-        );
-        if (runId !== loadRunRef.current) return;
-        setPublicationOrders(nextOrders);
-      }
+      if (tab === "publication-orders")
+        setPublicationOrderRefresh((version) => version + 1);
       if (tab === "operations") {
         const auditParams = new URLSearchParams({
           page: String(auditPage),
@@ -1979,32 +1963,6 @@ export function AdminClient({
     } finally {
       setBusy("");
     }
-  }
-  async function processOrder(
-    orderId: string,
-    status: "processing" | "published" | "failed" | "cancelled",
-  ) {
-    const row = publicationOrders.find((item) => item.order.id === orderId);
-    if (!row) return;
-    setProcessingOrder({ row, status });
-    setOrderResultUrl(row.order.resultUrl ?? "");
-    setOrderNote("");
-  }
-  async function confirmProcessOrder() {
-    if (!processingOrder) return;
-    if (processingOrder.status === "published" && !orderResultUrl.trim())
-      return;
-    const { row, status } = processingOrder;
-    await patch(
-      `/api/v1/admin/publication-orders/${row.order.id}`,
-      {
-        status,
-        resultUrl: status === "published" ? orderResultUrl.trim() : undefined,
-        note: orderNote.trim(),
-      },
-      `publication-${row.order.id}`,
-    );
-    setProcessingOrder(null);
   }
   const organizationColumns: TableColumnsType<Organization> = [
     {
@@ -4166,153 +4124,10 @@ export function AdminClient({
                 <Row gutter={[16, 16]}>
                   <Col xs={24}>{renderPublicationWorkflow()}</Col>
                   <Col xs={24}>
-                    <Card
-                      className="admin-platform-panel"
-                      extra={
-                        <Typography.Text type="secondary">
-                          {publicationOrders.length.toLocaleString()} 个订单
-                        </Typography.Text>
-                      }
-                      title="订单处理与交付"
-                    >
-                      <Alert
-                        message="聚合渠道由后台同步上游状态；人工渠道由管理员推进处理并填写交付链接。失败或确认取消后，系统按订单价格快照退回发布余额。"
-                        showIcon
-                        style={{ marginBottom: 16 }}
-                        type="info"
-                      />
-                      <Table<PublicationRow>
-                        columns={[
-                          {
-                            title: "订单",
-                            key: "order",
-                            render: (_, item) => (
-                              <Space direction="vertical" size={0}>
-                                <Typography.Text strong>
-                                  {item.order.title}
-                                </Typography.Text>
-                                <Typography.Text type="secondary">
-                                  {new Date(
-                                    item.order.createdAt,
-                                  ).toLocaleString()}
-                                </Typography.Text>
-                              </Space>
-                            ),
-                          },
-                          {
-                            title: "渠道与金额",
-                            key: "channel",
-                            render: (_, item) => (
-                              <Space direction="vertical" size={0}>
-                                <Typography.Text>
-                                  {item.channel.name}
-                                </Typography.Text>
-                                <Typography.Text type="secondary">
-                                  {money(item.order.priceAmount)} ·{" "}
-                                  {item.channel.provider === "frog_media"
-                                    ? "媒体发布"
-                                    : "人工渠道"}
-                                </Typography.Text>
-                              </Space>
-                            ),
-                          },
-                          {
-                            title: "状态",
-                            dataIndex: ["order", "status"],
-                            width: 130,
-                            render: (
-                              value: PublicationRow["order"]["status"],
-                            ) => {
-                              const status = publicationOrderStatusMeta[value];
-                              return (
-                                <Tag color={status.color}>{status.label}</Tag>
-                              );
-                            },
-                          },
-                          {
-                            title: "履约信息",
-                            key: "provider",
-                            width: 180,
-                            render: (_, item) =>
-                              item.channel.provider === "frog_media" ? (
-                                <Space direction="vertical" size={0}>
-                                  <Tag color="purple">上游自动同步</Tag>
-                                  <Typography.Text type="secondary">
-                                    {item.order.providerOrderId
-                                      ? `上游单号 ${item.order.providerOrderId}`
-                                      : "等待上游受理"}
-                                  </Typography.Text>
-                                </Space>
-                              ) : (
-                                <Tag>后台人工处理</Tag>
-                              ),
-                          },
-                          {
-                            title: "操作",
-                            key: "action",
-                            width: 220,
-                            render: (_, item) =>
-                              item.order.resultUrl ? (
-                                <Button
-                                  href={item.order.resultUrl}
-                                  rel="noreferrer"
-                                  size="small"
-                                  target="_blank"
-                                  type="link"
-                                >
-                                  查看交付结果
-                                </Button>
-                              ) : item.channel.provider === "frog_media" ? (
-                                <Typography.Text type="secondary">
-                                  无需人工操作
-                                </Typography.Text>
-                              ) : ["submitted", "processing"].includes(
-                                  item.order.status,
-                                ) ? (
-                                <Space wrap>
-                                  <Button
-                                    onClick={() =>
-                                      void processOrder(
-                                        item.order.id,
-                                        "processing",
-                                      )
-                                    }
-                                    size="small"
-                                  >
-                                    处理中
-                                  </Button>
-                                  <Button
-                                    onClick={() =>
-                                      void processOrder(
-                                        item.order.id,
-                                        "published",
-                                      )
-                                    }
-                                    size="small"
-                                    type="primary"
-                                  >
-                                    已发布
-                                  </Button>
-                                  <Button
-                                    danger
-                                    onClick={() =>
-                                      void processOrder(item.order.id, "failed")
-                                    }
-                                    size="small"
-                                  >
-                                    失败返还
-                                  </Button>
-                                </Space>
-                              ) : null,
-                          },
-                        ]}
-                        dataSource={publicationOrders}
-                        pagination={false}
-                        rowKey={(item) => item.order.id}
-                        onHeaderRow={focusableTableHeaderRow}
-                        scroll={{ x: 1060 }}
-                      />
-                    </Card>
+                    <AdminPublicationOrders
+                      organizations={meteringOrganizations}
+                      refreshVersion={publicationOrderRefresh}
+                    />
                   </Col>
                 </Row>
               ) : null}
@@ -6571,46 +6386,6 @@ export function AdminClient({
               </Form.Item>
             </Col>
           </Row>
-        </Form>
-      </Modal>
-
-      <Modal
-        cancelText="取消"
-        confirmLoading={Boolean(
-          processingOrder &&
-            busy === "publication-" + processingOrder.row.order.id,
-        )}
-        okButtonProps={{
-          disabled:
-            processingOrder?.status === "published" && !orderResultUrl.trim(),
-        }}
-        okText="确认处理"
-        onCancel={() => setProcessingOrder(null)}
-        onOk={() => void confirmProcessOrder()}
-        open={Boolean(processingOrder)}
-        title="处理发布订单"
-        width={720}
-      >
-        <Form layout="vertical" size="large">
-          <Form.Item label="处理状态">
-            <Tag color="processing">{processingOrder?.status}</Tag>
-          </Form.Item>
-          {processingOrder?.status === "published" ? (
-            <Form.Item label="发布结果 URL" required>
-              <Input
-                onChange={(event) => setOrderResultUrl(event.target.value)}
-                placeholder="https://"
-                value={orderResultUrl}
-              />
-            </Form.Item>
-          ) : null}
-          <Form.Item label="处理说明">
-            <Input.TextArea
-              onChange={(event) => setOrderNote(event.target.value)}
-              rows={3}
-              value={orderNote}
-            />
-          </Form.Item>
         </Form>
       </Modal>
     </Layout>

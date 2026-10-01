@@ -1302,10 +1302,50 @@ export const publicationOrderQuerySchema = z
       });
   });
 export type PublicationOrderQuery = z.infer<typeof publicationOrderQuerySchema>;
+export const adminPublicationOrderQuerySchema = z
+  .object({
+    organizationId: z.string().uuid().optional(),
+    page: queryInteger(1, 1, 100_000),
+    pageSize: queryInteger(20, 1, 100),
+    q: z.string().trim().max(255).optional().default(""),
+    status: z
+      .enum(["submitted", "processing", "published", "failed", "cancelled"])
+      .optional(),
+    provider: z.enum(["manual", "frog_media"]).optional(),
+    beginDate: dateSchema.optional(),
+    endDate: dateSchema.optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (Boolean(value.beginDate) !== Boolean(value.endDate))
+      context.addIssue({
+        code: "custom",
+        message: "开始与结束日期必须同时提供",
+        path: ["beginDate"],
+      });
+    if (value.beginDate && value.endDate && value.beginDate > value.endDate)
+      context.addIssue({
+        code: "custom",
+        message: "开始日期不能晚于结束日期",
+        path: ["beginDate"],
+      });
+  });
+export type AdminPublicationOrderQuery = z.infer<
+  typeof adminPublicationOrderQuerySchema
+>;
+export const publicationOrderIdSchema = z
+  .object({ orderId: z.string().uuid() })
+  .strict();
 export const updatePublicationOrderSchema = z
   .object({
     status: z.enum(["processing", "published", "failed", "cancelled"]),
-    resultUrl: z.string().url().max(2000).optional(),
+    resultUrl: z
+      .string()
+      .trim()
+      .url()
+      .max(2000)
+      .regex(/^https?:\/\//i, "交付链接须使用 HTTP 或 HTTPS")
+      .optional(),
     note: z.string().trim().max(2000).optional(),
   })
   .strict();

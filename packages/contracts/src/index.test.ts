@@ -14,6 +14,9 @@ import {
   balanceTransactionQuerySchema,
   pointUsageQuerySchema,
   publicationOrderQuerySchema,
+  adminPublicationOrderQuerySchema,
+  publicationOrderIdSchema,
+  updatePublicationOrderSchema,
 } from "./index";
 
 const organizationId = "e17c707b-f07c-4464-a4fa-26d699dad45b";
@@ -23,6 +26,58 @@ const pngBase64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 
 describe("发布订单查询契约", () => {
+  it("平台订单默认分页，企业、渠道、状态与日期可组合", () => {
+    expect(adminPublicationOrderQuerySchema.parse({})).toEqual({
+      page: 1,
+      pageSize: 20,
+      q: "",
+    });
+    expect(
+      adminPublicationOrderQuerySchema.parse({
+        organizationId,
+        provider: "manual",
+        q: " 企业 ",
+        status: "submitted",
+        page: "2",
+        pageSize: "50",
+        beginDate: "2026-09-01",
+        endDate: "2026-09-30",
+      }),
+    ).toMatchObject({ q: "企业", page: 2, pageSize: 50, provider: "manual" });
+  });
+  it.each([
+    { pageSize: "101" },
+    { page: "0" },
+    { provider: "unknown" },
+    { organizationId: "invalid" },
+    { beginDate: "2026-09-01" },
+    { beginDate: "2026-09-02", endDate: "2026-09-01" },
+    { status: "unknown" },
+  ])("平台订单拒绝非法条件 %j", (value) => {
+    expect(adminPublicationOrderQuerySchema.safeParse(value).success).toBe(
+      false,
+    );
+  });
+  it("单笔核对必须使用 UUID，交付仅允许 HTTP(S) 链接", () => {
+    expect(
+      publicationOrderIdSchema.safeParse({ orderId: organizationId }).success,
+    ).toBe(true);
+    expect(publicationOrderIdSchema.safeParse({ orderId: "bad" }).success).toBe(
+      false,
+    );
+    expect(
+      updatePublicationOrderSchema.safeParse({
+        status: "published",
+        resultUrl: "https://example.com/article",
+      }).success,
+    ).toBe(true);
+    expect(
+      updatePublicationOrderSchema.safeParse({
+        status: "published",
+        resultUrl: "ftp://example.com/article",
+      }).success,
+    ).toBe(false);
+  });
   it("默认返回有界分页，完整品牌范围和合法筛选可以组合", () => {
     expect(publicationOrderQuerySchema.parse({ organizationId })).toMatchObject(
       { page: 1, pageSize: 20, keyword: "" },

@@ -9,6 +9,9 @@ const m = vi.hoisted(() => ({
   findOrder: vi.fn(),
   orders: vi.fn(),
   orderPage: vi.fn(),
+  adminOrderPage: vi.fn(),
+  adminOrder: vi.fn(),
+  platformAuthorize: vi.fn(),
   reconcile: vi.fn(),
   organizationAuthorize: vi.fn(),
   submit: vi.fn(),
@@ -40,7 +43,7 @@ vi.mock("@/server/permissions/brand-scope", () => ({
   authorizeBrand: m.authorizeBrand,
 }));
 vi.mock("@/server/permissions/platform", () => ({
-  requirePlatformPermission: vi.fn(),
+  requirePlatformPermission: m.platformAuthorize,
 }));
 vi.mock("@/server/audit/write-audit", () => ({ writeAudit: m.writeAudit }));
 vi.mock("./organizations", () => ({
@@ -137,6 +140,59 @@ beforeEach(() => {
   });
 });
 describe("发布业务闭环", () => {
+  it("平台订单只读取有界本地分页，不等待上游或全量历史", async () => {
+    const result = {
+      list: [{ order, channel, organization: { id: "org", name: "企业" } }],
+      pagination: { page: 2, pageSize: 20, total: 21, pages: 2 },
+    };
+    m.adminOrderPage.mockResolvedValue(result);
+    const query = {
+      page: 2,
+      pageSize: 20,
+      q: "企业",
+      provider: "manual" as const,
+    };
+    await expect(
+      publicationService.adminOrders(query, "user"),
+    ).resolves.toEqual(result);
+    expect(m.platformAuthorize).toHaveBeenCalledWith(
+      "user",
+      "platform.publication.manage",
+    );
+    expect(m.adminOrderPage).toHaveBeenCalledWith({ ...query, userId: "user" });
+    expect(m.orders).not.toHaveBeenCalled();
+    expect(m.reconcile).not.toHaveBeenCalled();
+  });
+  it("平台查询权限拒绝时不读取分页或单笔信息", async () => {
+    m.platformAuthorize.mockRejectedValue(new Error("ACCESS_DENIED"));
+    await expect(
+      publicationService.adminOrders({ page: 1, pageSize: 20, q: "" }, "user"),
+    ).rejects.toThrow("ACCESS_DENIED");
+    await expect(
+      publicationService.adminOrder("order", "user"),
+    ).rejects.toThrow("ACCESS_DENIED");
+    expect(m.adminOrderPage).not.toHaveBeenCalled();
+    expect(m.adminOrder).not.toHaveBeenCalled();
+  });
+  it("平台单笔核对返回原记录，不修改或再次投稿", async () => {
+    const row = { order, channel };
+    m.adminOrder.mockResolvedValue(row);
+    await expect(
+      publicationService.adminOrder("order", "user"),
+    ).resolves.toEqual(row);
+    expect(m.adminOrder).toHaveBeenCalledWith("order", "user");
+    expect(m.updateOrder).not.toHaveBeenCalled();
+    expect(m.submit).not.toHaveBeenCalled();
+  });
+  it("平台核对不存在的订单返回明确的 404", async () => {
+    m.adminOrder.mockResolvedValue(undefined);
+    await expect(
+      publicationService.adminOrder("missing", "user"),
+    ).rejects.toMatchObject({
+      status: 404,
+      code: "PUBLICATION_ORDER_NOT_FOUND",
+    });
+  });
   it("只同步已授权分页，再读取状态改变后的匹配结果", async () => {
     const first = {
       list: [{ order, channel }],

@@ -8,6 +8,7 @@ import type {
   PublicationChannelQuery,
   PublicationOrderActionInput,
   PublicationOrderQuery,
+  AdminPublicationOrderQuery,
   UpdatePublicationChannelInput,
   UpdatePublicationOrderInput,
 } from "@geo/contracts";
@@ -681,12 +682,17 @@ export const publicationService = {
     });
     return row;
   },
-  async adminOrders(userId: string) {
+  // @project-doc docs/architecture/platform_administration.md#publication_fulfillment
+  async adminOrders(query: AdminPublicationOrderQuery, userId: string) {
     await requirePlatformPermission(userId, "platform.publication.manage");
-    let rows = await publicationRepository.orders();
-    await syncFrogOrders(rows);
-    rows = await publicationRepository.orders();
-    return rows;
+    return publicationRepository.adminOrderPage({ ...query, userId });
+  },
+  async adminOrder(orderId: string, userId: string) {
+    await requirePlatformPermission(userId, "platform.publication.manage");
+    const row = await publicationRepository.adminOrder(orderId, userId);
+    if (!row)
+      throw new ApiError(404, "PUBLICATION_ORDER_NOT_FOUND", "发布订单不存在");
+    return row;
   },
   async updateOrder(
     orderId: string,

@@ -142,6 +142,26 @@ async function seedPublicationOrder(
   return { id, title, url };
 }
 
+async function makePlatformAdministrator() {
+  const { db, users, roles, platformUserRoles } = database;
+  const { eq } = operators;
+  const [role] = await db
+    .select()
+    .from(roles)
+    .where(eq(roles.code, "super_admin"));
+  await db
+    .update(users)
+    .set({ accountType: "admin" })
+    .where(eq(users.id, fixture.userId));
+  await db
+    .insert(platformUserRoles)
+    .values({ userId: fixture.userId, roleId: role.id });
+}
+async function mockAdminReads(page: Page) {
+  await mockBusinessApis(page);
+  await page.route("**/api/v1/admin/**", (route) => route.continue());
+}
+
 async function mockAnswerReads(
   page: Page,
   onDetail?: (route: Route) => Promise<void>,
@@ -606,6 +626,328 @@ test.describe("真实运营操作闭环", () => {
       );
       expect(violations).toEqual([]);
     }
+  });
+
+  test("后台订单按企业与人工队列分页，处理后回退末页，条件与明暗主题可恢复", async ({
+    page,
+  }) => {
+    const seed = await seedPublicationOrder(0, "processing");
+    const { db, publicationOrders } = database;
+    const { eq } = operators;
+    const [first] = await db
+      .select()
+      .from(publicationOrders)
+      .where(eq(publicationOrders.id, seed.id));
+    await db.delete(publicationOrders).where(eq(publicationOrders.id, seed.id));
+    const keyword = `后台队列 ${randomUUID().slice(0, 8)}`;
+    const ids = Array.from({ length: 21 }, () => randomUUID());
+    await db.insert(publicationOrders).values(
+      ids.map((id, index) => ({
+        id,
+        channelId: first.channelId,
+        organizationId: first.organizationId,
+        brandId: first.brandId,
+        title: `${keyword} ${index}`,
+        status: "submitted" as const,
+        priceAmount: 0,
+        createdBy: fixture.userId,
+        idempotencyKey: id,
+        createdAt: new Date("2026-09-15T00:00:00Z"),
+      })),
+    );
+    const other = await seedPublicationOrder(1);
+    await db
+      .update(publicationOrders)
+      .set({ title: `${keyword} 交付` })
+      .where(eq(publicationOrders.id, other.id));
+    expect(
+      (await page.request.get("/api/v1/admin/publication-orders")).status(),
+    ).toBe(403);
+    expect(
+      (
+        await page.request.get(`/api/v1/admin/publication-orders/${ids[0]}`)
+      ).status(),
+    ).toBe(403);
+    await makePlatformAdministrator();
+    expect(
+      (
+        await page.request.get("/api/v1/admin/publication-orders?pageSize=101")
+      ).status(),
+    ).toBe(400);
+    expect(
+      (
+        await page.request.get("/api/v1/admin/publication-orders/not-a-uuid")
+      ).status(),
+    ).toBe(400);
+    await mockAdminReads(page);
+    await page.goto(
+      `/admin?section=publication-orders&orderKeyword=${encodeURIComponent(keyword)}`,
+    );
+    await expect(page.getByText("共 22 条订单", { exact: true })).toBeVisible();
+    await expect(page.locator("tbody tr.ant-table-row")).toHaveCount(20);
+    await page.locator(".ant-pagination-item-2").click();
+    await expect(page.locator("tbody tr.ant-table-row")).toHaveCount(2);
+    await expect(page).toHaveURL(/orderPage=2/);
+    await page
+      .getByRole("button", { name: "待处理人工订单", exact: true })
+      .click();
+    await expect(page.getByText("共 21 条订单", { exact: true })).toBeVisible();
+    await expect(page).toHaveURL(/orderProvider=manual/);
+    await expect(page).toHaveURL(/orderStatus=submitted/);
+    await page.locator(".ant-pagination-item-2").click();
+    await expect(page.locator("tbody tr.ant-table-row")).toHaveCount(1);
+    await page.getByRole("button", { name: "开始处理", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "处理发布订单" });
+    await expect(
+      dialog.getByText("处理为：处理中", { exact: true }),
+    ).toBeVisible();
+    await dialog
+      .getByLabel("处理说明", { exact: true })
+      .fill("开始安排人工发布");
+    await dialog.getByRole("button", { name: "确认处理", exact: true }).click();
+    await expect(dialog).toBeHidden();
+    await expect(page.getByText("共 20 条订单", { exact: true })).toBeVisible();
+    await expect(page).toHaveURL(/orderPage=1/);
+    await page.getByLabel("所属企业", { exact: true }).press("ArrowDown");
+    await page
+      .locator(".ant-select-dropdown")
+      .getByText(fixture.scopes[1].name, { exact: true })
+      .click();
+    await expect(page).toHaveURL(
+      new RegExp(`orderOrganizationId=${fixture.scopes[1].organizationId}`),
+    );
+    await expect(
+      page.getByText("没有符合筛选条件的订单", { exact: true }),
+    ).toBeVisible();
+    const filtered = new URL(page.url());
+    filtered.searchParams.set("orderBeginDate", "2026-09-01");
+    filtered.searchParams.set("orderEndDate", "2026-09-30");
+    await page.goto(filtered.href);
+    await expect(page.getByLabel("查找订单", { exact: true })).toHaveValue(
+      keyword,
+    );
+    await expect(page.getByLabel("提交日期", { exact: true })).toHaveValue(
+      "2026-09-01",
+    );
+    await expect(page.getByLabel("提交结束日期", { exact: true })).toHaveValue(
+      "2026-09-30",
+    );
+    await page.getByRole("menuitem", { name: /发布渠道/ }).click();
+    await expect(page).toHaveURL(/section=publication-channels/);
+    await expect(
+      page.getByRole("heading", { name: "发布渠道", exact: true }),
+    ).toBeVisible();
+    await page.getByRole("menuitem", { name: /发布订单/ }).click();
+    await expect(page).toHaveURL(/section=publication-orders/);
+    await expect(
+      page.getByText("没有符合筛选条件的订单", { exact: true }),
+    ).toBeVisible();
+    await expect(page.getByLabel("查找订单", { exact: true })).toHaveValue(
+      keyword,
+    );
+    for (const theme of ["light", "dark"]) {
+      if (theme === "dark")
+        await page.getByRole("button", { name: "切换亮暗色模式" }).click();
+      await expect
+        .poll(() => page.locator("html").getAttribute("data-theme"))
+        .toBe(theme);
+      for (const width of [390, 768, 1440]) {
+        await page.setViewportSize({ width, height: 1000 });
+        expect(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth,
+          ),
+        ).toBeTruthy();
+        await page.evaluate(async () => {
+          await Promise.all(
+            document
+              .getAnimations()
+              .filter(
+                (animation) =>
+                  animation.effect?.getComputedTiming().iterations !== Infinity,
+              )
+              .map((animation) => animation.finished.catch(() => {})),
+          );
+        });
+        await page.evaluate(axe.source);
+        const result = await page.evaluate(async () =>
+          (window as unknown as { axe: typeof axe }).axe.run(document, {
+            runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa"] },
+          }),
+        );
+        expect(
+          result.violations.map(({ id, nodes }) => ({
+            id,
+            targets: nodes.map(({ target }) => target),
+          })),
+        ).toEqual([]);
+      }
+    }
+    await page.getByRole("button", { name: "清除筛选", exact: true }).click();
+    await page.getByLabel("查找订单", { exact: true }).fill(other.id);
+    await page.getByLabel("查找订单", { exact: true }).press("Enter");
+    await expect(
+      page.getByText(`${keyword} 交付`, { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "填写交付", exact: true }),
+    ).toHaveCount(0);
+  });
+
+  test("后台人工交付失败保留表单，响应丢失核对原结果，失败返还仅执行一次", async ({
+    page,
+  }) => {
+    const seed = await seedPublicationOrder(0, "processing");
+    const { db, publicationOrders, balanceAccounts, balanceTransactions } =
+      database;
+    const { eq, and } = operators;
+    const [row] = await db
+      .select()
+      .from(publicationOrders)
+      .where(eq(publicationOrders.id, seed.id));
+    await db.delete(publicationOrders).where(eq(publicationOrders.id, seed.id));
+    const create = async (title: string) => {
+      const result = await database.createPublicationOrderWithBalance({
+        organizationId: row.organizationId,
+        brandId: row.brandId,
+        channelId: row.channelId,
+        title,
+        note: "待处理说明",
+        createdBy: fixture.userId,
+        idempotencyKey: randomUUID(),
+      });
+      if (!result.ok) throw new Error("QA order debit failed");
+      return result.order;
+    };
+    const first = await create("人工交付测试");
+    await database.updatePublicationOrder({
+      orderId: first.id,
+      status: "processing",
+    });
+    await makePlatformAdministrator();
+    await mockAdminReads(page);
+    let attempts = 0;
+    await page.route(
+      `**/api/v1/admin/publication-orders/${first.id}`,
+      async (route) => {
+        if (route.request().method() !== "PATCH") return route.continue();
+        attempts++;
+        if (attempts === 1)
+          return route.fulfill({
+            status: 503,
+            json: { error: { message: "模拟保存失败" } },
+          });
+        const result = await route.fetch();
+        expect(result.ok()).toBeTruthy();
+        await route.abort("failed");
+      },
+    );
+    await page.goto(
+      `/admin?section=publication-orders&orderKeyword=${first.id}`,
+    );
+    await expect(page.getByText(first.title, { exact: true })).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "开始处理", exact: true }),
+    ).toHaveCount(0);
+    await page.getByRole("button", { name: "填写交付", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "处理发布订单" });
+    const url = dialog.getByLabel("发布结果 URL", { exact: true });
+    await url.fill("ftp://example.com/article");
+    await dialog.getByRole("button", { name: "确认处理", exact: true }).click();
+    await expect(
+      dialog.getByText("交付链接须使用 HTTP 或 HTTPS", { exact: true }),
+    ).toBeVisible();
+    expect(attempts).toBe(0);
+    await url.fill("https://example.com/manual-result");
+    await dialog
+      .getByLabel("处理说明", { exact: true })
+      .fill("人工交付核对说明");
+    await dialog.getByRole("button", { name: "确认处理", exact: true }).click();
+    await expect(
+      dialog.getByText("模拟保存失败", { exact: true }),
+    ).toBeVisible();
+    await expect(url).toHaveValue("https://example.com/manual-result");
+    await expect(dialog.getByLabel("处理说明", { exact: true })).toHaveValue(
+      "人工交付核对说明",
+    );
+    await dialog.getByRole("button", { name: "确认处理", exact: true }).click();
+    await expect(dialog).toBeHidden();
+    await expect(
+      page.getByText("已核对订单，处理结果已保存", { exact: true }),
+    ).toBeVisible();
+    const saved = await page.request.get(
+      `/api/v1/admin/publication-orders/${first.id}`,
+    );
+    expect((await saved.json()).data.order).toMatchObject({
+      status: "published",
+      resultUrl: "https://example.com/manual-result",
+      note: "人工交付核对说明",
+    });
+    expect(attempts).toBe(2);
+    const failed = await create("人工失败返还测试");
+    let returns = 0,
+      failRead = false;
+    await page.route(
+      `**/api/v1/admin/publication-orders/${failed.id}`,
+      async (route) => {
+        if (route.request().method() !== "PATCH") return route.continue();
+        returns++;
+        const result = await route.fetch();
+        expect(result.ok()).toBeTruthy();
+        failRead = true;
+        await route.abort("failed");
+      },
+    );
+    await page.route("**/api/v1/admin/publication-orders?**", (route) =>
+      failRead
+        ? route.fulfill({
+            status: 503,
+            json: { error: { message: "列表刷新失败" } },
+          })
+        : route.continue(),
+    );
+    await page.getByLabel("查找订单", { exact: true }).fill(failed.id);
+    await page.getByLabel("查找订单", { exact: true }).press("Enter");
+    await expect(page.getByText(failed.title, { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "失败返还", exact: true }).click();
+    await expect(dialog.getByText(/返还至原品牌余额/)).toContainText("1.00");
+    await dialog
+      .getByLabel("处理说明", { exact: true })
+      .fill("渠道无法完成发布");
+    await dialog
+      .getByRole("button", { name: "确认失败并返还", exact: true })
+      .click();
+    await expect(dialog).toBeHidden();
+    await expect(
+      page.getByText("已核对订单，处理结果已保存", { exact: true }),
+    ).toBeVisible();
+    await expect(page.getByText("列表刷新失败", { exact: true })).toBeVisible();
+    failRead = false;
+    await page.getByRole("button", { name: /重\s*试/ }).click();
+    await expect(page.getByText("失败已返还", { exact: true })).toBeVisible();
+    expect(returns).toBe(1);
+    const ledger = await db
+      .select()
+      .from(balanceTransactions)
+      .where(
+        and(
+          eq(balanceTransactions.referenceId, failed.id),
+          eq(balanceTransactions.operation, "restore"),
+        ),
+      );
+    expect(ledger).toHaveLength(1);
+    expect(ledger[0].amount).toBe(100);
+    const [account] = await db
+      .select()
+      .from(balanceAccounts)
+      .where(
+        and(
+          eq(balanceAccounts.organizationId, row.organizationId),
+          eq(balanceAccounts.brandId, row.brandId),
+          eq(balanceAccounts.asset, "publication_cny"),
+        ),
+      );
+    expect(account.balance).toBe(9900);
   });
 
   test("发布订单分页搜索、日期与状态恢复，取消后自动回退末页", async ({

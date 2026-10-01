@@ -4082,14 +4082,104 @@ paths:
           description: 渠道已创建
   /v1/admin/publication-orders:
     get:
-      summary: 平台管理员查询全部发布履约单
+      summary: 平台管理员分页查询发布履约单
+      description: 需要 platform.publication.manage，仅查询本地履约记录，不在读取中调用上游。分页总数与结果来自同一只读快照，创建时间与订单 ID 倒序，越界页码回退实际末页。
       tags:
         - Platform Publications
       security: *id001
+      parameters:
+        - in: query
+          name: page
+          schema: { type: integer, minimum: 1, maximum: 100000, default: 1 }
+        - in: query
+          name: pageSize
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+        - in: query
+          name: organizationId
+          schema: { type: string, format: uuid }
+        - in: query
+          name: q
+          description: 标题、媒体、企业名称、品牌 ID、本地或上游订单号的文字检索，百分号和下划线按普通字符匹配
+          schema: { type: string, maxLength: 255, default: "" }
+        - in: query
+          name: provider
+          schema: { type: string, enum: [manual, frog_media] }
+        - in: query
+          name: status
+          schema:
+            {
+              type: string,
+              enum: [submitted, processing, published, failed, cancelled],
+            }
+        - in: query
+          name: beginDate
+          description: 北京时间起始提交日期，须与 endDate 成对提供，且不晚于 endDate
+          schema: { type: string, format: date }
+        - in: query
+          name: endDate
+          description: 北京时间结束提交日期，包含当天，须与 beginDate 成对提供
+          schema: { type: string, format: date }
       responses:
         "200":
-          description: 全平台发布单
+          description: data 包含 list 与 pagination，每行包含 order、channel、organization，包含企业名称和原订单价格快照
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, requestId]
+                properties:
+                  data:
+                    type: object
+                    required: [list, pagination]
+                    properties:
+                      list:
+                        type: array
+                        items:
+                          type: object
+                          required: [order, channel, organization]
+                          properties:
+                            order: { type: object }
+                            channel: { type: object }
+                            organization:
+                              type: object
+                              required: [id, name]
+                              properties:
+                                id: { type: string, format: uuid }
+                                name: { type: string }
+                      pagination:
+                        type: object
+                        required: [page, pageSize, total, pages]
+                        properties:
+                          page: { type: integer, minimum: 1 }
+                          pageSize: { type: integer, minimum: 1, maximum: 100 }
+                          total: { type: integer, minimum: 0 }
+                          pages: { type: integer, minimum: 0 }
+                  requestId: { type: string }
+        "400":
+          description: 查询参数无效
+        "403":
+          $ref: "#/components/responses/Forbidden"
   /v1/admin/publication-orders/{orderId}:
+    get:
+      summary: 平台管理员核对单笔发布订单
+      description: 需要 platform.publication.manage，只读返回订单、渠道与所属企业，不同步上游、写入或返还余额。
+      tags:
+        - Platform Publications
+      security: *id001
+      parameters:
+        - in: path
+          name: orderId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: 单笔 order、channel 与 organization，可用于写入响应丢失后的结果核对
+        "400":
+          description: 订单编号不是有效 UUID
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: PUBLICATION_ORDER_NOT_FOUND
     patch:
       summary: 平台管理员处理人工渠道发布单状态
       description: 聚合渠道由上游自动履约同步，此入口返回 PUBLICATION_ORDER_UPSTREAM_MANAGED。
@@ -5730,6 +5820,8 @@ components:
         resultUrl:
           type: string
           format: uri
+          maxLength: 2000
+          pattern: "^[Hh][Tt][Tt][Pp][Ss]?://"
         note:
           type: string
           maxLength: 2000
