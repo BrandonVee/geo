@@ -4221,6 +4221,12 @@ paths:
           description: 订单已取消并返还余额
         "409":
           description: 当前状态不允许取消，或上游订单号尚未确认
+        "422":
+          description: FROG_PUBLICATION_CANCEL_REJECTED，上游明确拒绝取消，订单与余额保持不变
+        "502":
+          description: FROG_PUBLICATION_CANCEL_FAILED，取消结果未确认，先核对订单状态
+        "504":
+          description: 上游取消请求超时，结果未确认，先核对订单状态
   /v1/publication-orders/{orderId}/appeal:
     post:
       summary: 提交聚合发布订单申诉
@@ -4250,7 +4256,11 @@ paths:
         "409":
           description: 当前状态不允许申诉
         "422":
-          description: 当前订单不支持聚合发布申诉
+          description: 当前订单不支持聚合发布申诉，或 FROG_PUBLICATION_APPEAL_REJECTED 上游明确拒绝申诉
+        "502":
+          description: FROG_PUBLICATION_APPEAL_FAILED，申诉结果未确认，先核对订单状态
+        "504":
+          description: 上游申诉请求超时，结果未确认，先核对订单状态
   /v1/admin/publication-provider-configuration:
     get:
       summary: 查询媒体发布平台统一接入配置

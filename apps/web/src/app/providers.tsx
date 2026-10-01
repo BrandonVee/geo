@@ -156,6 +156,9 @@ export function Providers({
               itemSelectedBg: mode === "dark" ? "#252c3c" : "#ffffff",
               trackBg: mode === "dark" ? "#111827" : "#eef0f4",
             },
+            Tag: {
+              colorInfo: mode === "dark" ? "#a5b4fc" : "#4f46e5",
+            },
             Table: {
               headerBg: mode === "dark" ? "#202735" : "#f8f9fb",
               headerColor: mode === "dark" ? "#f4f5f7" : "#373b45",

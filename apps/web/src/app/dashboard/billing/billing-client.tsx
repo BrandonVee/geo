@@ -39,6 +39,7 @@ import {
   useAnswerBitScope,
 } from "../use-answerbit-scope";
 
+import { useDirectoryAttempt } from "../directory-attempt";
 import { PublicationAttempt } from "./publication-attempt";
 import {
   clearPublicationDraft,
@@ -107,7 +108,13 @@ const publicationStatusLabels: Record<string, string> = {
 async function api<T>(url: string, init?: RequestInit) {
   const response = await fetch(url, init);
   const body = await response.json();
-  if (!response.ok) throw new Error(body.error?.message ?? "请求失败");
+  if (!response.ok) {
+    const error = new Error(body.error?.message ?? "请求失败") as Error & {
+      definite: boolean;
+    };
+    error.definite = response.status >= 400 && response.status < 500;
+    throw error;
+  }
   return body.data as T;
 }
 type BillingProps = {
@@ -235,6 +242,29 @@ function BillingWorkspace({
   const [appealForm] = Form.useForm<AppealForm>();
   const [appealOrderId, setAppealOrderId] = useState<string>();
   const [appealError, setAppealError] = useState("");
+  const actionAttempt = useDirectoryAttempt(
+    `geo-publication-action:${userId}:${scope.organizationId}:${scope.teamBindingId}:${scope.brandId}`,
+    true,
+  );
+  const actionBlocked =
+    !actionAttempt.ready ||
+    Boolean(actionAttempt.pending) ||
+    actionAttempt.inFlight;
+  const [checkingAction, setCheckingAction] = useState(false);
+  const checkingRef = useRef(false);
+  const mountedRef = useRef(false);
+  const [actionChecked, setActionChecked] = useState<string>();
+  const [actionCheckMessage, setActionCheckMessage] = useState("");
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+  useEffect(() => {
+    setActionChecked(undefined);
+    setActionCheckMessage("");
+  }, [actionAttempt.pending?.id]);
   function saveDraft() {
     if (view !== "new" || !scope.brandId) return;
     draftCleared.current = false;
@@ -554,60 +584,225 @@ function BillingWorkspace({
       setBusy("");
     }
   }
-  async function cancelOrder(orderId: string) {
-    if (submitting.current || !canPublish) return;
-    submitting.current = true;
-    setBusy(`cancel-${orderId}`);
-    try {
-      await api(`/api/v1/publication-orders/${orderId}/cancel`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          organizationId: scope.organizationId,
-          teamBindingId: scope.teamBindingId,
-          brandId: scope.brandId,
-        }),
-      });
-      await Promise.all([load(), orderPage.refresh()]);
-      setMessage("发布订单已取消，发布余额已返还");
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "取消发布订单失败");
-    } finally {
-      submitting.current = false;
-      setBusy("");
+  const loadCurrentRef = useRef(load);
+  const refreshOrdersRef = useRef(orderPage.refresh);
+  useEffect(() => {
+    loadCurrentRef.current = load;
+    refreshOrdersRef.current = orderPage.refresh;
+  });
+  useEffect(() => {
+    if (actionAttempt.resolvedVersion) {
+      void loadCurrentRef.current();
+      void refreshOrdersRef.current();
     }
-  }
-  async function appealOrder(values: AppealForm) {
-    if (!appealOrderId || submitting.current || !canPublish) return;
+  }, [actionAttempt.resolvedVersion]);
+  async function runOrderAction(orderId: string, values?: AppealForm) {
+    if (
+      !mountedRef.current ||
+      submitting.current ||
+      !canPublish ||
+      actionBlocked
+    )
+      return;
+    const row = orderPage.list.find((row) => row.order.id === orderId);
+    if (!row) return;
+    const action = values ? "appeal" : "cancel";
+    const id = crypto.randomUUID();
+    const stored = actionAttempt.begin({
+      id,
+      operation: values ? "提交发布申诉" : "取消发布订单",
+      submittedAt: new Date().toISOString(),
+      details: [
+        { label: "订单编号", value: orderId },
+        { label: "文章标题", value: row.order.title },
+        ...(values
+          ? [
+              { label: "申诉原因", value: String(values.reason) },
+              { label: "具体说明", value: values.detail || "未填写" },
+            ]
+          : []),
+      ],
+      form: {
+        kind: "publication_action",
+        orderId,
+        title: row.order.title,
+        action,
+        ...values,
+      },
+    });
+    if (!stored) return;
     submitting.current = true;
+    setBusy(`${action}-${orderId}`);
     setAppealError("");
-    setBusy(`appeal-${appealOrderId}`);
     try {
-      await api(`/api/v1/publication-orders/${appealOrderId}/appeal`, {
+      await api(`/api/v1/publication-orders/${orderId}/${action}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           organizationId: scope.organizationId,
           teamBindingId: scope.teamBindingId,
           brandId: scope.brandId,
-          reason: values.reason,
-          detail: values.detail || undefined,
+          ...values,
         }),
       });
-      setAppealOrderId(undefined);
-      appealForm.resetFields();
+      actionAttempt.finish(id);
+      if (!mountedRef.current) return;
+      if (values) {
+        setAppealOrderId(undefined);
+        appealForm.resetFields();
+      }
       await Promise.all([load(), orderPage.refresh()]);
-      setMessage("发布申诉已提交");
+      if (mountedRef.current)
+        setMessage(
+          values ? "发布申诉已提交" : "发布订单已取消，发布余额已返还",
+        );
     } catch (error) {
-      const failure =
-        error instanceof Error ? error.message : "发布申诉提交失败";
-      setAppealError(failure);
+      const definite = (error as Error & { definite?: boolean }).definite;
+      if (definite) actionAttempt.finish(id);
+      if (!mountedRef.current) return;
+      const failure = definite
+        ? error instanceof Error
+          ? error.message
+          : "发布操作被拒绝"
+        : "发布操作结果尚未确认，请核对订单状态，不要重复提交。";
+      if (values) setAppealError(failure);
       setMessage(failure);
     } finally {
+      actionAttempt.settle(id);
       submitting.current = false;
-      setBusy("");
+      if (mountedRef.current) setBusy("");
     }
   }
+  async function checkOrderAction() {
+    const pending = actionAttempt.pending;
+    const form = pending?.form;
+    if (
+      !pending ||
+      form?.kind !== "publication_action" ||
+      actionAttempt.inFlight ||
+      checkingRef.current ||
+      !scope.can("publication.read")
+    )
+      return;
+    checkingRef.current = true;
+    setCheckingAction(true);
+    setActionChecked(undefined);
+    setActionCheckMessage("");
+    try {
+      const rows = await api<PublicationOrder[]>(
+        `/api/v1/publication-orders?${scopeQuery({ organizationId: scope.organizationId, teamBindingId: scope.teamBindingId, brandId: scope.brandId })}&keyword=${form.orderId}&page=1&pageSize=100`,
+      );
+      if (!mountedRef.current) return;
+      if (!Array.isArray(rows)) throw new Error("订单状态暂时无法读取，请重试");
+      const row = rows.find((row) => row.order.id === form.orderId);
+      if (!row)
+        throw new Error(
+          "当前范围未查到原订单，请保留原操作并检查权限或联系管理员。",
+        );
+      setActionChecked(pending.id);
+      const complete =
+        form.action === "cancel"
+          ? row.order.status === "cancelled"
+          : row.order.providerStatus === 9;
+      const terminal = ["failed", "cancelled"].includes(row.order.status);
+      if (complete || terminal) {
+        if (!actionAttempt.finish()) return;
+        if (appealOrderId === form.orderId) {
+          setAppealOrderId(undefined);
+          appealForm.resetFields();
+        }
+        setMessage(
+          complete
+            ? form.action === "cancel"
+              ? "已核对：订单已取消，发布余额已返还"
+              : "已核对：订单已进入售后处理"
+            : "已核对：原订单已终止，结果以当前订单状态为准",
+        );
+        await Promise.all([load(), orderPage.refresh()]);
+      } else
+        setActionCheckMessage(
+          `当前订单${publicationStatusLabels[row.order.status] ?? row.order.status}，尚不能确认原操作结果。可继续核对，或联系管理员检查发布上游后结束本次操作。`,
+        );
+    } catch (error) {
+      if (mountedRef.current)
+        setActionCheckMessage(
+          error instanceof Error ? error.message : "订单核对失败，请重试",
+        );
+    } finally {
+      checkingRef.current = false;
+      if (mountedRef.current) setCheckingAction(false);
+    }
+  }
+  const pendingActionNotice = actionAttempt.pending ? (
+    <Alert
+      type="warning"
+      showIcon
+      message={
+        actionAttempt.inFlight ? "原发布操作仍在提交中" : "发布操作结果待核对"
+      }
+      description={
+        <Space direction="vertical" style={{ width: "100%" }}>
+          <Typography.Text>
+            {actionAttempt.pending.operation} ·{" "}
+            {new Date(actionAttempt.pending.submittedAt).toLocaleString(
+              "zh-CN",
+            )}
+          </Typography.Text>
+          {actionAttempt.pending.details.map((detail) => (
+            <Typography.Paragraph
+              key={detail.label}
+              copyable
+              style={{ marginBottom: 0 }}
+            >
+              {detail.label}：{detail.value}
+            </Typography.Paragraph>
+          ))}
+          <Typography.Text>
+            原操作已保留；核对只读取订单，不会重复取消或申诉。
+          </Typography.Text>
+          {actionCheckMessage ? (
+            <Typography.Text role="status">
+              {actionCheckMessage}
+            </Typography.Text>
+          ) : null}
+          <Space wrap>
+            <Button
+              disabled={
+                actionAttempt.inFlight || !scope.can("publication.read")
+              }
+              loading={checkingAction}
+              onClick={() => void checkOrderAction()}
+            >
+              核对订单状态
+            </Button>
+            <Popconfirm
+              title="已经核对上游结果并决定结束本次操作？"
+              description="只清除本次待核对记录，不会再次取消或申诉，也不代表原操作成功。"
+              okText="确认结束"
+              cancelText="继续核对"
+              onConfirm={() => {
+                if (actionAttempt.finish()) {
+                  setAppealOrderId(undefined);
+                  setMessage("本次核对已结束，请以订单实际状态为准。");
+                }
+              }}
+            >
+              <Button
+                disabled={
+                  checkingAction ||
+                  actionAttempt.inFlight ||
+                  actionChecked !== actionAttempt.pending.id ||
+                  !scope.can("publication.read")
+                }
+              >
+                已核对，结束本次操作
+              </Button>
+            </Popconfirm>
+          </Space>
+        </Space>
+      }
+    />
+  ) : null;
   const publicationPermissionNotice = (operation: string) =>
     canPublish ? null : (
       <Alert
@@ -742,13 +937,15 @@ function BillingWorkspace({
             <Popconfirm
               cancelText="保留订单"
               okText="确认取消"
-              okButtonProps={{ disabled: !canPublish || Boolean(busy) }}
-              onConfirm={() => void cancelOrder(item.order.id)}
+              okButtonProps={{
+                disabled: !canPublish || Boolean(busy) || actionBlocked,
+              }}
+              onConfirm={() => void runOrderAction(item.order.id)}
               title="取消后将向聚合发布上游申请取消，并返还本地发布余额。"
             >
               <Button
                 danger
-                disabled={Boolean(busy)}
+                disabled={Boolean(busy) || actionBlocked}
                 loading={busy === `cancel-${item.order.id}`}
                 size="small"
               >
@@ -761,9 +958,9 @@ function BillingWorkspace({
           (item.order.status === "processing" ||
             item.order.status === "published") ? (
             <Button
-              disabled={Boolean(busy)}
+              disabled={Boolean(busy) || actionBlocked}
               onClick={() => {
-                if (submitting.current) return;
+                if (submitting.current || actionBlocked) return;
                 setAppealError("");
                 appealForm.resetFields();
                 setAppealOrderId(item.order.id);
@@ -817,6 +1014,10 @@ function BillingWorkspace({
           type={scope.error ? "error" : "info"}
         />
       ) : null}
+      {actionAttempt.storageError ? (
+        <Alert type="warning" showIcon message={actionAttempt.storageError} />
+      ) : null}
+      {pendingActionNotice}
       {view === "new" && submissionResult ? (
         <Alert
           type={
@@ -1438,7 +1639,7 @@ function BillingWorkspace({
         )}
         okText="提交申诉"
         okButtonProps={{
-          disabled: !canPublish || Boolean(busy),
+          disabled: !canPublish || Boolean(busy) || actionBlocked,
           "aria-label": "提交申诉",
         }}
         cancelButtonProps={{ disabled: Boolean(busy) }}
@@ -1462,10 +1663,12 @@ function BillingWorkspace({
           />
         ) : null}
         <Form<AppealForm>
-          disabled={Boolean(busy)}
+          disabled={Boolean(busy) || actionBlocked}
           form={appealForm}
           layout="vertical"
-          onFinish={(values) => void appealOrder(values)}
+          onFinish={(values) =>
+            appealOrderId && void runOrderAction(appealOrderId, values)
+          }
         >
           <Form.Item
             label="申诉原因"
@@ -1473,7 +1676,7 @@ function BillingWorkspace({
             rules={[{ required: true, message: "请选择申诉原因" }]}
           >
             <Select
-              disabled={!canPublish || Boolean(busy)}
+              disabled={!canPublish || Boolean(busy) || actionBlocked}
               options={[
                 { label: "未收录，申请退款（包收录资源）", value: 1 },
                 { label: "发布结果与案例不一致", value: 2 },

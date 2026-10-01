@@ -1303,6 +1303,480 @@ test.describe("真实运营操作闭环", () => {
     });
   }
 
+  for (const action of ["cancel", "appeal"] as const) {
+    test(`发布${action}响应丢失后刷新恢复，跨品牌隔离并只读核对原订单`, async ({
+      page,
+    }) => {
+      const seed = await seedPublicationOrder(0, "processing");
+      const target = fixture.scopes[0];
+      let writes = 0,
+        failCheck = true,
+        accepted = false;
+      const checks: URL[] = [];
+      const order = {
+        id: seed.id,
+        title: seed.title,
+        status: "processing",
+        priceAmount: 100,
+        currency: "CNY",
+        resultUrl: null,
+        providerOrderId: "upstream",
+        providerStatus: 1,
+        providerMessage: null,
+        createdAt: new Date().toISOString(),
+      };
+      await mockBusinessApis(page, async (route) => {
+        if (!new URL(route.request().url()).pathname.endsWith(`/${action}`))
+          return route.continue();
+        writes++;
+        accepted = true;
+        await route.abort("failed");
+      });
+      await page.route("**/api/v1/publication-orders?**", async (route) => {
+        const url = new URL(route.request().url());
+        const checking = url.searchParams.get("keyword") === seed.id;
+        if (checking) {
+          checks.push(url);
+          if (failCheck)
+            return route.fulfill({
+              status: 503,
+              json: { error: { message: "原订单核对暂不可用" } },
+            });
+        }
+        const matches =
+          url.searchParams.get("brandId") === target.brandId &&
+          (!url.searchParams.get("keyword") || checking);
+        const row = accepted
+          ? {
+              ...order,
+              status: action === "cancel" ? "cancelled" : "processing",
+              providerStatus: action === "appeal" ? 9 : 1,
+            }
+          : order;
+        await route.fulfill({
+          json: {
+            ...envelope(matches ? [{ order: row, channel }] : []),
+            pagination: {
+              page: 1,
+              pageSize: 20,
+              total: matches ? 1 : 0,
+              pages: matches ? 1 : 0,
+            },
+          },
+        });
+      });
+      await page.goto(scopedPath("/dashboard/publication/orders"));
+      if (action === "cancel") {
+        await page
+          .locator("tbody")
+          .getByRole("button", { name: /取\s*消/ })
+          .click();
+        await page
+          .getByRole("button", { name: "确认取消", exact: true })
+          .click();
+      } else {
+        await page.getByRole("button", { name: /申\s*诉/ }).click();
+        const dialog = page.getByRole("dialog", { name: "聚合发布订单申诉" });
+        const reason = dialog.getByLabel("申诉原因", { exact: true });
+        await reason.focus();
+        await reason.press("ArrowDown");
+        await page
+          .locator(".ant-select-dropdown")
+          .getByText("其他原因", { exact: true })
+          .click();
+        await dialog
+          .getByLabel("具体说明", { exact: true })
+          .fill("响应丢失前的原说明");
+        await dialog
+          .getByRole("button", { name: "提交申诉", exact: true })
+          .click();
+        await expect(
+          dialog.getByText(
+            "发布操作结果尚未确认，请核对订单状态，不要重复提交。",
+            { exact: true },
+          ),
+        ).toBeVisible();
+        await expect(
+          dialog.getByRole("button", { name: "提交申诉", exact: true }),
+        ).toBeDisabled();
+        await dialog.getByRole("button", { name: /取\s*消/ }).click();
+      }
+      await expect(
+        page.getByText("发布操作结果待核对", { exact: true }),
+      ).toBeVisible();
+      expect(writes).toBe(1);
+      if (action === "cancel") {
+        for (const theme of ["light", "dark"]) {
+          if (theme === "dark")
+            await page.getByRole("button", { name: "切换亮暗色模式" }).click();
+          await expect
+            .poll(() => page.locator("html").getAttribute("data-theme"))
+            .toBe(theme);
+          for (const width of [390, 1440]) {
+            await page.setViewportSize({ width, height: 1000 });
+            const layout = await page.evaluate(() => ({
+              width: innerWidth,
+              scrollWidth: document.documentElement.scrollWidth,
+              overflow: Array.from(document.querySelectorAll("body *"))
+                .filter(
+                  (element) =>
+                    element.getBoundingClientRect().right > innerWidth,
+                )
+                .slice(0, 15)
+                .map((element) => ({
+                  tag: element.tagName,
+                  className: element.className,
+                  right: element.getBoundingClientRect().right,
+                })),
+            }));
+            await page.evaluate(async () => {
+              await Promise.all(
+                document
+                  .getAnimations()
+                  .filter(
+                    (animation) =>
+                      animation.effect?.getComputedTiming().iterations !==
+                      Infinity,
+                  )
+                  .map((animation) => animation.finished.catch(() => {})),
+              );
+            });
+            await expect
+              .poll(
+                () => page.evaluate(() => document.documentElement.scrollWidth),
+                { message: JSON.stringify(layout) },
+              )
+              .toBeLessThanOrEqual(width);
+            await page.evaluate(axe.source);
+            const result = await page.evaluate(async () =>
+              (window as unknown as { axe: typeof axe }).axe.run(document, {
+                runOnly: {
+                  type: "tag",
+                  values: ["wcag2a", "wcag2aa", "wcag21aa"],
+                },
+              }),
+            );
+            expect(result.violations).toEqual([]);
+          }
+        }
+      }
+      await page
+        .getByLabel("查找订单", { exact: true })
+        .fill("隐藏原订单的筛选");
+      await page.getByLabel("查找订单", { exact: true }).press("Enter");
+      await expect(
+        page.getByText("没有符合筛选条件的订单", { exact: true }),
+      ).toBeVisible();
+      await page.reload();
+      await expect(
+        page.getByText("发布操作结果待核对", { exact: true }),
+      ).toBeVisible();
+      if (action === "appeal")
+        await expect(
+          page.getByText("具体说明：响应丢失前的原说明", { exact: true }),
+        ).toBeVisible();
+      await page
+        .getByRole("button", { name: "核对订单状态", exact: true })
+        .click();
+      await expect(
+        page.getByText("原订单核对暂不可用", { exact: true }),
+      ).toBeVisible();
+      await expect(
+        page.getByRole("button", { name: "已核对，结束本次操作", exact: true }),
+      ).toBeDisabled();
+      await page.goto(scopedPath("/dashboard/publication/orders", 1));
+      await expect(
+        page.getByText("发布操作结果待核对", { exact: true }),
+      ).toBeHidden();
+      await page.goto(
+        `${scopedPath("/dashboard/publication/orders")}&keyword=隐藏原订单的筛选`,
+      );
+      await expect(
+        page.getByText("发布操作结果待核对", { exact: true }),
+      ).toBeVisible();
+      failCheck = false;
+      await page
+        .getByRole("button", { name: "核对订单状态", exact: true })
+        .click();
+      await expect(
+        page.getByText(
+          action === "cancel"
+            ? "已核对：订单已取消，发布余额已返还"
+            : "已核对：订单已进入售后处理",
+          { exact: true },
+        ),
+      ).toBeVisible();
+      await expect(
+        page.getByText("发布操作结果待核对", { exact: true }),
+      ).toBeHidden();
+      expect(writes).toBe(1);
+      expect(checks).toHaveLength(2);
+      for (const url of checks) {
+        expect(url.searchParams.get("organizationId")).toBe(
+          target.organizationId,
+        );
+        expect(url.searchParams.get("brandId")).toBe(target.brandId);
+        expect(url.searchParams.get("keyword")).toBe(seed.id);
+        expect(url.searchParams.has("status")).toBe(false);
+      }
+      await page.reload();
+      await expect(
+        page.getByText("发布操作结果待核对", { exact: true }),
+      ).toBeHidden();
+      expect(writes).toBe(1);
+    });
+  }
+
+  test("发布申诉切换企业后返回仍在提交的原范围，完成后解除锁定并刷新", async ({
+    page,
+  }) => {
+    const seed = await seedPublicationOrder(0, "processing");
+    let writes = 0,
+      accepted = false,
+      release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await mockBusinessApis(page, async (route) => {
+      if (!new URL(route.request().url()).pathname.endsWith("/appeal"))
+        return route.continue();
+      writes++;
+      await held;
+      accepted = true;
+      await fulfill(route, {
+        id: seed.id,
+        status: "processing",
+        providerStatus: 9,
+      });
+    });
+    await page.route("**/api/v1/publication-orders?**", (route) => {
+      const own =
+        new URL(route.request().url()).searchParams.get("brandId") ===
+        fixture.scopes[0].brandId;
+      return route.fulfill({
+        json: {
+          ...envelope(
+            own
+              ? [
+                  {
+                    order: {
+                      id: seed.id,
+                      title: seed.title,
+                      status: "processing",
+                      priceAmount: 100,
+                      currency: "CNY",
+                      providerOrderId: "upstream",
+                      providerStatus: accepted ? 9 : 1,
+                      providerMessage: null,
+                      createdAt: new Date().toISOString(),
+                    },
+                    channel,
+                  },
+                ]
+              : [],
+          ),
+          pagination: {
+            page: 1,
+            pageSize: 20,
+            total: own ? 1 : 0,
+            pages: own ? 1 : 0,
+          },
+        },
+      });
+    });
+    await page.goto(scopedPath("/dashboard/publication/orders"));
+    await page.getByRole("button", { name: /申\s*诉/ }).click();
+    const dialog = page.getByRole("dialog", { name: "聚合发布订单申诉" });
+    const reason = dialog.getByLabel("申诉原因", { exact: true });
+    await reason.focus();
+    await reason.press("ArrowDown");
+    await page
+      .locator(".ant-select-dropdown")
+      .getByText("其他原因", { exact: true })
+      .click();
+    await dialog.getByRole("button", { name: "提交申诉", exact: true }).click();
+    await expect.poll(() => writes).toBe(1);
+    // A modal locks pointer navigation while submitting; browser history still allows leaving.
+    await page.evaluate(
+      (url) => window.history.pushState(null, "", url),
+      scopedPath("/dashboard/publication/orders", 1),
+    );
+    await expect(dialog).toBeHidden();
+    await expect(
+      page.getByText("原发布操作仍在提交中", { exact: true }),
+    ).toBeHidden();
+    await page.evaluate(
+      (url) => window.history.pushState(null, "", url),
+      scopedPath("/dashboard/publication/orders"),
+    );
+    await expect(
+      page.getByText("原发布操作仍在提交中", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "核对订单状态", exact: true }),
+    ).toBeDisabled();
+    await expect(page.getByRole("button", { name: /申\s*诉/ })).toBeDisabled();
+    release();
+    await expect(
+      page.getByText("原发布操作仍在提交中", { exact: true }),
+    ).toBeHidden();
+    await expect(page.getByRole("button", { name: /申\s*诉/ })).toBeEnabled();
+    expect(writes).toBe(1);
+    await page.reload();
+    await expect(
+      page.getByText("发布操作结果待核对", { exact: true }),
+    ).toBeHidden();
+  });
+
+  test("发布申诉未知结果核对后明确结束，不宣称成功也不重发", async ({
+    page,
+  }) => {
+    const seed = await seedPublicationOrder(0, "processing");
+    let writes = 0;
+    await mockBusinessApis(page, async (route) => {
+      if (!new URL(route.request().url()).pathname.endsWith("/appeal"))
+        return route.continue();
+      writes++;
+      await route.fulfill({
+        status: 504,
+        json: { error: { message: "申诉暂未确认" } },
+      });
+    });
+    await page.route("**/api/v1/publication-orders?**", (route) =>
+      route.fulfill({
+        json: {
+          ...envelope([
+            {
+              order: {
+                id: seed.id,
+                title: seed.title,
+                status: "processing",
+                priceAmount: 100,
+                currency: "CNY",
+                providerOrderId: "upstream",
+                providerStatus: 1,
+                providerMessage: null,
+                createdAt: new Date().toISOString(),
+              },
+              channel,
+            },
+          ]),
+          pagination: { page: 1, pageSize: 20, total: 1, pages: 1 },
+        },
+      }),
+    );
+    await page.goto(scopedPath("/dashboard/publication/orders"));
+    await page.getByRole("button", { name: /申\s*诉/ }).click();
+    const dialog = page.getByRole("dialog", { name: "聚合发布订单申诉" });
+    const reason = dialog.getByLabel("申诉原因", { exact: true });
+    await reason.focus();
+    await reason.press("ArrowDown");
+    await page
+      .locator(".ant-select-dropdown")
+      .getByText("其他原因", { exact: true })
+      .click();
+    await dialog.getByRole("button", { name: "提交申诉", exact: true }).click();
+    await expect(
+      dialog.getByText("发布操作结果尚未确认，请核对订单状态，不要重复提交。", {
+        exact: true,
+      }),
+    ).toBeVisible();
+    await dialog.getByRole("button", { name: /取\s*消/ }).click();
+    const finish = page.getByRole("button", {
+      name: "已核对，结束本次操作",
+      exact: true,
+    });
+    await expect(finish).toBeDisabled();
+    await page
+      .getByRole("button", { name: "核对订单状态", exact: true })
+      .click();
+    await expect(page.getByText(/尚不能确认原操作结果/)).toBeVisible();
+    await expect(finish).toBeEnabled();
+    await finish.click();
+    await page.getByRole("button", { name: "确认结束", exact: true }).click();
+    await expect(
+      page.getByText("本次核对已结束，请以订单实际状态为准。", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("发布操作结果待核对", { exact: true }),
+    ).toBeHidden();
+    await expect(
+      page.getByText("发布申诉已提交", { exact: true }),
+    ).toBeHidden();
+    expect(writes).toBe(1);
+    await expect(page.getByRole("button", { name: /申\s*诉/ })).toBeEnabled();
+  });
+
+  test("发布取消暂存失败不发送请求，存储恢复后正常提交", async ({ page }) => {
+    const seed = await seedPublicationOrder(0, "processing");
+    let writes = 0;
+    await mockBusinessApis(page, async (route) => {
+      writes++;
+      await fulfill(route, { id: seed.id, status: "cancelled" });
+    });
+    await page.route("**/api/v1/publication-orders?**", (route) =>
+      route.fulfill({
+        json: {
+          ...envelope([
+            {
+              order: {
+                id: seed.id,
+                title: seed.title,
+                status: "processing",
+                priceAmount: 100,
+                currency: "CNY",
+                providerOrderId: "upstream",
+                providerStatus: 1,
+                providerMessage: null,
+                createdAt: new Date().toISOString(),
+              },
+              channel,
+            },
+          ]),
+          pagination: { page: 1, pageSize: 20, total: 1, pages: 1 },
+        },
+      }),
+    );
+    await page.goto(scopedPath("/dashboard/publication/orders"));
+    const cancel = page
+      .locator("tbody")
+      .getByRole("button", { name: /取\s*消/ });
+    await expect(cancel).toBeEnabled();
+    await page.evaluate(() => {
+      const original = Storage.prototype.setItem;
+      (
+        window as typeof window & { restoreOperationStorage?: () => void }
+      ).restoreOperationStorage = () => {
+        Storage.prototype.setItem = original;
+      };
+      Storage.prototype.setItem = function (key, value) {
+        if (key.startsWith("geo-publication-action:"))
+          throw new Error("storage unavailable");
+        return original.call(this, key, value);
+      };
+    });
+    await cancel.click();
+    await page.getByRole("button", { name: "确认取消", exact: true }).click();
+    await expect(
+      page.getByText(
+        "无法暂存本次操作，尚未发送请求；请恢复浏览器存储后再试。",
+        { exact: true },
+      ),
+    ).toBeVisible();
+    expect(writes).toBe(0);
+    await page.evaluate(() =>
+      (
+        window as typeof window & { restoreOperationStorage?: () => void }
+      ).restoreOperationStorage?.(),
+    );
+    await cancel.click();
+    await page.getByRole("button", { name: "确认取消", exact: true }).click();
+    await expect(
+      page.getByText("发布订单已取消，发布余额已返还", { exact: true }),
+    ).toBeVisible();
+    expect(writes).toBe(1);
+  });
+
   test("提交发布权限变化保留稿件，原页重新检查权限后只提交一次", async ({
     page,
   }) => {

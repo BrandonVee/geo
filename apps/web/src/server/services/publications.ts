@@ -504,6 +504,12 @@ export const publicationService = {
           row.order.providerOrderId,
         );
       } catch (error) {
+        if (error instanceof FrogPublicationError && error.kind === "business")
+          throw new ApiError(
+            422,
+            "FROG_PUBLICATION_CANCEL_REJECTED",
+            "聚合发布上游拒绝取消，订单与余额保持不变",
+          );
         throw new ApiError(
           error instanceof FrogPublicationError && error.kind === "timeout"
             ? 504
@@ -583,12 +589,18 @@ export const publicationService = {
         detail: input.detail,
       });
     } catch (error) {
+      if (error instanceof FrogPublicationError && error.kind === "business")
+        throw new ApiError(
+          422,
+          "FROG_PUBLICATION_APPEAL_REJECTED",
+          "聚合发布上游拒绝申诉，请检查原说明后再提交",
+        );
       throw new ApiError(
         error instanceof FrogPublicationError && error.kind === "timeout"
           ? 504
           : 502,
         "FROG_PUBLICATION_APPEAL_FAILED",
-        "聚合发布上游未确认申诉，请稍后重试",
+        "聚合发布上游未确认申诉，请先核对订单状态，避免重复提交",
       );
     }
     const updated = await publicationRepository.recordProviderSnapshot({

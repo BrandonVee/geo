@@ -25,6 +25,16 @@ const attemptSchema = z.object({
         alias: z.string(),
         resourceId: z.string().optional(),
       }),
+      z.object({
+        kind: z.literal("publication_action"),
+        orderId: z.string().uuid(),
+        title: z.string(),
+        action: z.enum(["cancel", "appeal"]),
+        reason: z
+          .union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)])
+          .optional(),
+        detail: z.string().optional(),
+      }),
     ])
     .optional(),
 });
@@ -33,7 +43,11 @@ const activeAttempts = new Set<string>();
 
 // @project-doc docs/domains/geo_operations.md#monitoring_workflow
 // @project-doc docs/domains/geo_operations.md#competitor_workflow
-export function useDirectoryAttempt(storageKey: string) {
+// @project-doc docs/domains/geo_operations.md#publication_orders
+export function useDirectoryAttempt(
+  storageKey: string,
+  requirePersistence = false,
+) {
   const [pending, setPending] = useState<DirectoryAttempt | null>(null);
   const [ready, setReady] = useState(false);
   const [inFlight, setInFlight] = useState(false);
@@ -55,13 +69,13 @@ export function useDirectoryAttempt(storageKey: string) {
       setReady(true);
     } catch {
       setStorageError(
-        "无法读取原操作，请保持页面打开并先核对腾讯目录，再继续操作。",
+        "无法读取原操作，请保持页面打开并先核对原操作结果，再继续操作。",
       );
       // An unreadable previous operation cannot safely be discarded by a new write.
     }
     const synchronize = (event: Event) => {
       if ((event as CustomEvent<string>).detail !== storageKey) return;
-      if (event.type === "geo-monitoring-attempt-cleared")
+      if (event.type === "geo-monitoring-attempt-cleared" && pendingRef.current)
         setResolvedVersion((current) => current + 1);
       setInFlight(
         Boolean(
@@ -88,23 +102,28 @@ export function useDirectoryAttempt(storageKey: string) {
   }, [storageKey]);
   useEffect(() => {
     const warn = (event: BeforeUnloadEvent) => {
-      if (pendingRef.current) event.preventDefault();
+      if (pendingRef.current && !requirePersistence) event.preventDefault();
     };
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
-  }, []);
+  }, [requirePersistence]);
   function begin(attempt: DirectoryAttempt) {
+    try {
+      sessionStorage.setItem(storageKey, JSON.stringify(attempt));
+      setStorageError("");
+    } catch {
+      setStorageError(
+        requirePersistence
+          ? "无法暂存本次操作，尚未发送请求；请恢复浏览器存储后再试。"
+          : "本次操作无法在浏览器暂存，请保持页面打开，确认结果后再离开。",
+      );
+      if (requirePersistence) return false;
+    }
     activeAttempts.add(attempt.id);
     setInFlight(true);
     pendingRef.current = attempt;
     setPending(attempt);
-    try {
-      sessionStorage.setItem(storageKey, JSON.stringify(attempt));
-    } catch {
-      setStorageError(
-        "本次操作无法在浏览器暂存，请保持页面打开，确认结果后再离开。",
-      );
-    }
+    return true;
   }
   function settle(id: string) {
     activeAttempts.delete(id);

@@ -542,6 +542,44 @@ describe("发布业务闭环", () => {
       expect.objectContaining({ orderId: "order", status: "cancelled" }),
     );
   });
+  for (const action of ["cancel", "appeal"] as const) {
+    for (const kind of [
+      "business",
+      "timeout",
+      "upstream",
+      "invalid_response",
+    ] as const) {
+      it(`${action} 区分明确拒绝与未确认结果：${kind}`, async () => {
+        m.findOrder.mockResolvedValue({
+          order: {
+            ...order,
+            status: "processing",
+            providerOrderId: "upstream",
+            providerStatus: 1,
+          },
+          channel,
+        });
+        m[action].mockRejectedValue(
+          new FrogPublicationError(kind, action, "上游处理未完成"),
+        );
+        const result =
+          action === "cancel"
+            ? publicationService.cancel("order", input, "user", audit)
+            : publicationService.appeal(
+                "order",
+                { ...input, reason: 4 },
+                "user",
+                audit,
+              );
+        await expect(result).rejects.toMatchObject({
+          status: kind === "business" ? 422 : kind === "timeout" ? 504 : 502,
+          code: `FROG_PUBLICATION_${action.toUpperCase()}_${kind === "business" ? "REJECTED" : "FAILED"}`,
+        });
+        expect(m.updateOrder).not.toHaveBeenCalled();
+        expect(m.recordProviderSnapshot).not.toHaveBeenCalled();
+      });
+    }
+  }
   it("已发布聚合订单可提交申诉并记录售后状态", async () => {
     m.findOrder.mockResolvedValue({
       order: {
