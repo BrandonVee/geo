@@ -561,6 +561,7 @@ export const publicationService = {
           brandId: input.brandId,
         },
         input.sourceDocumentId,
+        userId,
       );
       if (!document || document.status !== "ready" || !document.body)
         throw new ApiError(

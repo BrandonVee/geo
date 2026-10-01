@@ -146,12 +146,16 @@ function folderConflict(row: Folder): never {
 export const contentDocumentService = {
   async list(input: ContentDocumentListQuery, userId: string) {
     await authorize(input, userId, "resource.read");
-    return contentDocumentRepository.list(input);
+    return contentDocumentRepository.list(input, userId);
   },
 
   async get(scope: Scope, documentId: string, userId: string) {
     await authorize(scope, userId, "resource.read");
-    const document = await contentDocumentRepository.find(scope, documentId);
+    const document = await contentDocumentRepository.find(
+      scope,
+      documentId,
+      userId,
+    );
     if (!document)
       throw new ApiError(404, "CONTENT_DOCUMENT_NOT_FOUND", "文档不存在");
     return document;

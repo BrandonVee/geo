@@ -454,6 +454,7 @@ describe("发布业务闭环", () => {
         brandId: "brand",
       },
       "8a951454-70d8-44fb-8854-4cbbce2d57d7",
+      "user",
     );
     expect(m.createOrder).toHaveBeenCalledWith(
       expect.objectContaining({

@@ -7181,6 +7181,545 @@ test.describe("真实运营操作闭环", () => {
     expect((await downloaded).suggestedFilename()).toBe("answers.csv");
   });
 
+  test("文档库筛选与第二页刷新恢复，归档最后一篇后回到有效页", async ({
+    page,
+  }) => {
+    await page.addInitScript({ content: axe.source });
+    const runtimeErrors: string[] = [];
+    page.on("pageerror", (error) => runtimeErrors.push(error.message));
+    await mockBusinessApis(page);
+    await page.route("**/api/v1/content-documents**", (route) =>
+      route.continue(),
+    );
+    await page.route("**/api/v1/content-folders**", (route) =>
+      route.continue(),
+    );
+    await page.goto(`${scopedPath("/dashboard/content")}&stage=library`);
+    const { organizationId, teamBindingId, brandId } = fixture.scopes[0];
+    const scope = { organizationId, teamBindingId, brandId };
+    const headers = { Origin: new URL(page.url()).origin };
+    const folderResponse = await page.request.post("/api/v1/content-folders", {
+      headers,
+      data: { ...scope, name: "市场资料" },
+    });
+    expect(folderResponse.status()).toBe(201);
+    const folder = (await folderResponse.json()).data;
+    const createDocument = async (data: Record<string, unknown>) => {
+      const response = await page.request.post("/api/v1/content-documents", {
+        headers,
+        data: {
+          ...scope,
+          body: "需要复核的筛选正文",
+          folderId: folder.id,
+          status: "ready",
+          source: "imported",
+          sourceUrl: "https://example.com/library-source",
+          ...data,
+        },
+      });
+      expect(response.status()).toBe(201);
+      return (await response.json()).data;
+    };
+    for (let index = 1; index <= 21; index += 1)
+      await createDocument({
+        title: `筛选文章 ${String(index).padStart(2, "0")}`,
+      });
+    await createDocument({ title: "来源不同的文章", source: "manual" });
+    await createDocument({ title: "仍是草稿的文章", status: "draft" });
+    await createDocument({ title: "目录不同的文章", folderId: null });
+    await createDocument({ title: "正文不同的文章", body: "不匹配搜索内容" });
+    await page.getByRole("button", { name: "刷新文档库" }).click();
+    const card = page.locator(".ant-card").filter({
+      has: page.locator(".ant-card-head-title", { hasText: "企业文章库" }),
+    });
+    await expect(card.getByText("共 25 篇", { exact: true })).toBeVisible();
+    await page.getByText("市场资料", { exact: true }).first().click();
+    await page.getByRole("combobox", { name: "筛选文档状态" }).focus();
+    await page
+      .getByRole("combobox", { name: "筛选文档状态" })
+      .press("ArrowDown");
+    await page
+      .locator(".ant-select-dropdown:visible")
+      .getByText("已定稿", { exact: true })
+      .click();
+    await page.getByRole("combobox", { name: "筛选文档来源" }).focus();
+    await page
+      .getByRole("combobox", { name: "筛选文档来源" })
+      .press("ArrowDown");
+    await page
+      .locator(".ant-select-dropdown:visible")
+      .getByText("外部导入", { exact: true })
+      .click();
+    await page
+      .getByRole("searchbox", { name: "搜索文档标题或正文" })
+      .fill("筛选正文");
+    await page
+      .getByRole("searchbox", { name: "搜索文档标题或正文" })
+      .press("Enter");
+    await expect(card.getByText("共 21 篇", { exact: true })).toBeVisible();
+    await expect(card.locator("tr[data-row-key]")).toHaveCount(20);
+    await card.locator(".ant-pagination-item-2").click();
+    await expect(card.locator("tr[data-row-key]")).toHaveCount(1);
+    const lastTitle = await card
+      .locator("tr[data-row-key] a")
+      .first()
+      .innerText();
+    const saved = new URL(page.url());
+    expect(Object.fromEntries(saved.searchParams)).toMatchObject({
+      stage: "library",
+      organizationId,
+      brandId,
+      libraryOrganizationId: organizationId,
+      libraryTeamBindingId: teamBindingId,
+      libraryBrandId: brandId,
+      libraryQ: "筛选正文",
+      libraryStatus: "ready",
+      librarySource: "imported",
+      libraryFolder: folder.id,
+      libraryPage: "2",
+    });
+    await page.reload();
+    await expect(card.locator(".ant-pagination-item-active")).toHaveText("2");
+    await expect(card.locator("tr[data-row-key]")).toHaveCount(1);
+    await expect(
+      page.getByRole("searchbox", { name: "搜索文档标题或正文" }),
+    ).toHaveValue("筛选正文");
+    await expect(card.getByText(lastTitle, { exact: true })).toBeVisible();
+    await card.getByText(lastTitle, { exact: true }).click();
+    const drawer = page.getByRole("dialog", { name: lastTitle, exact: true });
+    await drawer.getByRole("button", { name: /归\s*档/, exact: true }).click();
+    await page.getByRole("button", { name: /确\s*定/, exact: true }).click();
+    await expect(drawer).toHaveCount(0);
+    await expect(card.getByText("共 20 篇", { exact: true })).toBeVisible();
+    await expect(card.locator(".ant-pagination-item-active")).toHaveText("1");
+    await expect(card.locator("tr[data-row-key]")).toHaveCount(20);
+    await expect
+      .poll(() => new URL(page.url()).searchParams.has("libraryPage"))
+      .toBe(false);
+    expect(new URL(page.url()).searchParams.get("libraryFolder")).toBe(
+      folder.id,
+    );
+    await page.reload();
+    await expect(card.getByText("共 20 篇", { exact: true })).toBeVisible();
+    await expect(card.getByText(lastTitle, { exact: true })).toHaveCount(0);
+    for (const width of [390, 768, 1440]) {
+      await page.setViewportSize({ width, height: 1000 });
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth,
+          ),
+        )
+        .toBe(true);
+    }
+    for (const theme of ["light", "dark"]) {
+      if (theme === "dark")
+        await page
+          .getByRole("button", { name: "切换亮暗色模式", exact: true })
+          .click();
+      await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
+      const violations = await page.evaluate(async () => {
+        const result = await (
+          window as typeof window & { axe: typeof axe }
+        ).axe.run(document, {
+          runOnly: {
+            type: "tag",
+            values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"],
+          },
+        });
+        return result.violations.map(({ id, nodes }) => ({
+          id,
+          targets: nodes.map(({ target }) => target.join(" ")),
+        }));
+      });
+      expect(violations).toEqual([]);
+    }
+    expect(runtimeErrors).toEqual([]);
+  });
+
+  test("文档库目录和列表独立重试，失败隐藏旧结果并按原筛选恢复", async ({
+    page,
+  }) => {
+    await mockBusinessApis(page);
+    let failFolders = true;
+    let failDocuments = false;
+    let folderReads = 0;
+    const documentReads: string[] = [];
+    await page.route("**/api/v1/content-folders**", (route) => {
+      if (route.request().method() !== "GET") return route.continue();
+      folderReads += 1;
+      return failFolders
+        ? route.fulfill({
+            status: 503,
+            json: {
+              error: { code: "QA_UNAVAILABLE", message: "目录暂时不可用" },
+            },
+          })
+        : route.continue();
+    });
+    await page.route("**/api/v1/content-documents**", (route) => {
+      if (
+        route.request().method() !== "GET" ||
+        new URL(route.request().url()).pathname !== "/api/v1/content-documents"
+      )
+        return route.continue();
+      documentReads.push(new URL(route.request().url()).search);
+      return failDocuments
+        ? route.fulfill({
+            status: 503,
+            json: {
+              error: { code: "QA_UNAVAILABLE", message: "文档读取暂时不可用" },
+            },
+          })
+        : route.continue();
+    });
+    await page.goto(`${scopedPath("/dashboard/content")}&stage=library`);
+    const { organizationId, teamBindingId, brandId } = fixture.scopes[0];
+    const scope = { organizationId, teamBindingId, brandId };
+    const headers = { Origin: new URL(page.url()).origin };
+    const folderResponse = await page.request.post("/api/v1/content-folders", {
+      headers,
+      data: { ...scope, name: "保留的目录" },
+    });
+    expect(folderResponse.status()).toBe(201);
+    const folder = (await folderResponse.json()).data;
+    for (const title of ["仅此文章", "其他文章"]) {
+      const created = await page.request.post("/api/v1/content-documents", {
+        headers,
+        data: { ...scope, title, body: `${title}正文`, folderId: folder.id },
+      });
+      expect(created.status()).toBe(201);
+    }
+    await page.getByRole("button", { name: "刷新文档库" }).click();
+    const card = page.locator(".ant-card").filter({
+      has: page.locator(".ant-card-head-title", { hasText: "企业文章库" }),
+    });
+    await expect(card.getByText("共 2 篇", { exact: true })).toBeVisible();
+    await expect(
+      page.getByText("文件夹读取失败", { exact: true }),
+    ).toBeVisible();
+    await expect(card.getByText("仅此文章", { exact: true })).toBeVisible();
+    const readsBeforeFolderRetry = documentReads.length;
+    failFolders = false;
+    await page.getByRole("button", { name: "重试文件夹" }).click();
+    await expect(
+      page.getByRole("button", { name: "重命名文件夹 保留的目录" }),
+    ).toBeVisible();
+    expect(documentReads).toHaveLength(readsBeforeFolderRetry);
+    await page
+      .getByRole("searchbox", { name: "搜索文档标题或正文" })
+      .fill("仅此");
+    await page
+      .getByRole("searchbox", { name: "搜索文档标题或正文" })
+      .press("Enter");
+    await expect(card.getByText("共 1 篇", { exact: true })).toBeVisible();
+    failDocuments = true;
+    await page.getByRole("button", { name: "刷新文档库" }).click();
+    await expect(
+      page.getByText("文档列表读取失败", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "刷新文档库" }),
+    ).toBeEnabled();
+    await expect(card.locator("tr[data-row-key]")).toHaveCount(0);
+    await expect(card.locator(".ant-pagination")).toHaveCount(0);
+    await expect(card.getByText("共 1 篇", { exact: true })).toHaveCount(0);
+    await expect(
+      page
+        .locator(".ant-statistic")
+        .filter({ hasText: "当前结果" })
+        .locator(".ant-statistic-content-value"),
+    ).toHaveText("—");
+    await expect(
+      page.getByRole("button", { name: "重命名文件夹 保留的目录" }),
+    ).toBeVisible();
+    const failedQuery = documentReads.at(-1);
+    const folderReadsBeforeRetry = folderReads;
+    failDocuments = false;
+    await page.getByRole("button", { name: "重试文档列表" }).click();
+    await expect(card.getByText("共 1 篇", { exact: true })).toBeVisible();
+    await expect(card.getByText("仅此文章", { exact: true })).toBeVisible();
+    await expect(card.getByText("其他文章", { exact: true })).toHaveCount(0);
+    expect(documentReads.at(-1)).toBe(failedQuery);
+    expect(folderReads).toBe(folderReadsBeforeRetry);
+    expect(new URL(page.url()).searchParams.get("libraryQ")).toBe("仅此");
+  });
+
+  test("品牌范围读取中或授权撤销后，文档库不发送空范围查询", async ({
+    page,
+  }) => {
+    await mockBusinessApis(page);
+    const libraryRequests: URL[] = [];
+    await page.route("**/api/v1/content-documents**", (route) => {
+      libraryRequests.push(new URL(route.request().url()));
+      return route.continue();
+    });
+    await page.route("**/api/v1/content-folders**", (route) => {
+      libraryRequests.push(new URL(route.request().url()));
+      return route.continue();
+    });
+    let releaseBrands!: () => void;
+    const released = new Promise<void>((resolve) => {
+      releaseBrands = resolve;
+    });
+    let brandsHeld = false;
+    let firstRead = true;
+    await page.route("**/api/v1/answerbit/brands?**", async (route) => {
+      if (!firstRead) return route.continue();
+      firstRead = false;
+      const response = await route.fetch();
+      brandsHeld = true;
+      await released;
+      await route.fulfill({ response });
+    });
+    await page.goto(`${scopedPath("/dashboard/content")}&stage=library`);
+    await expect.poll(() => brandsHeld).toBe(true);
+    await page.getByRole("button", { name: "刷新文档库" }).click();
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        ),
+    );
+    expect(libraryRequests).toEqual([]);
+    releaseBrands();
+    const card = page.locator(".ant-card").filter({
+      has: page.locator(".ant-card-head-title", { hasText: "企业文章库" }),
+    });
+    await expect(
+      page
+        .locator(".ant-statistic")
+        .filter({ hasText: "当前结果" })
+        .locator(".ant-statistic-content-value"),
+    ).toHaveText("0");
+    await expect(
+      card.getByText("当前筛选没有匹配的文档", { exact: true }),
+    ).toBeVisible();
+    expect(new Set(libraryRequests.map((url) => url.pathname))).toEqual(
+      new Set(["/api/v1/content-documents", "/api/v1/content-folders"]),
+    );
+    const { organizationId, teamBindingId, brandId } = fixture.scopes[0];
+    for (const url of libraryRequests)
+      expect(Object.fromEntries(url.searchParams)).toMatchObject({
+        organizationId,
+        teamBindingId,
+        brandId,
+      });
+    await database.db
+      .delete(database.brandAccess)
+      .where(
+        operators.and(
+          operators.eq(database.brandAccess.organizationId, organizationId),
+          operators.eq(database.brandAccess.userId, fixture.userId),
+        ),
+      );
+    await page.getByRole("button", { name: "刷新品牌范围" }).click();
+    await expect(
+      page.getByText("当前企业没有可访问品牌", { exact: true }),
+    ).toBeVisible();
+    const readsAfterRevocation = libraryRequests.length;
+    await page.getByRole("button", { name: "刷新文档库" }).click();
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        ),
+    );
+    expect(libraryRequests).toHaveLength(readsAfterRevocation);
+    expect(
+      libraryRequests.every((url) =>
+        ["organizationId", "teamBindingId", "brandId"].every((field) =>
+          Boolean(url.searchParams.get(field)),
+        ),
+      ),
+    ).toBe(true);
+    await expect(
+      page.getByText("文档列表读取失败", { exact: true }),
+    ).toHaveCount(0);
+    await expect(page.getByText("文件夹读取失败", { exact: true })).toHaveCount(
+      0,
+    );
+  });
+
+  test("文档详情失败在抽屉重试，关闭后的迟到响应不覆盖另一篇文档", async ({
+    page,
+  }) => {
+    const runtimeErrors: string[] = [];
+    page.on("pageerror", (error) => runtimeErrors.push(error.message));
+    await mockBusinessApis(page);
+    await page.route("**/api/v1/content-documents**", (route) =>
+      route.continue(),
+    );
+    await page.route("**/api/v1/content-folders**", (route) =>
+      route.continue(),
+    );
+    await page.goto(`${scopedPath("/dashboard/content")}&stage=library`);
+    const { organizationId, teamBindingId, brandId } = fixture.scopes[0];
+    const scope = { organizationId, teamBindingId, brandId };
+    const headers = { Origin: new URL(page.url()).origin };
+    const docs: { id: string; title: string }[] = [];
+    for (const title of ["重试文章甲", "当前文章乙"]) {
+      const response = await page.request.post("/api/v1/content-documents", {
+        headers,
+        data: { ...scope, title, body: `${title}完整正文` },
+      });
+      expect(response.status()).toBe(201);
+      docs.push((await response.json()).data);
+    }
+    await page.getByRole("button", { name: "刷新文档库" }).click();
+    const card = page.locator(".ant-card").filter({
+      has: page.locator(".ant-card-head-title", { hasText: "企业文章库" }),
+    });
+    await expect(card.getByText("共 2 篇", { exact: true })).toBeVisible();
+    let failFirst = true;
+    let holdResponse = false;
+    let responseHeld = false;
+    let releaseResponse!: () => void;
+    const released = new Promise<void>((resolve) => {
+      releaseResponse = resolve;
+    });
+    let responseFinished!: () => void;
+    const finished = new Promise<void>((resolve) => {
+      responseFinished = resolve;
+    });
+    const targets: string[] = [];
+    await page.route(
+      `**/api/v1/content-documents/${docs[0].id}?**`,
+      async (route) => {
+        targets.push(new URL(route.request().url()).pathname);
+        if (failFirst) {
+          failFirst = false;
+          return route.fulfill({
+            status: 503,
+            json: {
+              error: { code: "QA_UNAVAILABLE", message: "正文暂时不可用" },
+            },
+          });
+        }
+        if (!holdResponse) return route.continue();
+        const response = await route.fetch();
+        responseHeld = true;
+        await released;
+        try {
+          await route.fulfill({ response });
+        } finally {
+          responseFinished();
+        }
+      },
+    );
+    await card.getByText(docs[0].title, { exact: true }).click();
+    const failedDrawer = page.getByRole("dialog", {
+      name: "文档详情",
+      exact: true,
+    });
+    await expect(
+      failedDrawer.getByText("文档详情读取失败", { exact: true }),
+    ).toBeVisible();
+    await failedDrawer.getByRole("button", { name: "重试文档详情" }).click();
+    const firstDrawer = page.getByRole("dialog", {
+      name: docs[0].title,
+      exact: true,
+    });
+    await expect(
+      firstDrawer.getByText(`${docs[0].title}完整正文`, { exact: true }),
+    ).toBeVisible();
+    expect(targets).toEqual([
+      `/api/v1/content-documents/${docs[0].id}`,
+      `/api/v1/content-documents/${docs[0].id}`,
+    ]);
+    await firstDrawer.getByRole("button", { name: /close|关闭/i }).click();
+    await expect(firstDrawer).toHaveCount(0);
+    holdResponse = true;
+    await card.getByText(docs[0].title, { exact: true }).click();
+    await expect.poll(() => responseHeld).toBe(true);
+    await page
+      .getByRole("dialog", { name: "文档详情", exact: true })
+      .getByRole("button", { name: /close|关闭/i })
+      .click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await card.getByText(docs[1].title, { exact: true }).click();
+    const secondDrawer = page.getByRole("dialog", {
+      name: docs[1].title,
+      exact: true,
+    });
+    await expect(
+      secondDrawer.getByText(`${docs[1].title}完整正文`, { exact: true }),
+    ).toBeVisible();
+    releaseResponse();
+    await finished;
+    await expect(secondDrawer).toBeVisible();
+    await expect(firstDrawer).toHaveCount(0);
+    await expect(
+      secondDrawer.getByText(`${docs[0].title}完整正文`, { exact: true }),
+    ).toHaveCount(0);
+    await secondDrawer.getByRole("button", { name: /close|关闭/i }).click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+
+    // Saving finishes before the independent folder refresh; navigating to B
+    // during that refresh must keep B open when the saved A operation returns.
+    holdResponse = false;
+    await card.getByText(docs[0].title, { exact: true }).click();
+    await firstDrawer
+      .getByRole("button", { name: /编\s*辑/, exact: true })
+      .click();
+    const editor = page.getByRole("dialog", { name: /编辑文档/ });
+    await editor.getByLabel("正文", { exact: true }).fill("甲的新版本正文");
+    let releaseFolderRefresh!: () => void;
+    const folderReleased = new Promise<void>((resolve) => {
+      releaseFolderRefresh = resolve;
+    });
+    let folderResponseHeld = false;
+    let finishFolderRefresh!: () => void;
+    const folderFinished = new Promise<void>((resolve) => {
+      finishFolderRefresh = resolve;
+    });
+    await page.route("**/api/v1/content-folders?**", async (route) => {
+      const response = await route.fetch();
+      folderResponseHeld = true;
+      await folderReleased;
+      try {
+        await route.fulfill({ response });
+      } finally {
+        finishFolderRefresh();
+      }
+    });
+    await editor
+      .getByRole("button", { name: "保存新版本", exact: true })
+      .click();
+    await expect(editor).toHaveCount(0);
+    await expect.poll(() => folderResponseHeld).toBe(true);
+    await firstDrawer.getByRole("button", { name: /close|关闭/i }).click();
+    await expect(firstDrawer).toHaveCount(0);
+    await card.getByText(docs[1].title, { exact: true }).click();
+    await expect(
+      secondDrawer.getByText(`${docs[1].title}完整正文`, { exact: true }),
+    ).toBeVisible();
+    const firstDetailReads = targets.length;
+    releaseFolderRefresh();
+    await folderFinished;
+    await expect(
+      page.getByRole("button", { name: "刷新文档库" }),
+    ).not.toHaveClass(/ant-btn-loading/);
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        ),
+    );
+    await expect(secondDrawer).toBeVisible();
+    await expect(firstDrawer).toHaveCount(0);
+    expect(targets).toHaveLength(firstDetailReads);
+    const saved = await page.request.get(
+      `/api/v1/content-documents/${docs[0].id}?${new URLSearchParams(scope)}`,
+    );
+    expect(saved.ok()).toBe(true);
+    expect((await saved.json()).data).toMatchObject({
+      body: "甲的新版本正文",
+      currentVersion: 2,
+    });
+    expect(runtimeErrors).toEqual([]);
+  });
+
   test("未保存文档跨企业和刷新可恢复，保存失败仍保留正文", async ({ page }) => {
     await mockBusinessApis(page);
     await page.route("**/api/v1/content-documents**", (route) =>
@@ -7423,7 +7962,7 @@ test.describe("真实运营操作闭环", () => {
     });
     expect(created.status()).toBe(201);
     const folder = (await created.json()).data;
-    await page.getByRole("button", { name: /刷新$/ }).first().click();
+    await page.getByRole("button", { name: "刷新文档库", exact: true }).click();
     await page
       .getByRole("button", { name: "重命名文件夹 多人目录", exact: true })
       .click();
@@ -7692,7 +8231,7 @@ test.describe("真实运营操作闭环", () => {
     });
     expect(created.status()).toBe(201);
     const doc = (await created.json()).data;
-    await page.getByRole("button", { name: /刷新$/ }).first().click();
+    await page.getByRole("button", { name: "刷新文档库", exact: true }).click();
     await page.getByText("协作文章", { exact: true }).first().click();
     await page.getByRole("button", { name: /编\s*辑/ }).click();
     let editor = page.getByRole("dialog", { name: /编辑文档/ });

@@ -1,4 +1,5 @@
 "use client";
+import { libraryResetQueryKeys } from "./document-library-query";
 import {
   EyeOutlined,
   PlusOutlined,
@@ -176,7 +177,7 @@ export function ContentClient({
   const pathname = usePathname();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const scope = useAnswerBitScope(organizations);
+  const scope = useAnswerBitScope(organizations, libraryResetQueryKeys);
   const { organizationId, teamBindingId, brandId } = scope;
   const scopeVersion = useRef(0);
   const readVersion = useRef(0);

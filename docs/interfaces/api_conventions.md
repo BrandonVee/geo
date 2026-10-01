@@ -107,6 +107,8 @@ JSON 请求使用 `Content-Type: application/json`；允许标准的 `applicatio
 
 内容文件夹创建支持可选 `Idempotency-Key`，工作台与平台文章库使用稳定键。首次返回201与 `replayed=false`，原操作者、绑定、品牌和创建名称一致时重放返回当前文件夹、200与 `replayed=true`；不一致返回409 `CONTENT_FOLDER_IDEMPOTENCY_CONFLICT`，原文件夹已删除返回409 `CONTENT_FOLDER_REMOVED`，名称重复返回409 `CONTENT_FOLDER_EXISTS`。PATCH 正文和DELETE 查询支持 `expectedName`；名称已变化返回409 `CONTENT_FOLDER_VERSION_CONFLICT` 与 `details.current`，目标已达到的改名重试返回200。DELETE及重复DELETE均返回204；删除、文档解绑和新增版本快照、审计原子提交。列表和写入响应不包含内部创建键、指纹或删除标记。
 
+`GET /v1/content-documents` 保留 `limit`（默认50、上限100）和 `offset`（0–100000）参数，以及 `data.list` / `data.total`。新增 `data.pagination` 返回 `page`、`pageSize`、`total`、`pages` 和实际 `offset`；有效的非整页偏移保持原值，偏移超出匹配结果时回退末页起点，空结果偏移为0、页码为1。列表与总数在租户角色的同一只读快照中获取，按更新时间及 ID 倒序；标题和正文搜索转义文字通配符，筛选按范围、目录、状态和来源取交集。文档详情与版本目录同样使用只读快照，文件夹名称只来自当前完整范围的活动目录。
+
 文档编辑、归档和历史恢复的内容、版本及审计原子提交，失败不推进版本；写入响应不包含内部创建键和原指纹。历史恢复也使用422 `CONTENT_DOCUMENT_BODY_REQUIRED` / `CONTENT_DOCUMENT_SOURCE_URL_REQUIRED` 表达正文或来源校验失败。
 
 文档编辑与历史恢复请求体、归档查询参数必须包含正整数 `expectedVersion`。版本不一致返回 `409 CONTENT_DOCUMENT_VERSION_CONFLICT` 和 `details.currentVersion`，不写入内容或版本；客户端保留未保存编辑，核对最新版后重新提交。

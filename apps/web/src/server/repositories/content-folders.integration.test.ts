@@ -207,7 +207,7 @@ describe.skipIf(process.env.CONTENT_FOLDER_DB_TESTS !== "1")(
           audit("delete"),
         ),
       ).toMatchObject({ kind: "conflict", row: { name: current.row.name } });
-      expect(await repository.find(scope, id)).toMatchObject({
+      expect(await repository.find(scope, id, user)).toMatchObject({
         folderId: row.id,
         currentVersion: 1,
         body: "保留正文",
@@ -231,7 +231,7 @@ describe.skipIf(process.env.CONTENT_FOLDER_DB_TESTS !== "1")(
         [active, 2, "draft"],
         [archived, 3, "archived"],
       ] as const) {
-        const value = await repository.find(scope, id);
+        const value = await repository.find(scope, id, user);
         expect(value).toMatchObject({
           folderId: null,
           currentVersion: version,
@@ -287,7 +287,9 @@ describe.skipIf(process.env.CONTENT_FOLDER_DB_TESTS !== "1")(
           audit("delete"),
         ),
       ).toEqual({ kind: "missing" });
-      expect((await repository.find(scope, active))?.currentVersion).toBe(2);
+      expect((await repository.find(scope, active, user))?.currentVersion).toBe(
+        2,
+      );
       expect(await logs(row.id)).toHaveLength(2);
       expect(
         await repository.createFolder(scope, name, user, key, audit("create")),
@@ -342,7 +344,7 @@ describe.skipIf(process.env.CONTENT_FOLDER_DB_TESTS !== "1")(
           expect.objectContaining({ id: created.row.id, name }),
         ]),
       );
-      expect(await repository.find(scope, id)).toMatchObject({
+      expect(await repository.find(scope, id, user)).toMatchObject({
         folderId: created.row.id,
         currentVersion: 1,
         versions: [{ version: 1 }],
@@ -383,7 +385,7 @@ describe.skipIf(process.env.CONTENT_FOLDER_DB_TESTS !== "1")(
         expect(removed.kind).toBe("deleted");
         if (created.ok)
           expect(
-            await repository.find(scope, created.document.id),
+            await repository.find(scope, created.document.id, user),
           ).toMatchObject({
             folderId: null,
             currentVersion: 2,

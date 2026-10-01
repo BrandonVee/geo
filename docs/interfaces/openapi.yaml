@@ -1605,6 +1605,7 @@ paths:
   /v1/content-documents:
     get:
       summary: 查询当前品牌的本地文档库
+      description: 摘要和总数来自同一租户只读快照，按更新时间及 ID 倒序；q 在标题或正文中按原文匹配，包括百分号、下划线和反斜杠。默认排除归档文档。
       tags:
         - Content Library
       security:
@@ -1648,10 +1649,11 @@ paths:
           schema:
             type: integer
             minimum: 0
+            maximum: 100000
             default: 0
       responses:
         "200":
-          description: 文档摘要列表和总数
+          description: data 包含 list、total 和 pagination（page、pageSize、total、pages、offset）。有效的非整页偏移保持原值；超出结果范围时回退末页起点，空结果为第1页、offset=0。
     post:
       summary: 新建或导入本地内容文档
       tags:
@@ -1688,6 +1690,7 @@ paths:
   /v1/content-documents/{documentId}:
     get:
       summary: 查询文档正文与版本目录
+      description: 正文和版本目录来自当前品牌的同一租户只读快照，文件夹名称只关联完整范围内未删除目录。
       tags:
         - Content Library
       security:

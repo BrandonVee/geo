@@ -1,7 +1,8 @@
 "use client";
 
 import { Empty, Flex, Select, Typography } from "antd";
-import { useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { libraryResetQueryKeys } from "../dashboard/content/document-library-query";
 import { DocumentLibrary } from "../dashboard/content/document-library";
 import type { ScopeOrganization } from "../dashboard/use-answerbit-scope";
 
@@ -14,7 +15,21 @@ export function AdminDocumentLibrary({
   organizations: (ScopeOrganization & { brandId: string })[];
   onMessage: (message: string) => void;
 }) {
-  const [organizationId, setOrganizationId] = useState(organizations[0]?.id);
+  const search = useSearchParams();
+  const requested = search.get("libraryOrganizationId");
+  const organizationId = organizations.some((item) => item.id === requested)
+    ? requested
+    : organizations[0]?.id;
+  function setOrganizationId(id: string) {
+    const selected = organizations.find((item) => item.id === id);
+    if (!selected) return;
+    const url = new URL(window.location.href);
+    for (const key of libraryResetQueryKeys) url.searchParams.delete(key);
+    url.searchParams.set("libraryOrganizationId", selected.id);
+    url.searchParams.set("libraryTeamBindingId", selected.teamBindingId);
+    url.searchParams.set("libraryBrandId", selected.brandId);
+    window.history.replaceState(null, "", url);
+  }
   const organization = organizations.find((item) => item.id === organizationId);
   return (
     <Flex gap={16} vertical>

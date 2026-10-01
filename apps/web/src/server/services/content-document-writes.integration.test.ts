@@ -113,7 +113,7 @@ describe.skipIf(process.env.CONTENT_DOCUMENT_WRITE_DB_TESTS !== "1")(
     for (const operation of ["update", "archive", "restore"] as const) {
       it(`${operation} 审计失败整笔回滚，原版本可直接重试且只保存一个新版本`, async () => {
         const id = await fixture();
-        const before = await repository.find(scope, id);
+        const before = await repository.find(scope, id, userId);
         const input = updateContentDocumentSchema.parse({
           ...scope,
           expectedVersion: 2,
@@ -139,7 +139,7 @@ describe.skipIf(process.env.CONTENT_DOCUMENT_WRITE_DB_TESTS !== "1")(
                   audit(invalid),
                 );
         await expect(action(true)).rejects.toThrow();
-        expect(await repository.find(scope, id)).toEqual(before);
+        expect(await repository.find(scope, id, userId)).toEqual(before);
         expect(await logs(id)).toHaveLength(0);
         const saved = await action(false);
         expect(saved).toMatchObject({
@@ -149,7 +149,7 @@ describe.skipIf(process.env.CONTENT_DOCUMENT_WRITE_DB_TESTS !== "1")(
         });
         expect(saved).not.toHaveProperty("creationKey");
         expect(saved).not.toHaveProperty("creationFingerprint");
-        expect(await repository.find(scope, id)).toMatchObject({
+        expect(await repository.find(scope, id, userId)).toMatchObject({
           currentVersion: 3,
           versions: [{ version: 3 }, { version: 2 }, { version: 1 }],
         });
@@ -220,7 +220,7 @@ describe.skipIf(process.env.CONTENT_DOCUMENT_WRITE_DB_TESTS !== "1")(
       const observed = attempt.catch((error) => error as Error);
       try {
         await Promise.race([started, attempt]);
-        expect(await repository.find(scope, id)).toMatchObject({
+        expect(await repository.find(scope, id, userId)).toMatchObject({
           currentVersion: 2,
           body: "最新正文",
           versions: [{ version: 2 }, { version: 1 }],
@@ -232,7 +232,7 @@ describe.skipIf(process.env.CONTENT_DOCUMENT_WRITE_DB_TESTS !== "1")(
       expect(await observed).toMatchObject({
         message: "interrupted before commit",
       });
-      expect(await repository.find(scope, id)).toMatchObject({
+      expect(await repository.find(scope, id, userId)).toMatchObject({
         currentVersion: 2,
         body: "最新正文",
         versions: [{ version: 2 }, { version: 1 }],
@@ -263,7 +263,7 @@ describe.skipIf(process.env.CONTENT_DOCUMENT_WRITE_DB_TESTS !== "1")(
       expect(rejected).toMatchObject({
         reason: { code: "CONTENT_DOCUMENT_VERSION_CONFLICT", status: 409 },
       });
-      expect(await repository.find(scope, id)).toMatchObject({
+      expect(await repository.find(scope, id, userId)).toMatchObject({
         body: winner.value.body,
         currentVersion: 3,
         versions: [{ version: 3 }, { version: 2 }, { version: 1 }],
@@ -277,7 +277,7 @@ describe.skipIf(process.env.CONTENT_DOCUMENT_WRITE_DB_TESTS !== "1")(
     });
     it("错误品牌不能修改或恢复历史，过期归档和历史恢复不增加版本及审计", async () => {
       const id = await fixture(),
-        before = await repository.find(scope, id);
+        before = await repository.find(scope, id, userId);
       const hidden = { ...scope, brandId: "other-brand" };
       await expect(
         service.update(
@@ -315,7 +315,7 @@ describe.skipIf(process.env.CONTENT_DOCUMENT_WRITE_DB_TESTS !== "1")(
           audit(),
         ),
       ).rejects.toMatchObject({ status: 409 });
-      expect(await repository.find(scope, id)).toEqual(before);
+      expect(await repository.find(scope, id, userId)).toEqual(before);
       expect(await logs(id)).toHaveLength(0);
     });
   },

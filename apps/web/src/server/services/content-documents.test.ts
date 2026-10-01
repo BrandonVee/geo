@@ -158,7 +158,7 @@ describe("内容文档服务", () => {
       userId,
       "resource.read",
     );
-    expect(mocks.find).toHaveBeenCalledWith(scope, documentId);
+    expect(mocks.find).toHaveBeenCalledWith(scope, documentId, userId);
   });
 
   it("创建文档时传递品牌范围并记录审计，目标文件夹缺失时不记录成功", async () => {
@@ -445,7 +445,7 @@ describe("文章库平台与企业权限边界", () => {
       userId,
       "resource.read",
     );
-    expect(mocks.list).toHaveBeenCalledWith(input);
+    expect(mocks.list).toHaveBeenCalledWith(input, userId);
   });
 });
 

@@ -31,7 +31,6 @@ import {
   Select,
   Space,
   Statistic,
-  Table,
   Tag,
   theme,
   Typography,
@@ -43,9 +42,11 @@ import {
   useDirectoryAttempt,
   type DirectoryAttempt,
 } from "../directory-attempt";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { scopeQuery } from "../use-answerbit-scope";
+import { useDocumentLibrary } from "./use-document-library";
 import { AccessibleSelect } from "../../accessible-select";
+import { AccessibleTable } from "../../accessible-table";
 import {
   readDocumentDrafts,
   removeDocumentDraft,
@@ -171,22 +172,12 @@ export function DocumentLibrary({
   onMessage: (message: string) => void;
 }) {
   const { token } = theme.useToken();
-  const [documents, setDocuments] = useState<DocumentListItem[]>([]);
-  const [folders, setFolders] = useState<Folder[]>([]);
-  const [total, setTotal] = useState(0);
-  const [pagination, setPagination] = useState({ filterKey: "", page: 1 });
-  const loadVersion = useRef(0);
-  const [loading, setLoading] = useState(false);
-  const [query, setQuery] = useState("");
-  const [folderFilter, setFolderFilter] = useState("all");
-  const [statusFilter, setStatusFilter] = useState<DocumentStatus | "active">(
-    "active",
-  );
-  const [sourceFilter, setSourceFilter] = useState<DocumentSource | "all">(
-    "all",
-  );
   const [detail, setDetail] = useState<DocumentDetail>();
   const [detailLoading, setDetailLoading] = useState(false);
+  const [detailTarget, setDetailTarget] = useState<string>();
+  const detailTargetRef = useRef<string | undefined>(undefined);
+  const [detailError, setDetailError] = useState("");
+  const detailController = useRef<AbortController | undefined>(undefined);
   const [editorOpen, setEditorOpen] = useState(false);
   const [editing, setEditing] = useState<DocumentDetail>();
   const [saving, setSaving] = useState(false);
@@ -235,6 +226,7 @@ export function DocumentLibrary({
     return () => {
       mounted.current = false;
       detailRead.current += 1;
+      detailController.current?.abort();
       editorRead.current += 1;
     };
   }, []);
@@ -255,6 +247,26 @@ export function DocumentLibrary({
     }),
     [scope.brandId, scope.organizationId, scope.teamBindingId],
   );
+  const library = useDocumentLibrary<DocumentListItem, Folder>(
+    scopeParams,
+    refreshToken,
+  );
+  const {
+    q: query,
+    folder: folderFilter,
+    status: statusFilter,
+    source: sourceFilter,
+  } = library.query;
+  const documents = library.documents.data?.list ?? [];
+  const folders = library.folders.data ?? [];
+  const total = library.documents.data?.total;
+  const loading = library.documents.loading;
+  const load = library.refresh;
+  const [searchDraft, setSearchDraft] = useState(query);
+  useEffect(() => {
+    setSearchDraft(query);
+  }, [query]);
+  const setFolderFilter = (folder: string) => library.change({ folder });
   const draftScope = useMemo(
     () => ({ ...scopeParams, userId }),
     [scopeParams, userId],
@@ -331,75 +343,49 @@ export function DocumentLibrary({
     }
   }
 
-  const filterKey = JSON.stringify([
-    scopeParams,
-    query,
-    folderFilter,
-    statusFilter,
-    sourceFilter,
-  ]);
-  const page = pagination.filterKey === filterKey ? pagination.page : 1;
-  const queryString = useMemo(() => {
-    const values: Record<string, string> = {
-      ...scopeParams,
-      limit: "20",
-      offset: String((page - 1) * 20),
-    };
-    if (query.trim()) values.q = query.trim();
-    if (folderFilter === "unfiled") values.unfiled = "true";
-    else if (folderFilter !== "all") values.folderId = folderFilter;
-    if (statusFilter !== "active") values.status = statusFilter;
-    if (sourceFilter !== "all") values.source = sourceFilter;
-    return scopeQuery(values);
-  }, [folderFilter, query, scopeParams, sourceFilter, statusFilter, page]);
-
-  const load = useCallback(async () => {
-    if (!scopeParams.brandId) return;
-    const version = ++loadVersion.current;
-    setLoading(true);
-    try {
-      const [documentData, folderData] = await Promise.all([
-        api<{ list: DocumentListItem[]; total: number }>(
-          `/api/v1/content-documents?${queryString}`,
-        ),
-        api<Folder[]>(`/api/v1/content-folders?${scopeQuery(scopeParams)}`),
-      ]);
-      if (version !== loadVersion.current) return;
-      setDocuments(documentData.list);
-      setTotal(documentData.total);
-      setFolders(folderData);
-    } catch (error) {
-      if (version === loadVersion.current)
-        onMessage(error instanceof Error ? error.message : "文档库加载失败");
-    } finally {
-      if (version === loadVersion.current) setLoading(false);
-    }
-  }, [onMessage, queryString, scopeParams]);
-
-  useEffect(() => {
-    void load();
-    return () => {
-      loadVersion.current += 1;
-    };
-  }, [load, refreshToken]);
-
   async function loadDetail(documentId: string) {
     const read = ++detailRead.current;
+    detailController.current?.abort();
+    const controller = new AbortController();
+    detailController.current = controller;
+    detailTargetRef.current = documentId;
+    setDetailTarget(documentId);
+    setDetail(undefined);
+    setDetailError("");
     setDetailLoading(true);
     try {
       const value = await api<DocumentDetail>(
         `/api/v1/content-documents/${documentId}?${scopeQuery(scopeParams)}`,
+        { signal: controller.signal, cache: "no-store" },
       );
-      if (!mounted.current || read !== detailRead.current) return;
+      if (
+        !mounted.current ||
+        read !== detailRead.current ||
+        controller.signal.aborted
+      )
+        return;
       setDetail(value);
       return value;
     } catch (error) {
-      if (mounted.current && read === detailRead.current)
-        onMessage(error instanceof Error ? error.message : "文档读取失败");
+      if (
+        mounted.current &&
+        read === detailRead.current &&
+        !controller.signal.aborted
+      )
+        setDetailError(error instanceof Error ? error.message : "文档读取失败");
     } finally {
       if (mounted.current && read === detailRead.current)
         setDetailLoading(false);
     }
+  }
+  function closeDetail() {
+    detailRead.current += 1;
+    detailController.current?.abort();
+    detailTargetRef.current = undefined;
+    setDetailTarget(undefined);
+    setDetail(undefined);
+    setDetailError("");
+    setDetailLoading(false);
   }
 
   function openCreate(source: "manual" | "imported") {
@@ -641,8 +627,10 @@ export function DocumentLibrary({
             : "文档已保存到内容库"
           : "文档已保存为新版本",
       );
+      const detailVersion = detailRead.current;
       await load();
-      await loadDetail(saved.id);
+      if (mounted.current && detailRead.current === detailVersion)
+        await loadDetail(saved.id);
     } catch (error) {
       if (!mounted.current) return;
       if (
@@ -897,13 +885,14 @@ export function DocumentLibrary({
         { method: "DELETE" },
       );
       if (!mounted.current) return;
-      setDetail(undefined);
+      if (detailTargetRef.current === document.id) closeDetail();
       onMessage("文档已归档，可通过状态筛选查看");
       await load();
     } catch (error) {
       if (!mounted.current) return;
       onMessage(error instanceof Error ? error.message : "文档归档失败");
-      if (isConflict(error)) await loadDetail(document.id);
+      if (isConflict(error) && detailTargetRef.current === document.id)
+        await loadDetail(document.id);
     } finally {
       submitting.current = false;
     }
@@ -928,11 +917,12 @@ export function DocumentLibrary({
       if (!mounted.current) return;
       onMessage(`已恢复 v${version}，并保存为最新版本`);
       await load();
-      await loadDetail(documentId);
+      if (detailTargetRef.current === documentId) await loadDetail(documentId);
     } catch (error) {
       if (!mounted.current) return;
       onMessage(error instanceof Error ? error.message : "版本恢复失败");
-      if (isConflict(error)) await loadDetail(documentId);
+      if (isConflict(error) && detailTargetRef.current === documentId)
+        await loadDetail(documentId);
     } finally {
       submitting.current = false;
     }
@@ -1066,28 +1056,39 @@ export function DocumentLibrary({
       <Row gutter={[16, 16]}>
         <Col lg={6} sm={12} xs={24}>
           <Card>
-            <Statistic title="当前结果" value={total} suffix="篇" />
+            <Statistic title="当前结果" value={total ?? "—"} suffix="篇" />
           </Card>
         </Col>
         <Col lg={6} sm={12} xs={24}>
           <Card>
             <Statistic
-              title="草稿"
-              value={documents.filter((item) => item.status === "draft").length}
+              title="本页草稿"
+              value={
+                library.documents.data
+                  ? documents.filter((item) => item.status === "draft").length
+                  : "—"
+              }
             />
           </Card>
         </Col>
         <Col lg={6} sm={12} xs={24}>
           <Card>
             <Statistic
-              title="已定稿"
-              value={documents.filter((item) => item.status === "ready").length}
+              title="本页定稿"
+              value={
+                library.documents.data
+                  ? documents.filter((item) => item.status === "ready").length
+                  : "—"
+              }
             />
           </Card>
         </Col>
         <Col lg={6} sm={12} xs={24}>
           <Card>
-            <Statistic title="文件夹" value={folders.length} />
+            <Statistic
+              title="文件夹"
+              value={library.folders.data ? folders.length : "—"}
+            />
           </Card>
         </Col>
       </Row>
@@ -1178,7 +1179,26 @@ export function DocumentLibrary({
             }
             title="内容目录"
           >
+            {library.folders.error ? (
+              <Alert
+                type="error"
+                showIcon
+                message="文件夹读取失败"
+                description={
+                  <Flex vertical align="flex-start" gap={8}>
+                    <span>{library.folders.error}</span>
+                    <Button
+                      aria-label="重试文件夹"
+                      onClick={() => void library.folders.refresh()}
+                    >
+                      重试
+                    </Button>
+                  </Flex>
+                }
+              />
+            ) : null}
             <List
+              loading={library.folders.loading}
               dataSource={folderItems}
               renderItem={(folder) => (
                 <List.Item
@@ -1260,8 +1280,9 @@ export function DocumentLibrary({
             extra={
               <Space wrap>
                 <Button
+                  aria-label="刷新文档库"
                   icon={<ReloadOutlined />}
-                  loading={loading}
+                  loading={loading || library.folders.loading}
                   onClick={() => void load()}
                 >
                   刷新
@@ -1288,13 +1309,17 @@ export function DocumentLibrary({
             <Flex gap={10} style={{ marginBottom: 16 }} wrap>
               <Input.Search
                 allowClear
-                onSearch={setQuery}
+                aria-label="搜索文档标题或正文"
+                value={searchDraft}
+                maxLength={200}
+                onChange={(event) => setSearchDraft(event.target.value)}
+                onSearch={(value) => library.change({ q: value })}
                 placeholder="搜索标题或正文"
                 style={{ flex: "1 1 260px", maxWidth: 420 }}
               />
               <Select
                 aria-label="筛选文档状态"
-                onChange={setStatusFilter}
+                onChange={(status) => library.change({ status })}
                 options={[
                   { label: "使用中的文档", value: "active" },
                   { label: "草稿", value: "draft" },
@@ -1306,7 +1331,7 @@ export function DocumentLibrary({
               />
               <Select
                 aria-label="筛选文档来源"
-                onChange={setSourceFilter}
+                onChange={(source) => library.change({ source })}
                 options={[
                   { label: "全部来源", value: "all" },
                   { label: "AI 生成", value: "ai_generated" },
@@ -1316,28 +1341,77 @@ export function DocumentLibrary({
                 style={{ width: 140 }}
                 value={sourceFilter}
               />
+              <Button
+                onClick={() => {
+                  setSearchDraft("");
+                  library.change({
+                    q: "",
+                    folder: "all",
+                    status: "active",
+                    source: "all",
+                    page: 1,
+                  });
+                }}
+              >
+                清除筛选
+              </Button>
             </Flex>
-            <Table<DocumentListItem>
+            {library.invalid ? (
+              <Alert
+                type="warning"
+                showIcon
+                message="链接中的文档筛选无效，已使用默认条件"
+                style={{ marginBottom: 12 }}
+              />
+            ) : null}
+            {library.documents.error ? (
+              <Alert
+                type="error"
+                showIcon
+                message="文档列表读取失败"
+                description={library.documents.error}
+                style={{ marginBottom: 12 }}
+                action={
+                  <Button
+                    aria-label="重试文档列表"
+                    onClick={() => void library.documents.refresh()}
+                  >
+                    重试
+                  </Button>
+                }
+              />
+            ) : null}
+            <AccessibleTable<DocumentListItem>
+              scrollRegionLabel="文档列表"
               columns={columns}
               dataSource={documents}
               loading={loading}
               locale={{
                 emptyText: (
                   <Empty
-                    description="当前目录还没有文档"
+                    description={
+                      library.documents.error
+                        ? "读取失败，请重试"
+                        : loading
+                          ? "正在读取文档"
+                          : "当前筛选没有匹配的文档"
+                    }
                     image={Empty.PRESENTED_IMAGE_SIMPLE}
                   />
                 ),
               }}
-              pagination={{
-                current: page,
-                pageSize: 20,
-                total,
-                showSizeChanger: false,
-                showTotal: (count) => `共 ${count} 篇`,
-                onChange: (nextPage) =>
-                  setPagination({ filterKey, page: nextPage }),
-              }}
+              pagination={
+                library.documents.data
+                  ? {
+                      current: library.page,
+                      pageSize: 20,
+                      total,
+                      showSizeChanger: false,
+                      showTotal: (count) => `共 ${count} 篇`,
+                      onChange: (page) => library.change({ page }),
+                    }
+                  : false
+              }
               rowKey="id"
               scroll={{ x: 900 }}
             />
@@ -1686,15 +1760,27 @@ export function DocumentLibrary({
 
       <Drawer
         loading={detailLoading}
-        onClose={() => {
-          detailRead.current += 1;
-          setDetail(undefined);
-          setDetailLoading(false);
-        }}
-        open={Boolean(detail)}
+        onClose={closeDetail}
+        open={Boolean(detailTarget)}
         title={detail?.title ?? "文档详情"}
         width={840}
       >
+        {detailError ? (
+          <Alert
+            type="error"
+            showIcon
+            message="文档详情读取失败"
+            description={detailError}
+            action={
+              <Button
+                aria-label="重试文档详情"
+                onClick={() => detailTarget && void loadDetail(detailTarget)}
+              >
+                重试
+              </Button>
+            }
+          />
+        ) : null}
         {detail ? (
           <Space direction="vertical" size="large" style={{ width: "100%" }}>
             <Flex justify="space-between" wrap gap={12}>

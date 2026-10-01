@@ -96,7 +96,7 @@ describe.skipIf(process.env.CONTENT_DOCUMENT_DB_TESTS !== "1")(
       documentId = created.document.id;
       expect(created.document.currentVersion).toBe(1);
       expect(
-        await contentDocumentRepository.find(scope, documentId),
+        await contentDocumentRepository.find(scope, documentId, userId),
       ).toMatchObject({
         body: "第一版正文",
         versions: [{ version: 1 }],
@@ -105,6 +105,7 @@ describe.skipIf(process.env.CONTENT_DOCUMENT_DB_TESTS !== "1")(
         await contentDocumentRepository.find(
           { ...scope, brandId: "other-brand" },
           documentId,
+          userId,
         ),
       ).toBeUndefined();
     });
@@ -129,7 +130,7 @@ describe.skipIf(process.env.CONTENT_DOCUMENT_DB_TESTS !== "1")(
       expect(successes.filter((result) => !result.replayed)).toHaveLength(1);
       const id = successes[0]!.document.id;
       expect(
-        (await contentDocumentRepository.find(scope, id))?.versions,
+        (await contentDocumentRepository.find(scope, id, userId))?.versions,
       ).toHaveLength(1);
       for (const [changed, actor] of [
         [{ ...input, body: "不同正文" }, userId],
@@ -162,7 +163,7 @@ describe.skipIf(process.env.CONTENT_DOCUMENT_DB_TESTS !== "1")(
         document: { id, body: "保存后的新版", currentVersion: 2 },
       });
       expect(
-        (await contentDocumentRepository.find(scope, id))?.versions,
+        (await contentDocumentRepository.find(scope, id, userId))?.versions,
       ).toHaveLength(2);
       const second = await contentDocumentRepository.create(
         input,
@@ -227,6 +228,7 @@ describe.skipIf(process.env.CONTENT_DOCUMENT_DB_TESTS !== "1")(
       const beforeRestore = await contentDocumentRepository.find(
         scope,
         documentId,
+        userId,
       );
       expect(beforeRestore?.currentVersion).toBe(2);
       expect(beforeRestore?.versions.map((version) => version.version)).toEqual(
@@ -260,7 +262,7 @@ describe.skipIf(process.env.CONTENT_DOCUMENT_DB_TESTS !== "1")(
         ),
       ).toMatchObject({ ok: false, code: "VERSION_CONFLICT" });
       expect(
-        await contentDocumentRepository.find(scope, documentId),
+        await contentDocumentRepository.find(scope, documentId, userId),
       ).toMatchObject({ currentVersion: 2, status: "draft" });
 
       const restored = await contentDocumentRepository.restore(
@@ -278,6 +280,7 @@ describe.skipIf(process.env.CONTENT_DOCUMENT_DB_TESTS !== "1")(
       const afterRestore = await contentDocumentRepository.find(
         scope,
         documentId,
+        userId,
       );
       expect(afterRestore?.versions.map((version) => version.version)).toEqual([
         3, 2, 1,
@@ -333,7 +336,7 @@ describe.skipIf(process.env.CONTENT_DOCUMENT_DB_TESTS !== "1")(
         await contentDocumentRepository.deleteFolder(scope, folderId, userId),
       ).toMatchObject({ kind: "deleted" });
       expect(
-        await contentDocumentRepository.find(scope, documentId),
+        await contentDocumentRepository.find(scope, documentId, userId),
       ).toMatchObject({ folderId: null, currentVersion: 5 });
     });
   },

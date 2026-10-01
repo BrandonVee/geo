@@ -85,7 +85,8 @@ async function folderExists(
 }
 
 export const contentDocumentRepository = {
-  async list(input: ContentDocumentListQuery) {
+  // @project-doc docs/domains/geo_operations.md#article_jobs
+  async list(input: ContentDocumentListQuery, userId: string) {
     const conditions = [
       ...scopeConditions(input),
       input.status
@@ -99,101 +100,140 @@ export const contentDocumentRepository = {
       input.source ? eq(contentDocuments.source, input.source) : undefined,
       input.q
         ? or(
-            ilike(contentDocuments.title, `%${input.q}%`),
-            ilike(contentDocuments.body, `%${input.q}%`),
+            ilike(
+              contentDocuments.title,
+              `%${input.q.replace(/[\\%_]/g, "\\$&")}%`,
+            ),
+            ilike(
+              contentDocuments.body,
+              `%${input.q.replace(/[\\%_]/g, "\\$&")}%`,
+            ),
           )
         : undefined,
     ].filter(Boolean);
     const where = and(...conditions);
-    const [rows, totals] = await Promise.all([
-      db
-        .select({
-          id: contentDocuments.id,
-          organizationId: contentDocuments.organizationId,
-          teamBindingId: contentDocuments.teamBindingId,
-          brandId: contentDocuments.brandId,
-          folderId: contentDocuments.folderId,
-          folderName: contentFolders.name,
-          createdBy: contentDocuments.createdBy,
-          updatedBy: contentDocuments.updatedBy,
-          source: contentDocuments.source,
-          sourceJobId: contentDocuments.sourceJobId,
-          sourceUrl: contentDocuments.sourceUrl,
-          title: contentDocuments.title,
-          bodyPreview: sql<string>`left(${contentDocuments.body}, 180)`,
-          contentLength: sql<number>`char_length(${contentDocuments.body})::int`,
-          status: contentDocuments.status,
-          language: contentDocuments.language,
-          tags: contentDocuments.tags,
-          currentVersion: contentDocuments.currentVersion,
-          createdAt: contentDocuments.createdAt,
-          updatedAt: contentDocuments.updatedAt,
-        })
-        .from(contentDocuments)
-        .leftJoin(
-          contentFolders,
-          eq(contentFolders.id, contentDocuments.folderId),
-        )
-        .where(where)
-        .orderBy(desc(contentDocuments.updatedAt))
-        .limit(input.limit)
-        .offset(input.offset),
-      db.select({ value: count() }).from(contentDocuments).where(where),
-    ]);
-    return { list: rows, total: totals[0]?.value ?? 0 };
+    return withTenantDbContext(
+      { ...input, userId },
+      async (tx) => {
+        const [totals] = await tx
+          .select({ value: count() })
+          .from(contentDocuments)
+          .where(where);
+        const total = totals?.value ?? 0;
+        const pages = Math.max(1, Math.ceil(total / input.limit));
+        const offset =
+          input.offset < total ? input.offset : (pages - 1) * input.limit;
+        const rows = await tx
+          .select({
+            id: contentDocuments.id,
+            organizationId: contentDocuments.organizationId,
+            teamBindingId: contentDocuments.teamBindingId,
+            brandId: contentDocuments.brandId,
+            folderId: contentDocuments.folderId,
+            folderName: contentFolders.name,
+            createdBy: contentDocuments.createdBy,
+            updatedBy: contentDocuments.updatedBy,
+            source: contentDocuments.source,
+            sourceJobId: contentDocuments.sourceJobId,
+            sourceUrl: contentDocuments.sourceUrl,
+            title: contentDocuments.title,
+            bodyPreview: sql<string>`left(${contentDocuments.body}, 180)`,
+            contentLength: sql<number>`char_length(${contentDocuments.body})::int`,
+            status: contentDocuments.status,
+            language: contentDocuments.language,
+            tags: contentDocuments.tags,
+            currentVersion: contentDocuments.currentVersion,
+            createdAt: contentDocuments.createdAt,
+            updatedAt: contentDocuments.updatedAt,
+          })
+          .from(contentDocuments)
+          .leftJoin(
+            contentFolders,
+            and(
+              eq(contentFolders.id, contentDocuments.folderId),
+              ...folderConditions(input),
+            ),
+          )
+          .where(where)
+          .orderBy(desc(contentDocuments.updatedAt), desc(contentDocuments.id))
+          .limit(input.limit)
+          .offset(offset);
+        return {
+          list: rows,
+          total,
+          pagination: {
+            page: Math.floor(offset / input.limit) + 1,
+            pageSize: input.limit,
+            total,
+            pages,
+            offset,
+          },
+        };
+      },
+      { isolationLevel: "repeatable read", accessMode: "read only" },
+    );
   },
 
-  async find(scope: Scope, documentId: string) {
-    const [document] = await db
-      .select({
-        id: contentDocuments.id,
-        organizationId: contentDocuments.organizationId,
-        teamBindingId: contentDocuments.teamBindingId,
-        brandId: contentDocuments.brandId,
-        folderId: contentDocuments.folderId,
-        folderName: contentFolders.name,
-        createdBy: contentDocuments.createdBy,
-        updatedBy: contentDocuments.updatedBy,
-        source: contentDocuments.source,
-        sourceJobId: contentDocuments.sourceJobId,
-        sourceUrl: contentDocuments.sourceUrl,
-        title: contentDocuments.title,
-        body: contentDocuments.body,
-        status: contentDocuments.status,
-        language: contentDocuments.language,
-        tags: contentDocuments.tags,
-        currentVersion: contentDocuments.currentVersion,
-        createdAt: contentDocuments.createdAt,
-        updatedAt: contentDocuments.updatedAt,
-      })
-      .from(contentDocuments)
-      .leftJoin(
-        contentFolders,
-        eq(contentFolders.id, contentDocuments.folderId),
-      )
-      .where(
-        and(eq(contentDocuments.id, documentId), ...scopeConditions(scope)),
-      )
-      .limit(1);
-    if (!document) return undefined;
-    const versions = await db
-      .select({
-        id: contentDocumentVersions.id,
-        version: contentDocumentVersions.version,
-        status: contentDocumentVersions.status,
-        changeSummary: contentDocumentVersions.changeSummary,
-        createdBy: contentDocumentVersions.createdBy,
-        createdAt: contentDocumentVersions.createdAt,
-      })
-      .from(contentDocumentVersions)
-      .where(
-        and(
-          eq(contentDocumentVersions.documentId, documentId),
-          eq(contentDocumentVersions.organizationId, scope.organizationId),
-        ),
-      )
-      .orderBy(desc(contentDocumentVersions.version));
-    return { ...document, versions };
+  async find(scope: Scope, documentId: string, userId: string) {
+    return withTenantDbContext(
+      { ...scope, userId },
+      async (tx) => {
+        const [document] = await tx
+          .select({
+            id: contentDocuments.id,
+            organizationId: contentDocuments.organizationId,
+            teamBindingId: contentDocuments.teamBindingId,
+            brandId: contentDocuments.brandId,
+            folderId: contentDocuments.folderId,
+            folderName: contentFolders.name,
+            createdBy: contentDocuments.createdBy,
+            updatedBy: contentDocuments.updatedBy,
+            source: contentDocuments.source,
+            sourceJobId: contentDocuments.sourceJobId,
+            sourceUrl: contentDocuments.sourceUrl,
+            title: contentDocuments.title,
+            body: contentDocuments.body,
+            status: contentDocuments.status,
+            language: contentDocuments.language,
+            tags: contentDocuments.tags,
+            currentVersion: contentDocuments.currentVersion,
+            createdAt: contentDocuments.createdAt,
+            updatedAt: contentDocuments.updatedAt,
+          })
+          .from(contentDocuments)
+          .leftJoin(
+            contentFolders,
+            and(
+              eq(contentFolders.id, contentDocuments.folderId),
+              ...folderConditions(scope),
+            ),
+          )
+          .where(
+            and(eq(contentDocuments.id, documentId), ...scopeConditions(scope)),
+          )
+          .limit(1);
+        if (!document) return undefined;
+        const versions = await tx
+          .select({
+            id: contentDocumentVersions.id,
+            version: contentDocumentVersions.version,
+            status: contentDocumentVersions.status,
+            changeSummary: contentDocumentVersions.changeSummary,
+            createdBy: contentDocumentVersions.createdBy,
+            createdAt: contentDocumentVersions.createdAt,
+          })
+          .from(contentDocumentVersions)
+          .where(
+            and(
+              eq(contentDocumentVersions.documentId, documentId),
+              eq(contentDocumentVersions.organizationId, scope.organizationId),
+            ),
+          )
+          .orderBy(desc(contentDocumentVersions.version));
+        return { ...document, versions };
+      },
+      { isolationLevel: "repeatable read", accessMode: "read only" },
+    );
   },
 
   // @project-doc docs/domains/geo_operations.md#article_jobs
