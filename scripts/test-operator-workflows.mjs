@@ -109,6 +109,18 @@ try {
     pnpm,
     [
       "--filter",
+      "@geo/web",
+      "exec",
+      "vitest",
+      "run",
+      "src/server/services/content-document-writes.integration.test.ts",
+    ],
+    { CONTENT_DOCUMENT_WRITE_DB_TESTS: "1" },
+  );
+  await run(
+    pnpm,
+    [
+      "--filter",
       "@geo/db",
       "exec",
       "vitest",

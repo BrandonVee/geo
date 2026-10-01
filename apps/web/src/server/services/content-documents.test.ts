@@ -224,7 +224,11 @@ describe("内容文档服务", () => {
       expectedVersion: 1,
     });
     const restored = { ...document, currentVersion: 3 };
-    mocks.restore.mockResolvedValueOnce({ ok: true, document: restored });
+    const tx = { insert: vi.fn() };
+    mocks.restore.mockImplementationOnce(async (...args) => {
+      await args[6](tx, restored);
+      return { ok: true, document: restored };
+    });
     await expect(
       contentDocumentService.restoreVersion(
         scope,
@@ -242,6 +246,7 @@ describe("内容文档服务", () => {
       "恢复历史版本",
       userId,
       1,
+      expect.any(Function),
     );
     expect(mocks.writeAudit).toHaveBeenCalledWith(
       audit,
@@ -249,6 +254,7 @@ describe("内容文档服务", () => {
         operation: "content.document.version.restore",
         summary: "恢复文档历史版本 v1",
       }),
+      tx,
     );
 
     mocks.restore.mockResolvedValueOnce({
@@ -272,9 +278,11 @@ describe("内容文档服务", () => {
   });
 
   it("归档使用删除权限，文件夹删除失败不写入成功审计", async () => {
-    mocks.update.mockResolvedValueOnce({
-      ok: true,
-      document: { ...document, status: "archived" },
+    const tx = { insert: vi.fn() };
+    mocks.update.mockImplementationOnce(async (...args) => {
+      const archived = { ...document, status: "archived" };
+      await args[4](tx, archived);
+      return { ok: true, document: archived };
     });
     await contentDocumentService.archive(
       { ...scope, expectedVersion: 1 },
@@ -299,6 +307,12 @@ describe("内容文档服务", () => {
         changeSummary: "归档文档",
       },
       userId,
+      expect.any(Function),
+    );
+    expect(mocks.writeAudit).toHaveBeenCalledWith(
+      audit,
+      expect.objectContaining({ operation: "content.document.archive" }),
+      tx,
     );
 
     mocks.deleteFolder.mockResolvedValueOnce({ kind: "missing" });
@@ -308,6 +322,58 @@ describe("内容文档服务", () => {
     expect(mocks.writeAudit).toHaveBeenCalledTimes(1);
   });
 
+  it("编辑审计使用仓库事务及实际保存的版本，写入响应不泄露原创建标识", async () => {
+    const tx = { insert: vi.fn() };
+    const saved = {
+      ...document,
+      currentVersion: 2,
+      title: "保存标题",
+      creationKey: "private-key",
+      creationFingerprint: "private-fingerprint",
+    };
+    mocks.update.mockImplementationOnce(async (...args) => {
+      await args[4](tx, saved);
+      return { ok: true, document: saved };
+    });
+    const input = updateContentDocumentSchema.parse({
+      ...scope,
+      expectedVersion: 1,
+      title: "保存标题",
+    });
+    await expect(
+      contentDocumentService.update(scope, documentId, input, userId, audit),
+    ).resolves.toEqual({ ...document, currentVersion: 2, title: "保存标题" });
+    expect(mocks.writeAudit).toHaveBeenCalledWith(
+      audit,
+      {
+        operation: "content.document.update",
+        resourceType: "content_document",
+        resourceId: documentId,
+        summary: "更新文档版本 v2：保存标题",
+      },
+      tx,
+    );
+  });
+  it.each([
+    ["CONTENT_REQUIRED", "CONTENT_DOCUMENT_BODY_REQUIRED"],
+    ["SOURCE_URL_REQUIRED", "CONTENT_DOCUMENT_SOURCE_URL_REQUIRED"],
+  ])(
+    "历史恢复业务校验 %s 保留准确错误，不误报文档不存在",
+    async (repositoryCode, code) => {
+      mocks.restore.mockResolvedValueOnce({ ok: false, code: repositoryCode });
+      await expect(
+        contentDocumentService.restoreVersion(
+          scope,
+          documentId,
+          1,
+          { ...scope, expectedVersion: 1, changeSummary: "恢复" },
+          userId,
+          audit,
+        ),
+      ).rejects.toMatchObject({ status: 422, code });
+      expect(mocks.writeAudit).not.toHaveBeenCalled();
+    },
+  );
   it("重复文件夹名返回冲突而不是内部错误", async () => {
     mocks.createFolder.mockRejectedValueOnce({ code: "23505" });
     await expect(

@@ -40,6 +40,10 @@ type Scope = {
 
 type FolderRow = typeof contentFolders.$inferSelect;
 type FolderAudit = (tx: DatabaseTransaction, row: FolderRow) => Promise<void>;
+type DocumentAudit = (
+  tx: DatabaseTransaction,
+  document: typeof contentDocuments.$inferSelect,
+) => Promise<void>;
 const folderConditions = (scope: Scope, id?: string) => [
   eq(contentFolders.organizationId, scope.organizationId),
   eq(contentFolders.teamBindingId, scope.teamBindingId),
@@ -217,7 +221,7 @@ export const contentDocumentRepository = {
         }),
       )
       .digest("hex");
-    return db.transaction(async (tx) => {
+    return withTenantDbContext({ ...input, userId }, async (tx) => {
       await lockLibrary(tx, input);
       if (creationKey) {
         await tx.execute(
@@ -300,8 +304,9 @@ export const contentDocumentRepository = {
     documentId: string,
     input: UpdateContentDocumentInput,
     userId: string,
+    audit?: DocumentAudit,
   ) {
-    return db.transaction(async (tx) => {
+    return withTenantDbContext({ ...scope, userId }, async (tx) => {
       await lockLibrary(tx, scope);
       await tx.execute(
         sql`select pg_advisory_xact_lock(hashtext(${documentId}))`,
@@ -365,6 +370,7 @@ export const contentDocumentRepository = {
         changeSummary: input.changeSummary,
         createdBy: userId,
       });
+      if (audit) await audit(tx, document!);
       return { ok: true as const, document: document! };
     });
   },
@@ -376,18 +382,26 @@ export const contentDocumentRepository = {
     changeSummary: string,
     userId: string,
     expectedVersion: number,
+    audit?: DocumentAudit,
   ) {
-    const [version] = await db
-      .select()
-      .from(contentDocumentVersions)
-      .where(
-        and(
-          eq(contentDocumentVersions.documentId, documentId),
-          eq(contentDocumentVersions.organizationId, scope.organizationId),
-          eq(contentDocumentVersions.version, restoreVersion),
-        ),
-      )
-      .limit(1);
+    const [version] = await withTenantDbContext({ ...scope, userId }, (tx) =>
+      tx
+        .select({ snapshot: contentDocumentVersions })
+        .from(contentDocumentVersions)
+        .innerJoin(
+          contentDocuments,
+          eq(contentDocuments.id, contentDocumentVersions.documentId),
+        )
+        .where(
+          and(
+            ...scopeConditions(scope),
+            eq(contentDocumentVersions.documentId, documentId),
+            eq(contentDocumentVersions.organizationId, scope.organizationId),
+            eq(contentDocumentVersions.version, restoreVersion),
+          ),
+        )
+        .limit(1),
+    );
     if (!version)
       return { ok: false as const, code: "VERSION_NOT_FOUND" as const };
     return this.update(
@@ -396,14 +410,19 @@ export const contentDocumentRepository = {
       {
         ...scope,
         expectedVersion,
-        title: version.title,
-        body: version.body,
-        status: version.status,
-        language: version.language as "zh-CN" | "zh-TW" | "en-US" | "ja-JP",
-        tags: version.tags,
+        title: version.snapshot.title,
+        body: version.snapshot.body,
+        status: version.snapshot.status,
+        language: version.snapshot.language as
+          | "zh-CN"
+          | "zh-TW"
+          | "en-US"
+          | "ja-JP",
+        tags: version.snapshot.tags,
         changeSummary,
       },
       userId,
+      audit,
     );
   },
 

@@ -1709,6 +1709,7 @@ paths:
           description: 文档不存在或不在当前品牌范围
     patch:
       summary: 更新文档并创建新版本
+      description: 当前内容、新版本和审计在租户事务内原子提交。审计失败不推进版本，原 expectedVersion 可重试；响应不包含内部创建键和指纹。
       tags:
         - Content Library
       security:
@@ -1737,6 +1738,7 @@ paths:
           description: CONTENT_DOCUMENT_VERSION_CONFLICT；文档已有新版本，本次修改未写入
     delete:
       summary: 归档文档
+      description: 归档状态、新版本和审计原子提交；失败保持原状态及版本。
       tags:
         - Content Library
       security:
@@ -1767,6 +1769,7 @@ paths:
   /v1/content-documents/{documentId}/versions/{version}/restorations:
     post:
       summary: 将历史内容恢复为新的最新版本
+      description: 只读取当前品牌范围的不可变历史快照，保留当前来源链接和目录位置。恢复内容、新版本和审计原子提交，失败保持原版本；响应不包含内部创建键和指纹。
       tags:
         - Content Library
       security:
@@ -1797,6 +1800,8 @@ paths:
           $ref: "#/components/responses/UnsupportedMediaType"
         "200":
           description: 历史内容已另存为新版本
+        "422":
+          description: CONTENT_DOCUMENT_BODY_REQUIRED 或 CONTENT_DOCUMENT_SOURCE_URL_REQUIRED，恢复内容未写入
         "409":
           description: CONTENT_DOCUMENT_VERSION_CONFLICT；当前文档已变化，未恢复历史内容
   /v1/content-folders:

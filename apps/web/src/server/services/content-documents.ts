@@ -80,6 +80,45 @@ async function authorize(
   );
 }
 
+type Document = Extract<
+  Awaited<ReturnType<typeof contentDocumentRepository.update>>,
+  { ok: true }
+>["document"];
+function presentDocument(row: Document) {
+  const { creationKey: _, creationFingerprint: __, ...document } = row;
+  void _;
+  void __;
+  return document;
+}
+function documentWriteFailure(
+  result: Extract<
+    Awaited<ReturnType<typeof contentDocumentRepository.restore>>,
+    { ok: false }
+  >,
+): never {
+  if (result.code === "VERSION_CONFLICT")
+    versionConflict(result.currentVersion);
+  if (
+    result.code === "CONTENT_REQUIRED" ||
+    result.code === "SOURCE_URL_REQUIRED"
+  )
+    throw new ApiError(
+      422,
+      result.code === "CONTENT_REQUIRED"
+        ? "CONTENT_DOCUMENT_BODY_REQUIRED"
+        : "CONTENT_DOCUMENT_SOURCE_URL_REQUIRED",
+      result.code === "CONTENT_REQUIRED"
+        ? "定稿文档必须包含正文"
+        : "导入文档必须保留来源链接",
+    );
+  const missing =
+    result.code === "FOLDER_NOT_FOUND"
+      ? ["CONTENT_FOLDER_NOT_FOUND", "目标文件夹不存在"]
+      : result.code === "VERSION_NOT_FOUND"
+        ? ["CONTENT_DOCUMENT_VERSION_NOT_FOUND", "历史版本不存在"]
+        : ["CONTENT_DOCUMENT_NOT_FOUND", "文档不存在"];
+  throw new ApiError(404, missing[0], missing[1]);
+}
 type Folder = Extract<
   Awaited<ReturnType<typeof contentDocumentRepository.createFolder>>,
   { kind: "created" }
@@ -171,38 +210,20 @@ export const contentDocumentService = {
       documentId,
       input,
       userId,
+      (tx, document) =>
+        writeAudit(
+          audit,
+          {
+            operation: "content.document.update",
+            resourceType: "content_document",
+            resourceId: documentId,
+            summary: `更新文档版本 v${document.currentVersion}：${document.title}`,
+          },
+          tx,
+        ),
     );
-    if (!result.ok) {
-      if (result.code === "VERSION_CONFLICT")
-        versionConflict(result.currentVersion);
-      if (
-        result.code === "CONTENT_REQUIRED" ||
-        result.code === "SOURCE_URL_REQUIRED"
-      )
-        throw new ApiError(
-          422,
-          result.code === "CONTENT_REQUIRED"
-            ? "CONTENT_DOCUMENT_BODY_REQUIRED"
-            : "CONTENT_DOCUMENT_SOURCE_URL_REQUIRED",
-          result.code === "CONTENT_REQUIRED"
-            ? "定稿文档必须包含正文"
-            : "导入文档必须保留来源链接",
-        );
-      throw new ApiError(
-        404,
-        result.code === "FOLDER_NOT_FOUND"
-          ? "CONTENT_FOLDER_NOT_FOUND"
-          : "CONTENT_DOCUMENT_NOT_FOUND",
-        result.code === "FOLDER_NOT_FOUND" ? "目标文件夹不存在" : "文档不存在",
-      );
-    }
-    await writeAudit(audit, {
-      operation: "content.document.update",
-      resourceType: "content_document",
-      resourceId: documentId,
-      summary: `更新文档版本 v${result.document.currentVersion}：${result.document.title}`,
-    });
-    return result.document;
+    if (!result.ok) documentWriteFailure(result);
+    return presentDocument(result.document);
   },
 
   async archive(
@@ -217,19 +238,20 @@ export const contentDocumentService = {
       documentId,
       { ...scope, status: "archived", changeSummary: "归档文档" },
       userId,
+      (tx, document) =>
+        writeAudit(
+          audit,
+          {
+            operation: "content.document.archive",
+            resourceType: "content_document",
+            resourceId: documentId,
+            summary: `归档文档：${document.title}`,
+          },
+          tx,
+        ),
     );
-    if (!result.ok) {
-      if (result.code === "VERSION_CONFLICT")
-        versionConflict(result.currentVersion);
-      throw new ApiError(404, "CONTENT_DOCUMENT_NOT_FOUND", "文档不存在");
-    }
-    await writeAudit(audit, {
-      operation: "content.document.archive",
-      resourceType: "content_document",
-      resourceId: documentId,
-      summary: `归档文档：${result.document.title}`,
-    });
-    return result.document;
+    if (!result.ok) documentWriteFailure(result);
+    return presentDocument(result.document);
   },
 
   async restoreVersion(
@@ -248,25 +270,20 @@ export const contentDocumentService = {
       input.changeSummary,
       userId,
       input.expectedVersion,
+      (tx) =>
+        writeAudit(
+          audit,
+          {
+            operation: "content.document.version.restore",
+            resourceType: "content_document",
+            resourceId: documentId,
+            summary: `恢复文档历史版本 v${version}`,
+          },
+          tx,
+        ),
     );
-    if (!result.ok) {
-      if (result.code === "VERSION_CONFLICT")
-        versionConflict(result.currentVersion);
-      throw new ApiError(
-        404,
-        result.code === "VERSION_NOT_FOUND"
-          ? "CONTENT_DOCUMENT_VERSION_NOT_FOUND"
-          : "CONTENT_DOCUMENT_NOT_FOUND",
-        result.code === "VERSION_NOT_FOUND" ? "历史版本不存在" : "文档不存在",
-      );
-    }
-    await writeAudit(audit, {
-      operation: "content.document.version.restore",
-      resourceType: "content_document",
-      resourceId: documentId,
-      summary: `恢复文档历史版本 v${version}`,
-    });
-    return result.document;
+    if (!result.ok) documentWriteFailure(result);
+    return presentDocument(result.document);
   },
 
   async listFolders(scope: Scope, userId: string) {

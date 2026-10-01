@@ -129,6 +129,8 @@ CI 还会在全新 PostgreSQL 18 中连续执行两次 `pnpm db:release`，并�
 
 文档库的真实 PostgreSQL 回归在完成 `pnpm db:release` 后运行 `CONTENT_DOCUMENT_DB_TESTS=1 node scripts/run-with-env.mjs pnpm --filter @geo/web exec vitest run src/server/repositories/content-documents.integration.test.ts`。测试使用新建 UUID 范围并清理数据，覆盖文档并发创建重放、原操作者与内容校验、编辑后创建重放、过期并发保存拒绝、历史恢复与归档版本校验及文件夹品牌隔离；默认测试跳过此用例。
 
+文档写入原子事务回归由同一一次性数据库脚本以 `CONTENT_DOCUMENT_WRITE_DB_TESTS=1` 执行 `src/server/services/content-document-writes.integration.test.ts`，保留真实 Service、Repository、租户 RLS 和审计，仅替换权限授权边界。覆盖编辑、归档、历史恢复的审计失败全回滚、同一原版本可重试、提交前内容和审计不可见、提交中断回滚、同版本并发只接受一次，以及错误品牌和过期操作不写入内容或审计；不可变审计随整个测试库删除清理。
+
 文件夹工作流回归由同一一次性数据库脚本以 `CONTENT_FOLDER_DB_TESTS=1` 执行 `src/server/repositories/content-folders.integration.test.ts`，覆盖同键并发创建、原操作者和品牌隔离、改名后创建重放、删除后禁止复活、名称复用、旧名称并发比较、删除保留活动与归档正文和历史、版本冲突及审计回滚。浏览器回归验证创建、改名、删除响应丢失后的刷新确认，原请求保持一致且只审计一次，并发改名保留输入供核对，旧删除确认拒绝覆盖最新名称。不可变历史随整个一次性数据库删除清理。
 
 成员额度的真实 PostgreSQL 并发回归在完成 `pnpm db:release` 后运行 `MEMBER_CAPACITY_DB_TESTS=1 node scripts/run-with-env.mjs pnpm --filter @geo/web exec vitest run src/server/repositories/members.integration.test.ts`。测试使用新建 UUID 范围并清理数据，覆盖并发新增、并发恢复与新增共同争用最后一个名额；默认测试跳过此用例。
