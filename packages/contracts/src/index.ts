@@ -1562,10 +1562,22 @@ export const reportExportListQuerySchema = z
     organizationId: z.string().uuid(),
     teamBindingId: z.string().uuid(),
     brandId: z.string().trim().min(1).max(128),
+    q: z.string().trim().max(500).optional().default(""),
+    reportType: z.enum(["answers", "domain_rank", "article_rank"]).optional(),
+    status: z
+      .enum(["queued", "running", "succeeded", "failed", "expired"])
+      .optional(),
+    beginDate: calendarDateSchema.optional(),
+    endDate: calendarDateSchema.optional(),
     page: queryInteger(1, 1, 100000),
     pageSize: queryInteger(20, 1, 100),
   })
-  .strict();
+  .strict()
+  .refine(
+    (value) =>
+      !value.beginDate || !value.endDate || value.beginDate <= value.endDate,
+    { message: "开始日期不能晚于结束日期", path: ["beginDate"] },
+  );
 export const reportExportActionSchema = z
   .object({ organizationId: z.string().uuid() })
   .strict();

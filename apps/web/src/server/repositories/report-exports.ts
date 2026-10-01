@@ -8,6 +8,7 @@ import {
   reportExports,
   reserveQuotaInTransaction,
   withDatabaseTransaction,
+  withTenantDbContext,
   type SqlExecutor,
 } from "@geo/db";
 import {
@@ -15,7 +16,7 @@ import {
   type AuditContext,
   type AuditEntry,
 } from "@/server/audit/write-audit";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, count, desc, eq, gte, lt, or, ilike, sql } from "drizzle-orm";
 export const reportExportRepository = {
   async findByIdempotency(organizationId: string, key: string) {
     const [row] = await db
@@ -146,44 +147,89 @@ export const reportExportRepository = {
       return { ok: true as const, job: job!, replayed: Boolean(existing) };
     });
   },
-  list(input: ReportExportListQuery) {
-    return db
-      .select({
-        id: reportExports.id,
-        reportType: reportExports.reportType,
-        filters: reportExports.filters,
-        status: reportExports.status,
-        filename: reportExports.filename,
-        rowCount: reportExports.rowCount,
-        errorCode: reportExports.errorCode,
-        createdAt: reportExports.createdAt,
-        completedAt: reportExports.completedAt,
-        expiresAt: reportExports.expiresAt,
-      })
-      .from(reportExports)
-      .where(
-        and(
+  // @project-doc docs/domains/geo_operations.md#report_exports
+  page(input: ReportExportListQuery, userId: string) {
+    return withTenantDbContext(
+      {
+        organizationId: input.organizationId,
+        userId,
+        teamBindingId: input.teamBindingId,
+        brandId: input.brandId,
+      },
+      async (tx) => {
+        const now = new Date();
+        const effectiveStatus = sql<string>`case when ${reportExports.status} = 'succeeded' and ${reportExports.expiresAt} <= ${now} then 'expired' else ${reportExports.status}::text end`;
+        const pattern = `%${input.q.replace(/[\\%_]/g, "\\$&")}%`;
+        const where = and(
           eq(reportExports.organizationId, input.organizationId),
           eq(reportExports.teamBindingId, input.teamBindingId),
           eq(reportExports.brandId, input.brandId),
-        ),
-      )
-      .orderBy(desc(reportExports.createdAt))
-      .limit(input.pageSize)
-      .offset((input.page - 1) * input.pageSize);
-  },
-  async count(input: ReportExportListQuery) {
-    const [row] = await db
-      .select({ value: sql<number>`count(*)::int` })
-      .from(reportExports)
-      .where(
-        and(
-          eq(reportExports.organizationId, input.organizationId),
-          eq(reportExports.teamBindingId, input.teamBindingId),
-          eq(reportExports.brandId, input.brandId),
-        ),
-      );
-    return row?.value ?? 0;
+          input.reportType
+            ? eq(reportExports.reportType, input.reportType)
+            : undefined,
+          input.status ? sql`${effectiveStatus} = ${input.status}` : undefined,
+          input.beginDate
+            ? gte(
+                reportExports.createdAt,
+                new Date(`${input.beginDate}T00:00:00+08:00`),
+              )
+            : undefined,
+          input.endDate
+            ? lt(
+                reportExports.createdAt,
+                new Date(
+                  new Date(`${input.endDate}T00:00:00+08:00`).getTime() +
+                    86_400_000,
+                ),
+              )
+            : undefined,
+          input.q
+            ? or(
+                ilike(reportExports.filename, pattern),
+                sql`${reportExports.id}::text ilike ${pattern}`,
+                sql`coalesce(${reportExports.filters}->>'keyword', '') ilike ${pattern}`,
+              )
+            : undefined,
+        );
+        const [total] = await tx
+          .select({ value: count() })
+          .from(reportExports)
+          .where(where);
+        const page = Math.min(
+          input.page,
+          Math.max(1, Math.ceil(total.value / input.pageSize)),
+        );
+        const list = await tx
+          .select({
+            id: reportExports.id,
+            reportType: reportExports.reportType,
+            filters: reportExports.filters,
+            status: effectiveStatus.as("effective_status"),
+            filename: reportExports.filename,
+            rowCount: reportExports.rowCount,
+            errorCode: reportExports.errorCode,
+            createdAt: reportExports.createdAt,
+            completedAt: reportExports.completedAt,
+            expiresAt: reportExports.expiresAt,
+          })
+          .from(reportExports)
+          .where(where)
+          .orderBy(desc(reportExports.createdAt), desc(reportExports.id))
+          .limit(input.pageSize)
+          .offset((page - 1) * input.pageSize);
+        return {
+          asOf: now,
+          list,
+          pagination: {
+            page,
+            pageSize: input.pageSize,
+            total: total.value,
+            pages: Math.ceil(total.value / input.pageSize),
+          },
+        };
+      },
+      { isolationLevel: "repeatable read", accessMode: "read only" },
+    );
   },
   async find(id: string, organizationId: string) {
     const [row] = await db

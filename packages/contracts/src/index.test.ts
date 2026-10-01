@@ -1212,3 +1212,40 @@ describe("通知筛选与并发保存契约", () => {
     ).toBe(false);
   });
 });
+
+describe("报告历史检索契约", () => {
+  it("解析文字、状态、类型、分页与单边日期", async () => {
+    const { reportExportListQuerySchema } = await import("./index");
+    expect(
+      reportExportListQuerySchema.parse({
+        organizationId,
+        teamBindingId,
+        brandId: "brand",
+        q: " 原问题 ",
+        status: "expired",
+        reportType: "answers",
+        beginDate: "2026-09-01",
+        page: "2",
+        pageSize: "5",
+      }),
+    ).toMatchObject({ q: "原问题", page: 2, pageSize: 5, status: "expired" });
+  });
+  it.each([
+    { beginDate: "2026-02-30" },
+    { beginDate: "2026-09-02", endDate: "2026-09-01" },
+    { status: "invalid" },
+    { reportType: "invalid" },
+    { pageSize: 101 },
+    { q: "x".repeat(501) },
+  ])("拒绝非法条件 %j", async (patch) => {
+    const { reportExportListQuerySchema } = await import("./index");
+    expect(
+      reportExportListQuerySchema.safeParse({
+        organizationId,
+        teamBindingId,
+        brandId: "brand",
+        ...patch,
+      }).success,
+    ).toBe(false);
+  });
+});

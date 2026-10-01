@@ -35,13 +35,12 @@ const present = <
 >(
   row: Row,
   organizationId: string,
+  now = new Date(),
 ) => {
   const { fileContent: _, ...record } = row;
   void _;
   const status =
-    record.status === "succeeded" &&
-    record.expiresAt &&
-    record.expiresAt <= new Date()
+    record.status === "succeeded" && record.expiresAt && record.expiresAt <= now
       ? "expired"
       : record.status;
   const parsedFilters = reportExportFiltersSchema.safeParse(record.filters);
@@ -55,9 +54,7 @@ const present = <
           "报告生成失败，可重新导出；多次失败请联系管理员。")
         : null,
     downloadUrl:
-      status === "succeeded" &&
-      record.expiresAt &&
-      record.expiresAt > new Date()
+      status === "succeeded" && record.expiresAt && record.expiresAt > now
         ? `/api/v1/report-exports/${record.id}/file?organizationId=${organizationId}`
         : null,
   };
@@ -159,18 +156,13 @@ export const reportExportService = {
       userId,
       "report.export",
     );
-    const [list, total] = await Promise.all([
-      reportExportRepository.list(input),
-      reportExportRepository.count(input),
-    ]);
+    const { asOf, ...result } = await reportExportRepository.page(
+      input,
+      userId,
+    );
     return {
-      list: list.map((row) => present(row, input.organizationId)),
-      pagination: {
-        page: input.page,
-        pageSize: input.pageSize,
-        total,
-        pages: Math.ceil(total / input.pageSize),
-      },
+      ...result,
+      list: result.list.map((row) => present(row, input.organizationId, asOf)),
     };
   },
   async get(id: string, organizationId: string, userId: string) {

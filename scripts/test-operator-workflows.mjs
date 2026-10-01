@@ -237,6 +237,18 @@ try {
     ],
     { NOTIFICATION_WORKFLOW_DB_TESTS: "1" },
   );
+  await run(
+    pnpm,
+    [
+      "--filter",
+      "@geo/web",
+      "exec",
+      "vitest",
+      "run",
+      "src/server/repositories/report-history.integration.test.ts",
+    ],
+    { REPORT_HISTORY_DB_TESTS: "1" },
+  );
   const seed = new Client({ connectionString: databaseUrl.href });
   await seed.connect();
   try {

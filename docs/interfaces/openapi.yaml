@@ -3267,6 +3267,7 @@ paths:
           description: 保存视图已删除
   /v1/report-exports:
     get:
+      description: 要求当前企业、绑定、品牌的 report.export 权限，可见同品牌历史任务；筛选参数取交集。
       summary: 查询当前品牌的报表导出任务
       tags:
         - Workspace Extensions
@@ -3276,9 +3277,43 @@ paths:
         - $ref: "#/components/parameters/BrandId"
         - $ref: "#/components/parameters/Page"
         - $ref: "#/components/parameters/PageSize"
+        - in: query
+          name: q
+          description: 按文件名、报告编号或原关键词检索，通配符按原文字匹配
+          schema:
+            type: string
+            maxLength: 500
+            default: ""
+        - in: query
+          name: reportType
+          schema:
+            type: string
+            enum: [answers, domain_rank, article_rank]
+        - in: query
+          name: status
+          description: 成功但文件已到期的任务实时归入 expired，不归入 succeeded
+          schema:
+            type: string
+            enum: [queued, running, succeeded, failed, expired]
+        - in: query
+          name: beginDate
+          description: 北京时间提交开始日期（含），可单独使用
+          schema:
+            type: string
+            format: date
+        - in: query
+          name: endDate
+          description: 北京时间提交结束日期（含），可单独使用，不能早于开始日期
+          schema:
+            type: string
+            format: date
       responses:
         "200":
-          description: 导出任务分页列表；包含原始 filters、面向用户的 errorMessage、到期状态和有效 downloadUrl，不返回 CSV 内容
+          description: 导出任务分页列表；包含原始 filters、面向用户的 errorMessage、到期状态和有效 downloadUrl，不返回 CSV 内容；总数与分页处于同一租户快照，按提交时间与ID稳定倒序，超界页码回退
+        "400":
+          description: 无效筛选或日期
+        "403":
+          description: 当前品牌无报告权限
     post:
       summary: 创建异步 CSV 报表导出
       description: 创建和 Worker 执行时均重新校验企业、TeamID、品牌和 report.export 权限；报告、平台报表额度预留、队列任务和审计原子提交，中途失败全部回滚。同一幂等键仅允许原请求用户、范围、报表类型和筛选条件一致的重放。

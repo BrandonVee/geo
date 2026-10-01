@@ -8,7 +8,7 @@ const m = vi.hoisted(() => ({
   enqueue: vi.fn(),
   find: vi.fn(),
   list: vi.fn(),
-  count: vi.fn(),
+  page: vi.fn(),
 }));
 vi.mock("@/server/permissions/brand-scope", () => ({
   authorizeBrand: m.authorize,
@@ -19,8 +19,7 @@ vi.mock("@/server/repositories/report-exports", () => ({
     findByIdempotency: m.existing,
     create: m.create,
     find: m.find,
-    list: m.list,
-    count: m.count,
+    page: m.page,
   },
 }));
 import { reportExportService } from "./report-exports";
@@ -72,7 +71,10 @@ beforeEach(() => {
   m.prepare.mockResolvedValue(m.enqueue);
   m.enqueue.mockResolvedValue("queue");
   m.list.mockResolvedValue([row]);
-  m.count.mockResolvedValue(1);
+  m.page.mockImplementation(async () => ({
+    list: await m.list(),
+    pagination: { page: 1, pageSize: 20, total: 1, pages: 1 },
+  }));
 });
 describe("报告提交与重试", () => {
   it("相同请求重放不占用新额度、不重新入队或返回文件正文", async () => {
@@ -177,6 +179,7 @@ describe("报告提交与重试", () => {
         brandId: "brand",
         page: 1,
         pageSize: 20,
+        q: "",
       },
       "user",
     );

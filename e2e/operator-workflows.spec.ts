@@ -403,6 +403,13 @@ test.describe("真实运营操作闭环", () => {
       .limit(1);
     // Audits are immutable. The runner drops this disposable database after QA.
     if (audited.length) return;
+    const reportHistory = await db
+      .select({ id: database.reportExports.id })
+      .from(database.reportExports)
+      .where(inArray(database.reportExports.organizationId, ids))
+      .limit(1);
+    // Started reports are immutable; the runner removes the disposable database.
+    if (reportHistory.length) return;
     await db
       .delete(database.publicationOrders)
       .where(inArray(database.publicationOrders.organizationId, ids));
@@ -6610,5 +6617,315 @@ test.describe("真实运营操作闭环", () => {
     expect(
       logs.filter((log) => log.operation === "notification-rule.update"),
     ).toHaveLength(2);
+  });
+  test("报告历史检索、分页与刷新恢复，读取失败独立重试", async ({ page }) => {
+    await mockBusinessApis(page);
+    await mockAnswerReads(page);
+    const [scope, other] = fixture.scopes;
+    const filters = {
+      beginDate: "2026-08-01",
+      endDate: "2026-08-31",
+      keyword: "原关键词_50%",
+      platforms: [],
+      promptIds: [],
+      titleIds: [],
+      tagIds: [],
+      mentionBrand: -1,
+    };
+    await database.db.insert(database.reportExports).values(
+      Array.from({ length: 63 }, (_, i) => ({
+        organizationId: scope.organizationId,
+        teamBindingId: scope.teamBindingId,
+        brandId: scope.brandId,
+        requestedBy: fixture.userId,
+        reportType: "answers" as const,
+        filters: {
+          ...filters,
+          keyword: i === 0 ? filters.keyword : "其他问题",
+        },
+        idempotencyKey: randomUUID(),
+        status: "failed" as const,
+        filename: `历史回答报告 ${i}.csv`,
+        errorCode: "REPORT_PERMISSION_REVOKED",
+        createdAt: new Date("2026-09-02T01:00:00Z"),
+      })),
+    );
+    const [expired] = await database.db
+      .insert(database.reportExports)
+      .values({
+        organizationId: scope.organizationId,
+        teamBindingId: scope.teamBindingId,
+        brandId: scope.brandId,
+        requestedBy: fixture.userId,
+        reportType: "domain_rank",
+        filters,
+        idempotencyKey: randomUUID(),
+        status: "succeeded",
+        expiresAt: new Date(0),
+        filename: "过期域名报告.csv",
+        createdAt: new Date("2026-09-02T01:00:00Z"),
+      })
+      .returning();
+    await database.db.insert(database.reportExports).values({
+      organizationId: other.organizationId,
+      teamBindingId: other.teamBindingId,
+      brandId: other.brandId,
+      requestedBy: fixture.userId,
+      reportType: "answers",
+      filters,
+      idempotencyKey: randomUUID(),
+      status: "failed",
+      filename: "另一企业私有报告.csv",
+    });
+    let fail = true;
+    await page.route("**/api/v1/report-exports?**", (route) =>
+      fail
+        ? route.fulfill({
+            status: 503,
+            json: { error: { code: "QA_READ", message: "报告暂不可用" } },
+          })
+        : route.continue(),
+    );
+    await page.goto(
+      scopedPath("/dashboard/answers") +
+        `&reportOrganizationId=${scope.organizationId}&reportBrandId=${scope.brandId}&reportPage=13`,
+    );
+    const history = page.getByRole("region", { name: "报告记录", exact: true });
+    await expect(
+      history.getByText("报告记录读取失败", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      history.getByText("报告数量暂不可用", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: /保存当前条件/ }),
+    ).toBeEnabled();
+    fail = false;
+    await history
+      .getByRole("button", { name: "重试读取报告", exact: true })
+      .click();
+    await expect(
+      history.getByText("共 64 份报告", { exact: true }),
+    ).toBeVisible();
+    await expect(history.locator(".ant-list-item")).toHaveCount(4);
+    await page.reload();
+    await expect(history.locator(".ant-pagination-item-active")).toHaveText(
+      "13",
+    );
+    await history
+      .getByRole("combobox", { name: "按报告状态筛选" })
+      .press("ArrowDown");
+    await page
+      .locator(".ant-select-dropdown:visible")
+      .getByText("文件已过期", { exact: true })
+      .click();
+    await expect(
+      history.getByText("过期域名报告.csv", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      history.getByText("共 1 份报告", { exact: true }),
+    ).toBeVisible();
+    await expect
+      .poll(() => new URL(page.url()).searchParams.get("reportPage"))
+      .toBe("1");
+    await history
+      .getByRole("button", { name: "清除报告筛选", exact: true })
+      .click();
+    const search = history.getByRole("searchbox", {
+      name: "搜索报告名称、编号或原关键词",
+    });
+    await search.fill("原关键词_50%");
+    await search.press("Enter");
+    await expect(
+      history.getByText("共 2 份报告", { exact: true }),
+    ).toBeVisible();
+    await page.reload();
+    await expect(search).toHaveValue("原关键词_50%");
+    await search.fill(expired.id);
+    await search.press("Enter");
+    await expect(
+      history.getByText("共 1 份报告", { exact: true }),
+    ).toBeVisible();
+    const runtime: string[] = [];
+    page.on("pageerror", (error) => runtime.push(error.message));
+    for (const theme of ["light", "dark"]) {
+      if ((await page.locator("html").getAttribute("data-theme")) !== theme)
+        await page.getByRole("button", { name: "切换亮暗色模式" }).click();
+      await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
+      await expect
+        .poll(() =>
+          history
+            .getByText("报告记录", { exact: true })
+            .evaluate((element) => getComputedStyle(element).color),
+        )
+        .toBe(theme === "dark" ? "rgb(244, 245, 247)" : "rgb(33, 33, 33)");
+      await page.evaluate(async () => {
+        await Promise.all(
+          document
+            .getAnimations()
+            .filter(
+              (animation) =>
+                animation.effect?.getComputedTiming().iterations !== Infinity,
+            )
+            .map((animation) => animation.finished.catch(() => {})),
+        );
+      });
+      for (const width of [390, 768, 1440]) {
+        await page.setViewportSize({ width, height: 1000 });
+        await history.scrollIntoViewIfNeeded();
+        expect(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth,
+          ),
+        ).toBe(true);
+        await page.evaluate(axe.source);
+        const results = await page.evaluate(async () =>
+          (window as unknown as { axe: typeof axe }).axe.run(document, {
+            runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa"] },
+          }),
+        );
+        expect(
+          results.violations.map(({ id, nodes }) => ({
+            id,
+            targets: nodes.map(({ target }) => target),
+          })),
+        ).toEqual([]);
+        if (width === 390 || width === 1440)
+          await page.screenshot({
+            path: `/tmp/geo-report-history-${theme}-${width}.png`,
+            fullPage: true,
+          });
+      }
+    }
+    expect(runtime).toEqual([]);
+    await expect(
+      page.getByText("另一企业私有报告.csv", { exact: true }),
+    ).not.toBeVisible();
+  });
+
+  test("报告迟到响应不覆盖新筛选，新提交保留历史条件并可直接定位", async ({
+    page,
+  }) => {
+    await mockBusinessApis(page);
+    await mockAnswerReads(page);
+    const [scope] = fixture.scopes;
+    const filters = {
+      beginDate: "2026-08-01",
+      endDate: "2026-08-31",
+      keyword: "旧报告",
+      platforms: [],
+      promptIds: [],
+      titleIds: [],
+      tagIds: [],
+      mentionBrand: -1,
+    };
+    const [old] = await database.db
+      .insert(database.reportExports)
+      .values({
+        organizationId: scope.organizationId,
+        teamBindingId: scope.teamBindingId,
+        brandId: scope.brandId,
+        requestedBy: fixture.userId,
+        reportType: "answers",
+        filters,
+        idempotencyKey: randomUUID(),
+        status: "failed",
+        filename: "旧报告.csv",
+      })
+      .returning();
+    let held = false,
+      requested = false;
+    let release: () => void = () => {};
+    const waiting = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.route("**/api/v1/report-exports?**", async (route) => {
+      if (
+        held &&
+        !requested &&
+        !new URL(route.request().url()).searchParams.get("q")
+      ) {
+        requested = true;
+        const response = await route.fetch();
+        await waiting;
+        return route.fulfill({ response }).catch(() => {});
+      }
+      return route.continue();
+    });
+    let createdId = "";
+    await page.route("**/api/v1/report-exports", async (route) => {
+      const body = route.request().postDataJSON();
+      const {
+        organizationId,
+        teamBindingId,
+        brandId,
+        reportType,
+        ...submittedFilters
+      } = body;
+      const [job] = await database.db
+        .insert(database.reportExports)
+        .values({
+          organizationId,
+          teamBindingId,
+          brandId,
+          reportType,
+          filters: submittedFilters,
+          requestedBy: fixture.userId,
+          idempotencyKey: route.request().headers()["idempotency-key"],
+          status: "queued",
+        })
+        .returning();
+      createdId = job.id;
+      await route.fulfill({
+        status: 201,
+        json: envelope({
+          ...job,
+          fileContent: undefined,
+          downloadUrl: null,
+          errorMessage: null,
+        }),
+      });
+    });
+    await page.goto(scopedPath("/dashboard/answers"));
+    const history = page.getByRole("region", { name: "报告记录", exact: true });
+    await expect(
+      history.getByText("旧报告.csv", { exact: true }),
+    ).toBeVisible();
+    held = true;
+    await history.getByRole("button", { name: /刷新报告/ }).click();
+    await expect.poll(() => requested).toBe(true);
+    const search = history.getByRole("searchbox", {
+      name: "搜索报告名称、编号或原关键词",
+    });
+    await search.fill("不存在的报告");
+    await search.press("Enter");
+    await expect(
+      history.getByText("暂无符合条件的报告", { exact: true }),
+    ).toBeVisible();
+    release();
+    await expect(
+      history.getByText("旧报告.csv", { exact: true }),
+    ).not.toBeVisible();
+    await page.getByPlaceholder("问题、文章或域名").fill("本次新输入");
+    await page.getByRole("button", { name: /回答\s*CSV/ }).click();
+    await expect(
+      page.getByRole("button", { name: "查看本次报告", exact: true }),
+    ).toBeVisible();
+    await expect(search).toHaveValue("不存在的报告");
+    await expect(
+      history.getByText("暂无符合条件的报告", { exact: true }),
+    ).toBeVisible();
+    await page
+      .getByRole("button", { name: "查看本次报告", exact: true })
+      .click();
+    await expect(search).toHaveValue(createdId);
+    await expect(history.getByText("等待生成", { exact: true })).toBeVisible();
+    await expect(page.getByPlaceholder("问题、文章或域名")).toHaveValue(
+      "本次新输入",
+    );
+    await expect
+      .poll(() => new URL(page.url()).searchParams.get("reportQ"))
+      .toBe(createdId);
+    expect(createdId).not.toBe(old.id);
   });
 });

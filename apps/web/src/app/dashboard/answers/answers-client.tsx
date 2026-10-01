@@ -1,6 +1,5 @@
 "use client";
 import {
-  DownloadOutlined,
   DeleteOutlined,
   EditOutlined,
   EyeOutlined,
@@ -19,9 +18,9 @@ import {
   Flex,
   Input,
   List,
+  Pagination,
   Modal,
   Popconfirm,
-  Pagination,
   Row,
   Select,
   Space,
@@ -33,11 +32,13 @@ import {
 } from "antd";
 import dayjs from "dayjs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  answersSavedViewFiltersSchema,
-  type ReportExportFilters,
-} from "@geo/contracts";
+import { answersSavedViewFiltersSchema } from "@geo/contracts";
 import { ReportAttempt } from "./report-attempt";
+import {
+  ReportHistory,
+  useReportHistory,
+  type ExportJob,
+} from "./report-history";
 import {
   ScopeFields,
   scopeQuery,
@@ -99,29 +100,6 @@ type SavedView = {
   filters: Record<string, unknown>;
   isDefault: boolean;
 };
-type ExportJob = {
-  id: string;
-  reportType: "answers" | "domain_rank" | "article_rank";
-  status: string;
-  filename: string | null;
-  rowCount: number | null;
-  downloadUrl: string | null;
-  expiresAt: string | null;
-  errorMessage: string | null;
-  filters: ReportExportFilters | null;
-};
-const reportLabels: Record<string, string> = {
-  answers: "回答 CSV",
-  domain_rank: "域名 CSV",
-  article_rank: "文章 CSV",
-};
-const reportStatuses: Record<string, { label: string; color: string }> = {
-  queued: { label: "等待生成", color: "default" },
-  running: { label: "正在生成", color: "processing" },
-  succeeded: { label: "可下载", color: "success" },
-  failed: { label: "生成失败", color: "error" },
-  expired: { label: "文件已过期", color: "default" },
-};
 async function readData<T>(url: string, signal?: AbortSignal): Promise<T> {
   const response = await fetch(url, { signal });
   const body = await response.json();
@@ -180,7 +158,7 @@ function AnswersWorkspace({
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [views, setViews] = useState<SavedView[]>([]);
-  const [exports, setExports] = useState<ExportJob[]>([]);
+  const [submittedReport, setSubmittedReport] = useState<ExportJob>();
   const [toolBusy, setToolBusy] = useState("");
   const [toolError, setToolError] = useState("");
   const [messageType, setMessageType] = useState<"error" | "success" | "info">(
@@ -189,8 +167,6 @@ function AnswersWorkspace({
   const [viewOpen, setViewOpen] = useState(false);
   const [viewName, setViewName] = useState("");
   const [editingView, setEditingView] = useState<SavedView | null>(null);
-  const [exportPage, setExportPage] = useState(1);
-  const [exportTotal, setExportTotal] = useState(0);
   const [detailLoading, setDetailLoading] = useState("");
   const reads = useRef<{
     data?: AbortController;
@@ -202,6 +178,14 @@ function AnswersWorkspace({
   const attempts = useRef(new Map<string, ReportAttempt>());
   const canRead = scope.can("answerbit.resource.read");
   const canExport = scope.can("report.export");
+  const reportHistory = useReportHistory(
+    {
+      organizationId: scope.organizationId,
+      teamBindingId: scope.teamBindingId,
+      brandId: scope.brandId,
+    },
+    canExport && Boolean(scope.brandId),
+  );
   useEffect(() => {
     mounted.current = true;
     const currentReads = reads.current;
@@ -232,63 +216,27 @@ function AnswersWorkspace({
     reads.current.tools?.abort();
     const controller = new AbortController();
     reads.current.tools = controller;
-    const [viewResult, exportResult] = await Promise.allSettled([
-      canRead
-        ? readData<SavedView[]>(
+    try {
+      const rows = canRead
+        ? await readData<SavedView[]>(
             `/api/v1/saved-views?${scopeQuery({ organizationId: scope.organizationId, page: "answers" })}`,
             controller.signal,
           )
-        : Promise.resolve([]),
-      canExport && scope.brandId
-        ? readData<{ list: ExportJob[]; pagination: { total: number } }>(
-            `/api/v1/report-exports?${scopeQuery({ organizationId: scope.organizationId, teamBindingId: scope.teamBindingId, brandId: scope.brandId, page: String(exportPage), pageSize: "5" })}`,
-            controller.signal,
-          )
-        : Promise.resolve({ list: [], pagination: { total: 0 } }),
-    ]);
-    if (controller.signal.aborted || !mounted.current) return;
-    if (viewResult.status === "fulfilled") setViews(viewResult.value ?? []);
-    if (exportResult.status === "fulfilled") {
-      setExports(exportResult.value.list ?? []);
-      setExportTotal(exportResult.value.pagination?.total ?? 0);
+        : [];
+      if (!controller.signal.aborted && mounted.current) {
+        setViews(rows);
+        setToolError("");
+      }
+    } catch (error) {
+      if (!controller.signal.aborted && mounted.current)
+        setToolError(
+          error instanceof Error ? error.message : "保存视图读取失败",
+        );
     }
-    const errors = [viewResult, exportResult].flatMap((result) =>
-      result.status === "rejected"
-        ? [
-            result.reason instanceof Error
-              ? result.reason.message
-              : "视图或报告加载失败",
-          ]
-        : [],
-    );
-    setToolError(errors.join("；"));
-  }, [
-    scope.organizationId,
-    scope.teamBindingId,
-    scope.brandId,
-    canRead,
-    canExport,
-    exportPage,
-  ]);
+  }, [scope.organizationId, canRead]);
   useEffect(() => {
     void loadTools();
   }, [loadTools]);
-  useEffect(() => {
-    if (!exports.some((job) => ["queued", "running"].includes(job.status)))
-      return;
-    const refresh = () => {
-      if (document.visibilityState === "visible" && navigator.onLine)
-        void loadTools();
-    };
-    const timer = window.setInterval(refresh, 5000);
-    document.addEventListener("visibilitychange", refresh);
-    window.addEventListener("online", refresh);
-    return () => {
-      window.clearInterval(timer);
-      document.removeEventListener("visibilitychange", refresh);
-      window.removeEventListener("online", refresh);
-    };
-  }, [exports, loadTools]);
   const load = useCallback(async () => {
     if (!scope.brandId || !canRead) return;
     reads.current.data?.abort();
@@ -530,10 +478,7 @@ function AnswersWorkspace({
       attempt.complete();
       if (!mounted.current) return;
       const job = body.data as ExportJob;
-      setExports((items) => [
-        job,
-        ...items.filter((item) => item.id !== job.id),
-      ]);
+      setSubmittedReport(job);
       setMessageType(
         ["failed", "expired"].includes(job.status) ? "error" : "success",
       );
@@ -544,8 +489,7 @@ function AnswersWorkspace({
             ? "上次导出文件已过期，可以重新导出。"
             : "导出任务已提交，可离开页面等待；文件生成后会显示下载入口。",
       );
-      if (exportPage !== 1) setExportPage(1);
-      else await loadTools();
+      await reportHistory.refresh();
     } catch (error) {
       if (mounted.current) {
         setMessageType("error");
@@ -571,13 +515,7 @@ function AnswersWorkspace({
       if (!response.ok) {
         const body = await response.json();
         if (response.status === 410 && mounted.current)
-          setExports((items) =>
-            items.map((item) =>
-              item.id === job.id
-                ? { ...item, status: "expired", downloadUrl: null }
-                : item,
-            ),
-          );
+          reportHistory.markExpired(job.id);
         throw new Error(body.error?.message ?? "下载失败，请重试");
       }
       const blob = await response.blob();
@@ -880,7 +818,13 @@ function AnswersWorkspace({
       <Card
         title="视图与导出"
         extra={
-          <Button onClick={() => void loadTools()} icon={<ReloadOutlined />}>
+          <Button
+            onClick={() => {
+              void loadTools();
+              void reportHistory.refresh();
+            }}
+            icon={<ReloadOutlined />}
+          >
             刷新任务
           </Button>
         }
@@ -965,90 +909,31 @@ function AnswersWorkspace({
             </Space>
           ) : null}
         </Flex>
-        {exports.length ? (
-          <List
-            dataSource={exports}
-            header={<Typography.Text strong>报告记录</Typography.Text>}
-            renderItem={(job) => (
-              <List.Item
-                actions={[
-                  ...(job.downloadUrl
-                    ? [
-                        <Button
-                          onClick={() => void downloadReport(job)}
-                          loading={toolBusy === `download:${job.id}`}
-                          disabled={Boolean(toolBusy)}
-                          icon={<DownloadOutlined />}
-                          key="download"
-                          size="small"
-                        >
-                          下载
-                        </Button>,
-                      ]
-                    : []),
-                  ...(["failed", "expired"].includes(job.status) &&
-                  job.filters &&
-                  canExport
-                    ? [
-                        <Button
-                          key="retry"
-                          size="small"
-                          disabled={Boolean(toolBusy)}
-                          onClick={() => void createExport(job.reportType, job)}
-                        >
-                          重新导出
-                        </Button>,
-                      ]
-                    : []),
-                ]}
+        {canExport && scope.brandId ? (
+          <>
+            {submittedReport ? (
+              <Button
+                style={{ marginTop: 16 }}
+                onClick={() =>
+                  reportHistory.change({
+                    q: submittedReport.id,
+                    reportType: undefined,
+                    status: undefined,
+                    beginDate: undefined,
+                    endDate: undefined,
+                  })
+                }
               >
-                <List.Item.Meta
-                  style={{ minWidth: 0, overflowWrap: "anywhere" }}
-                  description={
-                    <Space direction="vertical" size={2}>
-                      {job.filters ? (
-                        <Typography.Text type="secondary">
-                          {job.filters.beginDate} 至 {job.filters.endDate}
-                          {job.filters.keyword
-                            ? ` · ${job.filters.keyword}`
-                            : ""}
-                        </Typography.Text>
-                      ) : null}
-                      <Typography.Text
-                        type={job.status === "failed" ? "danger" : "secondary"}
-                      >
-                        {job.status === "failed"
-                          ? (job.errorMessage ?? "生成失败，可重新导出")
-                          : job.status === "expired"
-                            ? "文件保留时间为 24 小时，已过期，可重新导出"
-                            : job.status === "succeeded"
-                              ? `${job.rowCount ?? 0} 行 · 文件保留至 ${dayjs(job.expiresAt).format("MM-DD HH:mm")}`
-                              : job.status === "queued"
-                                ? "等待处理，可离开页面"
-                                : "正在生成，可离开页面"}
-                      </Typography.Text>
-                    </Space>
-                  }
-                  title={job.filename ?? reportLabels[job.reportType] ?? "报告"}
-                />
-                <Tag color={reportStatuses[job.status]?.color ?? "default"}>
-                  {reportStatuses[job.status]?.label ?? "状态未知"}
-                </Tag>
-              </List.Item>
-            )}
-            size="small"
-          />
-        ) : null}
-        {exportTotal > 5 ? (
-          <Flex justify="flex-end" style={{ marginTop: 16 }}>
-            <Pagination
-              current={exportPage}
-              onChange={setExportPage}
-              pageSize={5}
-              showSizeChanger={false}
-              total={exportTotal}
+                查看本次报告
+              </Button>
+            ) : null}
+            <ReportHistory
+              history={reportHistory}
+              busy={toolBusy}
+              onDownload={(job) => void downloadReport(job)}
+              onExport={(job) => void createExport(job.reportType, job)}
             />
-          </Flex>
+          </>
         ) : null}
       </Card>
 
