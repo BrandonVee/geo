@@ -1295,12 +1295,31 @@ export const createPublicationChannelSchema = z
     tierPrices: publicationTierPricesSchema.optional(),
   })
   .strict();
-export const updatePublicationChannelSchema = createPublicationChannelSchema
+const publicationChannelChangesSchema = createPublicationChannelSchema
   .extend({
     status: z.enum(["active", "inactive"]),
     tierPrices: publicationTierPricesSchema,
   })
+  .partial()
   .strict();
+export const publicationChannelIdSchema = z
+  .object({ channelId: z.string().uuid() })
+  .strict();
+export const updatePublicationChannelSchema = publicationChannelChangesSchema
+  .extend({ expected: publicationChannelChangesSchema.optional() })
+  .superRefine(({ expected, ...changes }, context) => {
+    const fields = Object.keys(changes) as Array<keyof typeof changes>;
+    if (!fields.some((field) => changes[field] !== undefined))
+      context.addIssue({ code: "custom", message: "至少修改一个渠道字段" });
+    if (expected)
+      for (const field of fields)
+        if (changes[field] !== undefined && expected[field] === undefined)
+          context.addIssue({
+            code: "custom",
+            path: ["expected", field],
+            message: "必须提供所修改字段的原值",
+          });
+  });
 export const publicationChannelQuerySchema = z
   .object({
     page: queryInteger(1, 1, 100000),
@@ -1338,7 +1357,13 @@ export const createPublicationOrderSchema = z
     brandId: z.string().trim().min(1).max(128),
     channelId: z.string().uuid(),
     title: z.string().trim().min(2).max(255),
-    contentUrl: z.string().url().max(2000).optional(),
+    contentUrl: z
+      .string()
+      .trim()
+      .url()
+      .max(2000)
+      .refine((value) => /^https?:\/\//i.test(value), "内容链接只支持 HTTP(S)")
+      .optional(),
     contentHtml: z.string().trim().min(1).max(500_000).optional(),
     sourceJobId: z.string().uuid().optional(),
     sourceDocumentId: z.string().uuid().optional(),
@@ -1349,7 +1374,38 @@ export const createPublicationOrderSchema = z
   .refine((value) => !(value.sourceJobId && value.sourceDocumentId), {
     message: "生成任务与文档库来源不能同时提交",
     path: ["sourceDocumentId"],
-  });
+  })
+  .refine(
+    (value) =>
+      !(value.contentHtml && (value.sourceJobId || value.sourceDocumentId)),
+    {
+      message: "来源文章与直接正文不能同时提交",
+      path: ["contentHtml"],
+    },
+  );
+export const publicationManuscriptQuerySchema = z
+  .object({
+    organizationId: z.string().uuid(),
+    teamBindingId: z.string().uuid(),
+    brandId: z.string().trim().min(1).max(128),
+  })
+  .strict();
+export const publicationManuscriptSchema = z.object({
+  orderId: z.string().uuid(),
+  title: z.string(),
+  submittedAt: z.string().datetime(),
+  snapshotStatus: z.enum(["available", "legacy_unavailable"]),
+  source: z.object({
+    kind: z.enum(["inline_html", "url", "document", "generated", "unknown"]),
+    documentId: z.string().uuid().optional(),
+    documentVersion: z.number().int().positive().optional(),
+    jobId: z.string().uuid().optional(),
+  }),
+  contentHtml: z.string().nullable(),
+  contentUrl: z.string().nullable(),
+  submissionNote: z.string().nullable(),
+});
+export type PublicationManuscript = z.infer<typeof publicationManuscriptSchema>;
 export const publicationOrderQuerySchema = z
   .object({
     organizationId: z.string().uuid(),

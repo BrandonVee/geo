@@ -269,6 +269,47 @@ async function makePlatformAdministrator() {
     .insert(platformUserRoles)
     .values({ userId: fixture.userId, roleId: role.id });
 }
+async function submitManuscriptOrder(
+  page: Page,
+  input: {
+    title: string;
+    contentHtml?: string;
+    contentUrl?: string;
+    sourceDocumentId?: string;
+    note?: string;
+  },
+  index = 0,
+) {
+  const channelId = randomUUID();
+  fixture.publicationChannelIds ??= [];
+  fixture.publicationChannelIds.push(channelId);
+  await database.db.insert(database.publicationChannels).values({
+    id: channelId,
+    name: "原稿核对人工渠道",
+    category: "科技",
+    priceAmount: 100,
+    provider: "manual",
+  });
+  const { organizationId, teamBindingId, brandId } = fixture.scopes[index];
+  const response = await page.request.post("/api/v1/publication-orders", {
+    data: {
+      organizationId,
+      teamBindingId,
+      brandId,
+      channelId,
+      idempotencyKey: randomUUID(),
+      ...input,
+    },
+  });
+  expect(response.status(), await response.text()).toBe(201);
+  return (await response.json()).data.order as { id: string; title: string };
+}
+
+const manuscriptUrl = (orderId: string, index = 0) => {
+  const { organizationId, teamBindingId, brandId } = fixture.scopes[index];
+  return `/api/v1/publication-orders/${orderId}/manuscript?${new URLSearchParams({ organizationId, teamBindingId, brandId })}`;
+};
+
 async function makeEnterpriseAdministrator() {
   const {
     db,
@@ -404,6 +445,11 @@ test.describe("真实运营操作闭环", () => {
       webRequire.resolve("better-auth/crypto")
     );
     const suffix = randomUUID().slice(0, 8);
+    // Each isolated operator represents a distinct client. Keep the real
+    // limiter enabled, without sharing one proxy identity across the suite.
+    await page.context().setExtraHTTPHeaders({
+      "x-forwarded-for": `198.18.${parseInt(suffix.slice(0, 2), 16)}.${parseInt(suffix.slice(2, 4), 16)}`,
+    });
     fixture = {
       userId: randomUUID(),
       username: `flow_${suffix}`,
@@ -477,7 +523,7 @@ test.describe("真实运营操作闭环", () => {
       });
     let login = await loginRequest();
     if (login.status() === 429) {
-      // The suite shares one client IP; respect the real authentication rate limit.
+      // Respect server Retry-After if a fixture itself reaches the real limit.
       test.info().setTimeout(120_000);
       const seconds = Number(login.headers()["retry-after"]);
       if (!Number.isFinite(seconds) || seconds < 0 || seconds > 60)
@@ -505,22 +551,44 @@ test.describe("真实运营操作闭环", () => {
       users,
       operationLogs,
     } = database;
-    const { eq, inArray } = operators;
+    const { eq, inArray, or } = operators;
     const ids = fixture.scopes.map((scope) => scope.organizationId);
     const audited = await db
       .select({ id: operationLogs.id })
       .from(operationLogs)
-      .where(inArray(operationLogs.organizationId, ids))
+      .where(
+        or(
+          inArray(operationLogs.organizationId, ids),
+          eq(operationLogs.actorUserId, fixture.userId),
+        ),
+      )
       .limit(1);
+    async function retainHistory() {
+      // Keep immutable history without leaving same-named fixtures in later
+      // platform-wide selectors. Each test still starts with realistic names.
+      for (const scope of fixture.scopes) {
+        const retainedName = `已完成流程 ${scope.organizationId}`;
+        await db
+          .update(organizations)
+          .set({ name: retainedName })
+          .where(eq(organizations.id, scope.organizationId));
+        await db
+          .update(answerbitBrandMappings)
+          .set({ brandName: retainedName })
+          .where(
+            eq(answerbitBrandMappings.organizationId, scope.organizationId),
+          );
+      }
+    }
     // Audits are immutable. The runner drops this disposable database after QA.
-    if (audited.length) return;
+    if (audited.length) return retainHistory();
     const reportHistory = await db
       .select({ id: database.reportExports.id })
       .from(database.reportExports)
       .where(inArray(database.reportExports.organizationId, ids))
       .limit(1);
     // Started reports are immutable; the runner removes the disposable database.
-    if (reportHistory.length) return;
+    if (reportHistory.length) return retainHistory();
     await db
       .delete(database.publicationOrders)
       .where(inArray(database.publicationOrders.organizationId, ids));
@@ -808,6 +876,355 @@ test.describe("真实运营操作闭环", () => {
     }
   });
 
+  test("后台渠道定价失败保留输入，响应丢失刷新后只读核对且不重复审计", async ({
+    page,
+  }) => {
+    await makePlatformAdministrator();
+    const id = randomUUID();
+    const name = `渠道恢复 ${id.slice(0, 8)}`;
+    fixture.publicationChannelIds = [id];
+    await database.db.insert(database.publicationChannels).values({
+      id,
+      name,
+      category: "科技",
+      priceAmount: 100,
+      provider: "manual",
+    });
+    let reject = true,
+      failRead = true,
+      writes = 0;
+    await page.route(
+      `**/api/v1/admin/publication-channels/${id}`,
+      async (route) => {
+        if (route.request().method() === "GET") {
+          if (failRead)
+            return route.fulfill({
+              status: 503,
+              json: { error: { message: "模拟核对失败" } },
+            });
+          return route.continue();
+        }
+        writes += 1;
+        if (reject)
+          return route.fulfill({
+            status: 422,
+            json: { error: { message: "模拟售价校验失败" } },
+          });
+        const response = await route.fetch();
+        expect(response.ok()).toBeTruthy();
+        await route.abort("failed");
+      },
+    );
+    await page.goto("/admin?section=publication-channels");
+    const search = page.getByPlaceholder("搜索媒体名称、分类、备注或行业属性");
+    await search.fill(name);
+    await search.press("Enter");
+    const row = page.getByRole("row").filter({ hasText: name });
+    await row.getByRole("button", { name: "分级定价", exact: true }).click();
+    const dialog = page.getByRole("dialog");
+    const retail = dialog.getByRole("spinbutton", { name: "普通用户固定售价" });
+    await retail.fill("1.999");
+    await dialog
+      .getByRole("button", { name: "保存分级售价", exact: true })
+      .click();
+    await expect(dialog.getByText(/售价最多保留两位小数/)).toBeVisible();
+    expect(writes).toBe(0);
+    await retail.fill("2.75");
+    await dialog
+      .getByRole("button", { name: "保存分级售价", exact: true })
+      .click();
+    await expect(
+      dialog.getByText("模拟售价校验失败", { exact: true }),
+    ).toBeVisible();
+    await expect(retail).toHaveValue("2.75");
+    reject = false;
+    await dialog
+      .getByRole("button", { name: "保存分级售价", exact: true })
+      .click();
+    await expect(
+      dialog.getByRole("button", { name: "核对操作结果", exact: true }),
+    ).toBeVisible();
+    await expect(
+      dialog.getByRole("button", { name: /取\s*消/ }),
+    ).toBeDisabled();
+    await expect(retail).toBeDisabled();
+    await page.reload();
+    await expect(dialog.getByText(/已恢复上次尚未核实/)).toBeVisible();
+    await expect(retail).toHaveValue("2.75");
+    for (const theme of ["light", "dark"]) {
+      await page.evaluate((value) => {
+        localStorage.setItem("ab-theme", value);
+      }, theme);
+      // The theme provider reads the persisted preference on navigation.
+      await page.reload();
+      for (const width of [390, 768, 1440]) {
+        await page.setViewportSize({ width, height: 1000 });
+        await expect(dialog).toBeVisible();
+        await page.evaluate(async () => {
+          await Promise.all(
+            document
+              .getAnimations()
+              .filter(
+                (animation) =>
+                  animation.effect?.getComputedTiming().iterations !== Infinity,
+              )
+              .map((animation) => animation.finished.catch(() => {})),
+          );
+        });
+        await page.evaluate(axe.source);
+        const scan = await page.evaluate(() =>
+          (window as unknown as { axe: typeof axe }).axe.run(
+            document.querySelector(
+              '.ant-modal[role="dialog"], .ant-modal [role="dialog"]',
+            )!,
+            {
+              runOnly: {
+                type: "tag",
+                values: ["wcag2a", "wcag2aa", "wcag21aa"],
+              },
+            },
+          ),
+        );
+        expect(
+          scan.violations.map(({ id, nodes }) => ({
+            id,
+            targets: nodes.map(({ target }) => target),
+          })),
+        ).toEqual([]);
+        expect(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth <= window.innerWidth,
+          ),
+        ).toBeTruthy();
+        if (width === 390 || width === 1440)
+          await page.screenshot({
+            path: test.info().outputPath(`channel-price-${theme}-${width}.png`),
+            fullPage: true,
+          });
+      }
+    }
+    failRead = false;
+    await dialog
+      .getByRole("button", { name: "核对操作结果", exact: true })
+      .click();
+    await expect(dialog).toHaveCount(0);
+    expect(writes).toBe(2);
+    const { eq, and } = operators;
+    const logs = await database.db
+      .select()
+      .from(database.operationLogs)
+      .where(
+        and(
+          eq(database.operationLogs.resourceId, id),
+          eq(database.operationLogs.operation, "publication.channel.update"),
+        ),
+      );
+    expect(logs).toHaveLength(1);
+    const current = await page.request.get(
+      `/api/v1/admin/publication-channels/${id}`,
+    );
+    expect((await current.json()).data).toMatchObject({
+      basePriceAmount: 100,
+      tierPrices: { retail: { priceAmount: 275, overridden: true } },
+    });
+  });
+
+  test("后台渠道并发改价提示冲突，上下架只修改状态，清空固定价恢复人工基础价", async ({
+    page,
+  }) => {
+    await makePlatformAdministrator();
+    const id = randomUUID(),
+      name = `并发渠道 ${randomUUID().slice(0, 8)}`;
+    fixture.publicationChannelIds = [id];
+    await database.db.insert(database.publicationChannels).values({
+      id,
+      name,
+      category: "科技",
+      priceAmount: 100,
+      provider: "manual",
+    });
+    await page.goto("/admin?section=publication-channels");
+    const search = page.getByPlaceholder("搜索媒体名称、分类、备注或行业属性");
+    await search.fill(name);
+    await search.press("Enter");
+    const row = page.getByRole("row").filter({ hasText: name });
+    await row.getByRole("button", { name: "分级定价", exact: true }).click();
+    const dialog = page.getByRole("dialog");
+    const retail = dialog.getByRole("spinbutton", { name: "普通用户固定售价" });
+    await retail.fill("4");
+    const replacement = { retail: 300, bronze: null, silver: null, gold: null };
+    const concurrent = await page.request.patch(
+      `/api/v1/admin/publication-channels/${id}`,
+      {
+        headers: { Origin: process.env.APP_URL! },
+        data: { tierPrices: replacement },
+      },
+    );
+    expect(concurrent.ok()).toBeTruthy();
+    await dialog
+      .getByRole("button", { name: "保存分级售价", exact: true })
+      .click();
+    await expect(
+      dialog.getByText("渠道设置已变化", { exact: true }),
+    ).toBeVisible();
+    await expect(retail).toHaveValue("4");
+    await expect(
+      dialog.getByRole("button", { name: "保存分级售价", exact: true }),
+    ).toBeDisabled();
+    await dialog
+      .getByRole("button", {
+        name: "已核对最新设置，保留输入继续",
+        exact: true,
+      })
+      .click();
+    await expect(retail).toHaveValue("4");
+    await dialog
+      .getByRole("button", { name: "保存分级售价", exact: true })
+      .click();
+    await expect(dialog).toHaveCount(0);
+    // Keep the stale listing while another operator changes the fixed price.
+    expect(
+      (
+        await page.request.patch(`/api/v1/admin/publication-channels/${id}`, {
+          headers: { Origin: process.env.APP_URL! },
+          data: { tierPrices: { ...replacement, retail: 500 } },
+        })
+      ).ok(),
+    ).toBeTruthy();
+    let statusInput: Record<string, unknown> | undefined;
+    await page.route(
+      `**/api/v1/admin/publication-channels/${id}`,
+      async (route) => {
+        if (route.request().method() === "PATCH")
+          statusInput = route.request().postDataJSON();
+        await route.continue();
+      },
+    );
+    await row.getByRole("button", { name: /下\s*架/ }).click();
+    await expect(dialog.getByText(/已有订单继续履约/)).toBeVisible();
+    await dialog.getByRole("button", { name: "确认下架", exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    expect(statusInput).toEqual({
+      status: "inactive",
+      expected: { status: "active" },
+    });
+    let current = (
+      await (
+        await page.request.get(`/api/v1/admin/publication-channels/${id}`)
+      ).json()
+    ).data;
+    expect(current).toMatchObject({
+      status: "inactive",
+      basePriceAmount: 100,
+      tierPrices: { retail: { priceAmount: 500, overridden: true } },
+    });
+    await row.getByRole("button", { name: "分级定价", exact: true }).click();
+    await retail.fill("");
+    await dialog
+      .getByRole("button", { name: "保存分级售价", exact: true })
+      .click();
+    await expect(dialog).toHaveCount(0);
+    current = (
+      await (
+        await page.request.get(`/api/v1/admin/publication-channels/${id}`)
+      ).json()
+    ).data;
+    expect(current).toMatchObject({
+      status: "inactive",
+      basePriceAmount: 100,
+      tierPrices: { retail: { priceAmount: 100, overridden: false } },
+    });
+  });
+
+  test("后台渠道未知操作刷新核对不同结果仍保留输入，存储失败不发送", async ({
+    page,
+  }) => {
+    await makePlatformAdministrator();
+    const id = randomUUID(),
+      name = `待核对渠道 ${randomUUID().slice(0, 8)}`;
+    fixture.publicationChannelIds = [id];
+    await database.db.insert(database.publicationChannels).values({
+      id,
+      name,
+      category: "科技",
+      priceAmount: 100,
+      provider: "manual",
+    });
+    let unavailable = true,
+      writes = 0;
+    await page.route(
+      `**/api/v1/admin/publication-channels/${id}`,
+      async (route) => {
+        if (route.request().method() === "PATCH") {
+          writes += 1;
+          if (unavailable) return route.abort("failed");
+        }
+        if (unavailable && route.request().method() === "GET")
+          return route.abort("failed");
+        return route.continue();
+      },
+    );
+    await page.goto("/admin?section=publication-channels");
+    const search = page.getByPlaceholder("搜索媒体名称、分类、备注或行业属性");
+    await search.fill(name);
+    await search.press("Enter");
+    await page
+      .getByRole("row")
+      .filter({ hasText: name })
+      .getByRole("button", { name: "分级定价", exact: true })
+      .click();
+    const dialog = page.getByRole("dialog");
+    const retail = dialog.getByRole("spinbutton", { name: "普通用户固定售价" });
+    await retail.fill("3.50");
+    await page.evaluate(() => {
+      const saved = Storage.prototype.setItem;
+      (window as unknown as { restoreStorage: () => void }).restoreStorage =
+        () => {
+          Storage.prototype.setItem = saved;
+        };
+      Storage.prototype.setItem = function (key, value) {
+        if (key.startsWith("geo:admin-channel-command:"))
+          throw new Error("Storage disabled");
+        return saved.call(this, key, value);
+      };
+    });
+    await dialog
+      .getByRole("button", { name: "保存分级售价", exact: true })
+      .click();
+    await expect(dialog.getByText(/本次尚未发送/)).toBeVisible();
+    expect(writes).toBe(0);
+    await page.evaluate(() =>
+      (window as unknown as { restoreStorage: () => void }).restoreStorage(),
+    );
+    await dialog
+      .getByRole("button", { name: "保存分级售价", exact: true })
+      .click();
+    await expect(
+      dialog.getByRole("button", { name: "核对操作结果", exact: true }),
+    ).toBeVisible();
+    await page.reload();
+    unavailable = false;
+    await dialog
+      .getByRole("button", { name: "核对操作结果", exact: true })
+      .click();
+    await expect(
+      dialog.getByText("渠道设置已变化", { exact: true }),
+    ).toBeVisible();
+    await expect(retail).toHaveValue("3.5");
+    expect(writes).toBe(1);
+    await dialog
+      .getByRole("button", {
+        name: "已核对最新设置，保留输入继续",
+        exact: true,
+      })
+      .click();
+    await dialog
+      .getByRole("button", { name: "保存分级售价", exact: true })
+      .click();
+    await expect(dialog).toHaveCount(0);
+    expect(writes).toBe(2);
+  });
+
   test("后台订单按企业与人工队列分页，处理后回退末页，条件与明暗主题可恢复", async ({
     page,
   }) => {
@@ -992,9 +1409,11 @@ test.describe("真实运营操作闭环", () => {
     const create = async (title: string) => {
       const result = await database.createPublicationOrderWithBalance({
         organizationId: row.organizationId,
+        teamBindingId: fixture.scopes[0].teamBindingId,
         brandId: row.brandId,
         channelId: row.channelId,
         title,
+        contentHtml: "<p>人工交付回归测试正文</p>",
         note: "待处理说明",
         createdBy: fixture.userId,
         idempotencyKey: randomUUID(),
@@ -5176,6 +5595,17 @@ test.describe("真实运营操作闭环", () => {
         name: `企业详情 · ${scope.name}`,
       });
       await expect(drawer).toBeVisible();
+      await page.evaluate(async () => {
+        await Promise.all(
+          document
+            .getAnimations()
+            .filter(
+              (animation) =>
+                animation.effect?.getComputedTiming().iterations !== Infinity,
+            )
+            .map((animation) => animation.finished.catch(() => {})),
+        );
+      });
       await drawer.getByLabel("平台用户", { exact: true }).click();
       await drawer.getByLabel("平台用户", { exact: true }).fill(backupUsername);
       await page
@@ -5863,9 +6293,12 @@ test.describe("真实运营操作闭环", () => {
     const allocation = page
       .locator(".ant-card")
       .filter({ has: page.getByText("企业资产划拨", { exact: true }) });
-    await allocation
-      .getByRole("combobox", { name: "资产类型", exact: true })
-      .press("ArrowDown");
+    const assetSelect = allocation.getByRole("combobox", {
+      name: "资产类型",
+      exact: true,
+    });
+    await expect(assetSelect).toBeEnabled();
+    await assetSelect.press("ArrowDown");
     await page
       .getByText("发布人民币余额（元）", { exact: true })
       .last()
@@ -6168,9 +6601,12 @@ test.describe("真实运营操作闭环", () => {
     await expect(
       allocation.getByRole("button", { name: "确认划拨", exact: true }),
     ).toBeDisabled();
-    await allocation
-      .getByRole("combobox", { name: "资产类型", exact: true })
-      .press("ArrowDown");
+    const assetSelect = allocation.getByRole("combobox", {
+      name: "资产类型",
+      exact: true,
+    });
+    await expect(assetSelect).toBeEnabled();
+    await assetSelect.press("ArrowDown");
     await page
       .getByText("发布人民币余额（元）", { exact: true })
       .last()
@@ -11713,5 +12149,592 @@ test.describe("真实运营操作闭环", () => {
     await expect(
       page.getByText("企业品牌可用积分合计", { exact: true }),
     ).toBeVisible();
+  });
+
+  test("工作台外壳通知快捷入口遵守企业功能权限，空分组隐藏且当前页可识别", async ({
+    page,
+  }) => {
+    await database.db.insert(database.organizationUserFeatureScopes).values([
+      {
+        organizationId: fixture.scopes[0].organizationId,
+        userId: fixture.userId,
+        features: ["balance"],
+      },
+      {
+        organizationId: fixture.scopes[1].organizationId,
+        userId: fixture.userId,
+        features: [],
+      },
+    ]);
+    await page.goto(scopedPath("/dashboard/metering"));
+    await expect(
+      page.getByText("当前品牌可用积分", { exact: true }),
+    ).toBeVisible();
+    for (const width of [1440, 768, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      await expect(
+        page.getByRole("link", { name: "打开通知中心", exact: true }),
+      ).toHaveCount(0);
+      if (width < 992)
+        await page.getByRole("button", { name: "打开导航" }).click();
+      const navigation = page.getByRole("navigation", { name: "工作台导航" });
+      await expect(navigation.getByRole("menuitem")).toHaveCount(1);
+      await expect(
+        navigation.getByRole("menuitem", { name: "积分用量" }),
+      ).toHaveAttribute("aria-current", "page");
+      await expect(navigation.locator(".ant-menu-item-group-title")).toHaveText(
+        ["工作空间"],
+      );
+      await expect(page.locator(".ant-badge-dot")).toHaveCount(0);
+      await expect(
+        page
+          .getByText("本系统积分账本", { exact: true })
+          .locator(".anticon-spin"),
+      ).toHaveCount(0);
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= window.innerWidth,
+        ),
+      ).toBe(true);
+      if (width < 992) await page.keyboard.press("Escape");
+    }
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await mockOverviewApis(page);
+    await page.goto(scopedPath("/dashboard", 1));
+    await expect(
+      page.getByText("当前企业暂无可用业务模块，请联系管理员配置权限。", {
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(page.getByRole("menuitem")).toHaveCount(0);
+    await expect(
+      page.getByRole("link", { name: "打开通知中心", exact: true }),
+    ).toHaveCount(0);
+  });
+
+  test("工作台外壳无企业授权时显示下一步而不显示业务入口", async ({ page }) => {
+    await database.db
+      .update(database.organizationMembers)
+      .set({ status: "disabled" })
+      .where(operators.eq(database.organizationMembers.userId, fixture.userId));
+    await page.goto("/dashboard");
+    await expect(
+      page.getByText("等待分配企业与品牌", { exact: true }),
+    ).toBeVisible();
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      if (width < 992)
+        await page.getByRole("button", { name: "打开导航" }).click();
+      await expect(
+        page.getByText("分配企业与品牌后，业务入口将在这里显示。", {
+          exact: true,
+        }),
+      ).toBeVisible();
+      await expect(page.getByRole("menuitem")).toHaveCount(0);
+      await expect(
+        page.getByRole("link", { name: "打开通知中心", exact: true }),
+      ).toHaveCount(0);
+      await expect(
+        page.getByRole("button", { name: "退出登录" }),
+      ).toBeEnabled();
+      if (width < 992) await page.keyboard.press("Escape");
+    }
+  });
+
+  test("工作台外壳退出失败保留页面与重试，执行中不能重复提交，成功后结束会话", async ({
+    page,
+  }) => {
+    await mockBusinessApis(page);
+    await page.goto(scopedPath("/dashboard/metering"));
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    let requests = 0;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.route("**/api/auth/sign-out", async (route) => {
+      requests += 1;
+      if (requests === 1) {
+        await held;
+        return route.fulfill({
+          status: 503,
+          json: { code: "QA_UNAVAILABLE", message: "模拟退出暂不可用" },
+        });
+      }
+      if (requests === 2) return route.abort("failed");
+      return route.continue();
+    });
+    const signOut = page.getByRole("button", { name: "退出登录", exact: true });
+    await signOut.click();
+    await expect.poll(() => requests).toBe(1);
+    await expect(signOut).toBeDisabled();
+    release();
+    await expect(
+      page.getByText("退出登录未完成，请重试。", { exact: true }),
+    ).toBeVisible();
+    await expect(signOut).toBeEnabled();
+    expect(new URL(page.url()).pathname).toBe("/dashboard/metering");
+    expect(requests).toBe(1);
+    await signOut.click();
+    await expect.poll(() => requests).toBe(2);
+    await expect(
+      page.getByText("退出登录未完成，请重试。", { exact: true }),
+    ).toBeVisible();
+    await expect(signOut).toBeEnabled();
+    expect(new URL(page.url()).pathname).toBe("/dashboard/metering");
+    await signOut.click();
+    await expect(page).toHaveURL(/\/sign-in$/);
+    expect(requests).toBe(3);
+    await page.goto("/dashboard");
+    await expect(page).toHaveURL(/\/sign-in$/);
+    expect(errors).toEqual([]);
+  });
+
+  test("投稿原稿两端读取真实快照，来源文章和履约说明变化不覆盖原稿，查看者可读且跨企业拒绝", async ({
+    page,
+  }) => {
+    const { organizationId, teamBindingId, brandId } = fixture.scopes[0];
+    const scope = { organizationId, teamBindingId, brandId };
+    const originalBody = "<h2>冻结的投稿正文</h2><p>提交时的产品说明。</p>";
+    const documentResponse = await page.request.post(
+      "/api/v1/content-documents",
+      {
+        headers: { "Idempotency-Key": randomUUID() },
+        data: {
+          ...scope,
+          title: "原稿来源文档",
+          body: originalBody,
+          status: "ready",
+        },
+      },
+    );
+    expect(documentResponse.status()).toBe(201);
+    const document = (await documentResponse.json()).data;
+    const order = await submitManuscriptOrder(page, {
+      title: "文档来源的真实投稿",
+      sourceDocumentId: document.id,
+      note: "原发布要求：保留标题及图片",
+    });
+    const originalResponse = await page.request.get(manuscriptUrl(order.id));
+    expect(originalResponse.status()).toBe(200);
+    const original = (await originalResponse.json()).data;
+    expect(original).toMatchObject({
+      orderId: order.id,
+      snapshotStatus: "available",
+      source: { kind: "document", documentId: document.id, documentVersion: 1 },
+      contentHtml: originalBody,
+      submissionNote: "原发布要求：保留标题及图片",
+    });
+    expect((await page.request.get(manuscriptUrl(order.id, 1))).status()).toBe(
+      404,
+    );
+    expect(
+      (
+        await page.request.get(
+          `/api/v1/admin/publication-orders/${order.id}/manuscript`,
+        )
+      ).status(),
+    ).toBe(403);
+    const changed = await page.request.patch(
+      `/api/v1/content-documents/${document.id}`,
+      {
+        data: {
+          ...scope,
+          expectedVersion: 1,
+          body: "后续编辑正文，不属于原投稿",
+        },
+      },
+    );
+    expect(changed.status()).toBe(200);
+    await database.db
+      .update(database.brandAccess)
+      .set({ role: "brand_viewer" })
+      .where(operators.eq(database.brandAccess.userId, fixture.userId));
+    await mockBusinessApis(page);
+    await page.route("**/api/v1/publication-orders/*/manuscript?**", (route) =>
+      route.continue(),
+    );
+    await page.goto(scopedPath("/dashboard/publication/orders"));
+    await page.getByRole("button", { name: "查看稿件", exact: true }).click();
+    const drawer = page.getByRole("dialog", { name: "投稿原稿", exact: true });
+    await expect(
+      drawer.getByLabel("投稿时正文（HTML 原文）", { exact: true }),
+    ).toHaveValue(originalBody);
+    await expect(
+      drawer.getByText("原发布要求：保留标题及图片", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      drawer.getByText("文档库 · v1", { exact: true }),
+    ).toBeVisible();
+    await drawer.getByRole("button", { name: "关闭", exact: true }).click();
+    await expect(
+      page
+        .getByRole("row")
+        .filter({ hasText: order.title })
+        .getByRole("button", { name: /^取\s*消$/ }),
+    ).toHaveCount(0);
+    await makePlatformAdministrator();
+    const processed = await page.request.patch(
+      `/api/v1/admin/publication-orders/${order.id}`,
+      {
+        data: { status: "processing", note: "后台更新的履约说明" },
+      },
+    );
+    expect(processed.status()).toBe(200);
+    const adminResponse = await page.request.get(
+      `/api/v1/admin/publication-orders/${order.id}/manuscript`,
+    );
+    expect(adminResponse.status()).toBe(200);
+    expect((await adminResponse.json()).data).toEqual(original);
+    await mockAdminReads(page);
+    await page.goto(
+      `/admin?section=publication-orders&orderKeyword=${order.id}`,
+    );
+    await page.getByRole("button", { name: "查看稿件", exact: true }).click();
+    await expect(
+      drawer.getByLabel("投稿时正文（HTML 原文）", { exact: true }),
+    ).toHaveValue(originalBody);
+    await expect(
+      drawer.getByText("原发布要求：保留标题及图片", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      drawer.getByText("后台更新的履约说明", { exact: true }),
+    ).toHaveCount(0);
+    const list = await page.request.get(
+      `/api/v1/admin/publication-orders?q=${order.id}`,
+    );
+    const serialized = JSON.stringify((await list.json()).data);
+    expect(serialized).not.toContain(originalBody);
+    expect(serialized).not.toContain("submissionNote");
+  });
+
+  test("投稿原稿独立失败重试，关闭和切换范围隔离迟到响应，链接及历史缺失如实展示", async ({
+    page,
+  }) => {
+    const first = await submitManuscriptOrder(page, {
+      title: "第一份原稿",
+      contentHtml: "<p>第一份提交正文</p>",
+    });
+    const second = await submitManuscriptOrder(
+      page,
+      {
+        title: "另一企业链接稿件",
+        contentUrl: "https://example.com/submission-original",
+      },
+      1,
+    );
+    const legacy = await seedPublicationOrder();
+    await mockBusinessApis(page);
+    let mode: "fail" | "normal" | "hold" | "wrong" = "fail";
+    let requested = false;
+    let release: () => void = () => {};
+    let pending = Promise.resolve();
+    const holdNext = () => {
+      requested = false;
+      mode = "hold";
+      pending = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    };
+    await page.route(
+      "**/api/v1/publication-orders/*/manuscript?**",
+      async (route) => {
+        if (!route.request().url().includes(first.id)) return route.continue();
+        if (mode === "fail")
+          return route.fulfill({
+            status: 503,
+            json: { error: { message: "原稿暂时无法读取" } },
+          });
+        const response = await route.fetch();
+        if (mode === "wrong") {
+          const body = await response.json();
+          body.data.orderId = second.id;
+          return route.fulfill({ json: body });
+        }
+        if (mode === "hold") {
+          requested = true;
+          await pending;
+        }
+        await route.fulfill({ response }).catch(() => {});
+      },
+    );
+    await page.goto(scopedPath("/dashboard/publication/orders"));
+    const row = (title: string) =>
+      page.getByRole("row").filter({ hasText: title });
+    const drawer = page.getByRole("dialog", { name: "投稿原稿", exact: true });
+    await row(first.title)
+      .getByRole("button", { name: "查看稿件", exact: true })
+      .click();
+    await expect(
+      drawer.getByText("原稿暂时无法读取", { exact: true }),
+    ).toBeVisible();
+    mode = "normal";
+    await drawer
+      .getByRole("button", { name: "重试读取稿件", exact: true })
+      .click();
+    await expect(drawer.getByLabel("投稿时正文（HTML 原文）")).toHaveValue(
+      "<p>第一份提交正文</p>",
+    );
+    await drawer.getByRole("button", { name: "关闭", exact: true }).click();
+    holdNext();
+    await row(first.title)
+      .getByRole("button", { name: "查看稿件", exact: true })
+      .click();
+    await expect.poll(() => requested).toBe(true);
+    await expect(
+      drawer.getByRole("status", { name: "正在读取投稿原稿" }),
+    ).toBeVisible();
+    await expect(drawer.getByLabel("投稿时正文（HTML 原文）")).toHaveCount(0);
+    await drawer.getByRole("button", { name: "关闭", exact: true }).click();
+    await row(legacy.title)
+      .getByRole("button", { name: "查看稿件", exact: true })
+      .click();
+    await expect(
+      drawer.getByText("该历史订单未保存投稿时快照", { exact: true }),
+    ).toBeVisible();
+    release();
+    await expect(drawer.getByLabel("投稿时正文（HTML 原文）")).toHaveCount(0);
+    await expect(
+      drawer.getByRole("button", { name: "复制投稿正文" }),
+    ).toHaveCount(0);
+    await drawer.getByRole("button", { name: "关闭", exact: true }).click();
+    holdNext();
+    await row(first.title)
+      .getByRole("button", { name: "查看稿件", exact: true })
+      .click();
+    await expect.poll(() => requested).toBe(true);
+    await page.evaluate(
+      (url) => window.history.pushState(null, "", url),
+      scopedPath("/dashboard/publication/orders", 1),
+    );
+    await expect(drawer).toBeHidden();
+    await expect(row(second.title)).toBeVisible();
+    release();
+    mode = "normal";
+    await row(second.title)
+      .getByRole("button", { name: "查看稿件", exact: true })
+      .click();
+    await expect(
+      drawer.getByText("本单以原文链接投稿，未提交正文。", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      drawer.getByRole("link", {
+        name: "https://example.com/submission-original",
+        exact: true,
+      }),
+    ).toHaveAttribute("href", "https://example.com/submission-original");
+    await drawer.getByRole("button", { name: "关闭", exact: true }).click();
+    await page.goto(scopedPath("/dashboard/publication/orders"));
+    mode = "wrong";
+    await row(first.title)
+      .getByRole("button", { name: "查看稿件", exact: true })
+      .click();
+    await expect(
+      drawer.getByText("稿件响应不完整，请重试读取", { exact: true }),
+    ).toBeVisible();
+    await expect(drawer.getByLabel("投稿时正文（HTML 原文）")).toHaveCount(0);
+    await drawer.getByRole("button", { name: "关闭", exact: true }).click();
+    await makePlatformAdministrator();
+    await mockAdminReads(page);
+    let adminRequested = false;
+    let releaseAdmin: () => void = () => {};
+    const adminHeld = new Promise<void>((resolve) => {
+      releaseAdmin = resolve;
+    });
+    await page.route(
+      `**/api/v1/admin/publication-orders/${first.id}/manuscript`,
+      async (route) => {
+        const response = await route.fetch();
+        adminRequested = true;
+        await adminHeld;
+        await route.fulfill({ response }).catch(() => {});
+      },
+    );
+    await page.goto(
+      `/admin?section=publication-orders&orderOrganizationId=${fixture.scopes[0].organizationId}`,
+    );
+    await row(first.title)
+      .getByRole("button", { name: "查看稿件", exact: true })
+      .click();
+    await expect.poll(() => adminRequested).toBe(true);
+    await page.evaluate((id) => {
+      const url = new URL(window.location.href);
+      url.searchParams.set("orderOrganizationId", id);
+      window.history.pushState(null, "", url);
+    }, fixture.scopes[1].organizationId);
+    await expect(drawer).toBeHidden();
+    await expect(row(second.title)).toBeVisible();
+    releaseAdmin();
+    await row(second.title)
+      .getByRole("button", { name: "查看稿件", exact: true })
+      .click();
+    await expect(
+      drawer.getByText("本单以原文链接投稿，未提交正文。", { exact: true }),
+    ).toBeVisible();
+    await expect(drawer.getByText(first.title, { exact: true })).toHaveCount(0);
+  });
+
+  test("投稿原稿HTML安全展示与复制失败恢复，两端明暗主题及多尺寸可访问", async ({
+    page,
+  }, testInfo) => {
+    test.setTimeout(120_000);
+    const html =
+      '<h1>完整原稿</h1><p>长文可选中复制。</p><script>window.__manuscriptXss=true</script><img src="https://manuscript.invalid/tracker" onerror="window.__manuscriptXss=true"><a href="javascript:alert(1)">原稿中的危险链接</a>';
+    const order = await submitManuscriptOrder(page, {
+      title: "安全原稿展示",
+      contentHtml: html,
+      note: "保留原稿内容供人工复核",
+    });
+    await makePlatformAdministrator();
+    await mockAdminReads(page);
+    await page.route("**/api/v1/publication-orders/*/manuscript?**", (route) =>
+      route.continue(),
+    );
+    let externalRequests = 0;
+    await page.route("https://manuscript.invalid/**", (route) => {
+      externalRequests++;
+      return route.abort("blockedbyclient");
+    });
+    await page.addInitScript(() => {
+      const state = window as typeof window & {
+        __manuscriptXss?: boolean;
+        __clipboardReject?: boolean;
+        __copiedManuscript?: string;
+      };
+      state.__manuscriptXss = false;
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: {
+          writeText: async (text: string) => {
+            if (state.__clipboardReject)
+              throw new Error("QA clipboard unavailable");
+            state.__copiedManuscript = text;
+          },
+        },
+      });
+    });
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    for (const path of [
+      scopedPath("/dashboard/publication/orders"),
+      `/admin?section=publication-orders&orderKeyword=${order.id}`,
+    ]) {
+      await page.goto(path);
+      await page.evaluate(axe.source);
+      for (const mode of ["light", "dark"]) {
+        await page.setViewportSize({ width: 1440, height: 1000 });
+        if ((await page.locator("html").getAttribute("data-theme")) !== mode)
+          await page
+            .getByRole("button", { name: "切换亮暗色模式", exact: true })
+            .click();
+        await expect(page.locator("html")).toHaveAttribute("data-theme", mode);
+        await page
+          .getByRole("button", { name: "查看稿件", exact: true })
+          .click();
+        const drawer = page.getByRole("dialog", {
+          name: "投稿原稿",
+          exact: true,
+        });
+        await expect(
+          drawer.getByLabel("投稿时正文（HTML 原文）", { exact: true }),
+        ).toHaveValue(html);
+        await expect(
+          drawer.locator("script, iframe, img, a[href^='javascript:']"),
+        ).toHaveCount(0);
+        await page.evaluate(() => {
+          (
+            window as typeof window & { __clipboardReject?: boolean }
+          ).__clipboardReject = false;
+        });
+        await drawer
+          .getByRole("button", { name: "复制投稿正文", exact: true })
+          .click();
+        await expect(
+          drawer.getByText("投稿正文已复制", { exact: true }),
+        ).toBeVisible();
+        expect(
+          await page.evaluate(
+            () =>
+              (window as typeof window & { __copiedManuscript?: string })
+                .__copiedManuscript,
+          ),
+        ).toBe(html);
+        await page.evaluate(() => {
+          (
+            window as typeof window & { __clipboardReject?: boolean }
+          ).__clipboardReject = true;
+        });
+        await drawer
+          .getByRole("button", { name: "复制投稿正文", exact: true })
+          .click();
+        await expect(
+          drawer.getByText("无法访问剪贴板，请在下方正文中全选并复制。", {
+            exact: true,
+          }),
+        ).toBeVisible();
+        await expect(
+          drawer.getByLabel("投稿时正文（HTML 原文）", { exact: true }),
+        ).toHaveValue(html);
+        for (const width of [390, 768, 1440]) {
+          await page.setViewportSize({ width, height: 1000 });
+          await drawer
+            .getByRole("button", { name: "复制投稿正文", exact: true })
+            .hover();
+          await page.evaluate(async () => {
+            await Promise.all(
+              document
+                .getAnimations()
+                .filter(
+                  (animation) =>
+                    animation.effect?.getComputedTiming().iterations !==
+                    Infinity,
+                )
+                .map((animation) => animation.finished.catch(() => {})),
+            );
+          });
+          expect(
+            await page.evaluate(
+              () => document.documentElement.scrollWidth <= innerWidth,
+            ),
+          ).toBe(true);
+          const violations = await page.evaluate(async () =>
+            (
+              await (window as typeof window & { axe: typeof axe }).axe.run(
+                document,
+                {
+                  runOnly: {
+                    type: "tag",
+                    values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"],
+                  },
+                },
+              )
+            ).violations.map(({ id, nodes }) => ({
+              id,
+              targets: nodes.map(({ target }) => target),
+            })),
+          );
+          expect(violations).toEqual([]);
+          if (width === 390 || width === 1440)
+            await page.screenshot({
+              path: testInfo.outputPath(
+                `manuscript-${path.startsWith("/admin") ? "admin" : "tenant"}-${mode}-${width}.png`,
+              ),
+              animations: "disabled",
+            });
+        }
+        await drawer.getByRole("button", { name: "关闭", exact: true }).click();
+      }
+      expect(
+        await page.evaluate(
+          () =>
+            (window as typeof window & { __manuscriptXss?: boolean })
+              .__manuscriptXss,
+        ),
+      ).toBe(false);
+    }
+    expect(externalRequests).toBe(0);
+    expect(errors).toEqual([]);
   });
 });

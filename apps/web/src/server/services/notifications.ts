@@ -1,4 +1,5 @@
 import type {
+  DashboardBaseQuery,
   NotificationListQuery,
   NotificationReadAllInput,
   NotificationRuleInput,
@@ -10,6 +11,8 @@ import {
   connectionFailureLookbackLimit,
   countConsecutiveFailures,
   hasPermission,
+  notificationMetricPeriod,
+  stableErrorCode,
   type Role,
 } from "@geo/core";
 import type { AuditContext } from "@/server/audit/write-audit";
@@ -239,25 +242,34 @@ async function safeEvaluate(
   if (!rule) return;
   try {
     await evaluate(rule);
-    await notificationRepository.recordEvaluation(rule.id);
+    await notificationRepository.recordEvaluation(rule);
   } catch (error) {
-    const code =
-      error instanceof Error
-        ? error.message.slice(0, 128)
-        : "NOTIFICATION_EVALUATION_FAILED";
-    await notificationRepository
-      .recordEvaluation(rule.id, code)
-      .catch(() => undefined);
+    const errorCode = stableErrorCode(error, "NOTIFICATION_EVALUATION_FAILED");
     console.error(
       JSON.stringify({
         event: "notification.evaluate.failed",
         ruleId: rule.id,
-        error: code,
+        errorCode,
       }),
     );
+    try {
+      await notificationRepository.recordEvaluation(rule, errorCode);
+    } catch (healthError) {
+      console.error(
+        JSON.stringify({
+          event: "notification.evaluate.health-write-failed",
+          ruleId: rule.id,
+          errorCode: stableErrorCode(
+            healthError,
+            "NOTIFICATION_EVALUATION_FAILED",
+          ),
+        }),
+      );
+    }
   }
 }
 
+// @project-doc docs/domains/geo_operations.md#notification_workflow
 export async function evaluateMetricAnomaly(
   organizationId: string,
   teamBindingId: string,
@@ -267,13 +279,24 @@ export async function evaluateMetricAnomaly(
     score: { value: number; fluctuation: number };
     avg_rank: { value: number; fluctuation: number };
   },
+  query: Pick<
+    DashboardBaseQuery,
+    "beginDate" | "endDate" | "titleIds" | "platforms" | "tagIds"
+  >,
 ) {
+  if (query.titleIds.length || query.platforms.length || query.tagIds.length)
+    return;
+  const evaluatedAt = new Date();
   const rule = await notificationRepository.findEnabledRule(
     organizationId,
     teamBindingId,
     "metric_anomaly",
     brandId,
   );
+  if (!rule?.windowDays || !rule.metric) return;
+  const period = notificationMetricPeriod(rule.windowDays, evaluatedAt);
+  if (query.beginDate !== period.beginDate || query.endDate !== period.endDate)
+    return;
   await safeEvaluate(rule, async (current) => {
     if (!current.metric) return;
     const sample = result[current.metric];

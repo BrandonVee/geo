@@ -153,6 +153,7 @@ export const articleRepository = {
           existing.status !== "queued" ||
           existing.queueJobId ||
           existing.executionId ||
+          existing.createDispatchedAt ||
           existing.answerbitArticleId
         )
           return { job: existing, replayed: true };

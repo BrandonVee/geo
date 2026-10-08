@@ -71,6 +71,7 @@ export async function cachedAnswerBitRead<T>(input: {
   apiKey: string;
   payload: unknown;
   execute: (tx: DatabaseTransaction) => Promise<T>;
+  onFreshResult?: (response: T) => Promise<void>;
 }): Promise<T> {
   const key = hash(
     canonicalJson({
@@ -82,7 +83,8 @@ export async function cachedAnswerBitRead<T>(input: {
       payload: normalizeCachePayload(input.payload),
     }),
   );
-  return withTenantDbContext(
+  let fetched = false;
+  const result = await withTenantDbContext(
     {
       organizationId: input.organizationId,
       userId: input.actorUserId,
@@ -110,6 +112,7 @@ export async function cachedAnswerBitRead<T>(input: {
       let response: T;
       try {
         response = await input.execute(tx);
+        fetched = true;
       } catch (error) {
         // Only read data already fetched from the same credential and scope may
         // serve a bounded stale copy when Tencent explicitly rate-limits us.
@@ -163,4 +166,8 @@ export async function cachedAnswerBitRead<T>(input: {
       return response;
     },
   );
+  // Run consumers after commit, outside the cache lock. Cache hits and bounded
+  // stale fallback are display snapshots, not new upstream observations.
+  if (fetched) await input.onFreshResult?.(result);
+  return result;
 }

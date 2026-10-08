@@ -23,6 +23,8 @@ import {
   adminPublicationOrderQuerySchema,
   publicationOrderIdSchema,
   updatePublicationOrderSchema,
+  updatePublicationChannelSchema,
+  publicationChannelIdSchema,
 } from "./index";
 
 const organizationId = "e17c707b-f07c-4464-a4fa-26d699dad45b";
@@ -30,6 +32,49 @@ const teamBindingId = "630dacb0-54b4-464c-acd0-de1079ff2a0b";
 const userId = "d5ddb2bc-44ad-4395-a05b-e3a2ad0129f8";
 const pngBase64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+
+describe("发布渠道局部更新契约", () => {
+  it("允许单字段 PATCH，提供 expected 时覆盖所有修改字段", () => {
+    expect(
+      updatePublicationChannelSchema.parse({
+        status: "inactive",
+        expected: { status: "active" },
+      }),
+    ).toEqual({ status: "inactive", expected: { status: "active" } });
+    expect(updatePublicationChannelSchema.parse({ priceAmount: 0 })).toEqual({
+      priceAmount: 0,
+    });
+    expect(
+      publicationChannelIdSchema.safeParse({ channelId: organizationId })
+        .success,
+    ).toBe(true);
+    expect(
+      publicationChannelIdSchema.safeParse({ channelId: "invalid" }).success,
+    ).toBe(false);
+  });
+  it.each([
+    {},
+    { expected: { status: "active" } },
+    { status: "inactive", expected: {} },
+    { status: "inactive", name: "新名称", expected: { status: "active" } },
+    { status: "inactive", providerCostAmount: 1 },
+    { priceAmount: 1.1 },
+    { tierPrices: { retail: 1 } },
+    { name: " " },
+  ])("拒绝不完整或无效的变更 %j", (input) => {
+    expect(updatePublicationChannelSchema.safeParse(input).success).toBe(false);
+  });
+  it("兼容完整更新与明确清除四档固定价", () => {
+    const input = {
+      name: "人工渠道",
+      category: "行业媒体",
+      priceAmount: 100,
+      status: "active",
+      tierPrices: { retail: null, bronze: 100, silver: 80, gold: 0 },
+    };
+    expect(updatePublicationChannelSchema.parse(input)).toEqual(input);
+  });
+});
 
 describe("发布订单查询契约", () => {
   it("平台订单默认分页，企业、渠道、状态与日期可组合", () => {

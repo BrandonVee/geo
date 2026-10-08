@@ -1,4 +1,5 @@
 import { createClient, type RedisClientType } from "redis";
+import type { BetterAuthOptions } from "better-auth";
 import { getServerEnv } from "./env";
 
 type RedisState = {
@@ -53,35 +54,21 @@ export async function getRedisClient() {
   return state.connecting;
 }
 
-export const redisSecondaryStorage = {
-  async get(key: string) {
-    return (await getRedisClient()).get(namespaced(key));
-  },
-  async getAndDelete(key: string) {
-    return (await getRedisClient()).getDel(namespaced(key));
-  },
-  async increment(key: string, ttl: number) {
+export const redisRateLimitStorage: NonNullable<
+  NonNullable<BetterAuthOptions["rateLimit"]>["customStorage"]
+> = {
+  async consume(key, rule) {
     const result = await (
       await getRedisClient()
     ).eval(
       "local current = redis.call('INCR', KEYS[1]); if current == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]); end; return current",
       {
         keys: [namespaced(key)],
-        arguments: [String(Math.max(1, Math.floor(ttl)))],
+        arguments: [String(Math.max(1, Math.floor(rule.window)))],
       },
     );
-    return Number(result);
-  },
-  async set(key: string, value: string, ttl?: number) {
-    const client = await getRedisClient();
-    if (ttl && ttl > 0)
-      return client.set(namespaced(key), value, {
-        expiration: { type: "EX", value: Math.max(1, Math.floor(ttl)) },
-      });
-    return client.set(namespaced(key), value);
-  },
-  async delete(key: string) {
-    await (await getRedisClient()).del(namespaced(key));
+    const allowed = Number(result) <= rule.max;
+    return { allowed, retryAfter: allowed ? null : rule.window };
   },
 };
 

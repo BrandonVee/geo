@@ -168,6 +168,7 @@ async function credentialCall<T>(
   context: CallContext,
   execute: (apiKey: string) => Promise<T>,
   cachePayload?: unknown,
+  onFreshResult?: (response: T) => Promise<void>,
 ) {
   const credential =
     typeof source === "string"
@@ -176,17 +177,21 @@ async function credentialCall<T>(
   const logContext = { ...context, connectionId: credential.connectionId };
   const call = (tx?: DatabaseTransaction) =>
     loggedCall(operation, logContext, () => execute(credential.apiKey), tx);
-  return cachePayload === undefined
-    ? call()
-    : cachedAnswerBitRead({
-        operation,
-        organizationId: context.organizationId,
-        brandId: context.brandId,
-        actorUserId: context.actorUserId,
-        apiKey: credential.apiKey,
-        payload: cachePayload,
-        execute: call,
-      });
+  if (cachePayload === undefined) {
+    const result = await call();
+    await onFreshResult?.(result);
+    return result;
+  }
+  return cachedAnswerBitRead({
+    operation,
+    organizationId: context.organizationId,
+    brandId: context.brandId,
+    actorUserId: context.actorUserId,
+    apiKey: credential.apiKey,
+    payload: cachePayload,
+    execute: call,
+    onFreshResult,
+  });
 }
 export const queryBrandsLogged = (
   apiKey: CredentialSource,
@@ -276,6 +281,9 @@ export const queryDashboardMetricsLogged = (
   apiKey: CredentialSource,
   payload: Parameters<typeof queryDashboardMetrics>[1],
   context: CallContext,
+  onFreshResult?: (
+    response: Awaited<ReturnType<typeof queryDashboardMetrics>>,
+  ) => Promise<void>,
 ) =>
   credentialCall(
     "/geo/base/dashboard",
@@ -284,6 +292,7 @@ export const queryDashboardMetricsLogged = (
     (resolvedApiKey) =>
       queryDashboardMetrics(resolvedApiKey, payload, context.requestId),
     payload,
+    onFreshResult,
   );
 export const queryExposureTrendsLogged = (
   apiKey: CredentialSource,

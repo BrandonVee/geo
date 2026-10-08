@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseTransaction } from "@geo/db";
-import { publicationBodyHtml } from "@geo/core";
 import { publicationTrackingSourceSchema } from "@geo/contracts";
 import type {
   AppealPublicationOrderInput,
@@ -29,8 +28,6 @@ import {
 import { resolveFrogPublicationClient } from "@/server/integrations/frog-publication/configuration";
 import { authorizeBrand } from "@/server/permissions/brand-scope";
 import { requirePlatformPermission } from "@/server/permissions/platform";
-import { articleRepository } from "@/server/repositories/articles";
-import { contentDocumentRepository } from "@/server/repositories/content-documents";
 import { publicationRepository } from "@/server/repositories/publications";
 import { pricingRepository } from "@/server/repositories/pricing";
 import { organizationService } from "./organizations";
@@ -446,6 +443,37 @@ export const publicationService = {
     if (page.list.length) await syncFrogOrders(page.list);
     return publicationRepository.orderPage({ ...query, userId });
   },
+  async manuscript(
+    orderId: string,
+    scope: { organizationId: string; teamBindingId: string; brandId: string },
+    userId: string,
+  ) {
+    await authorizeBrand(
+      scope.organizationId,
+      scope.teamBindingId,
+      scope.brandId,
+      userId,
+      "publication.read",
+    );
+    const manuscript = await publicationRepository.manuscript({
+      ...scope,
+      orderId,
+      userId,
+    });
+    if (!manuscript)
+      throw new ApiError(404, "PUBLICATION_ORDER_NOT_FOUND", "发布订单不存在");
+    return manuscript;
+  },
+  async adminManuscript(orderId: string, userId: string) {
+    await requirePlatformPermission(userId, "platform.publication.manage");
+    const manuscript = await publicationRepository.adminManuscript(
+      orderId,
+      userId,
+    );
+    if (!manuscript)
+      throw new ApiError(404, "PUBLICATION_ORDER_NOT_FOUND", "发布订单不存在");
+    return manuscript;
+  },
   async create(
     input: CreatePublicationOrderInput,
     userId: string,
@@ -458,26 +486,18 @@ export const publicationService = {
       userId,
       "publication.create",
     );
-    const replay = await publicationRepository.findByIdempotency(
-      input.organizationId,
-      input.idempotencyKey,
-    );
+    const replay = await publicationRepository.findSubmissionReplay({
+      ...input,
+      createdBy: userId,
+    });
     if (replay) {
-      if (
-        replay.brandId !== input.brandId ||
-        replay.channelId !== input.channelId ||
-        replay.title !== input.title ||
-        replay.createdBy !== userId ||
-        (replay.sourceJobId ?? undefined) !== input.sourceJobId ||
-        (replay.sourceDocumentId ?? undefined) !== input.sourceDocumentId ||
-        (replay.contentUrl ?? undefined) !== input.contentUrl
-      )
+      if (!replay.ok)
         throw new ApiError(
           409,
           "PUBLICATION_IDEMPOTENCY_CONFLICT",
           "该幂等键已用于其他发布请求",
         );
-      return { ok: true as const, order: replay, replayed: true as const };
+      return replay;
     }
     const channel = await publicationRepository.findChannelForUser(
       input.channelId,
@@ -535,61 +555,23 @@ export const publicationService = {
         );
       }
     }
-    let contentHtml = input.contentHtml;
-    if (input.sourceJobId) {
-      const job = await articleRepository.findJob(
-        {
-          organizationId: input.organizationId,
-          teamBindingId: input.teamBindingId,
-          brandId: input.brandId,
-        },
-        input.sourceJobId,
-      );
-      if (!job || job.status !== "succeeded" || !job.articleBody)
-        throw new ApiError(
-          422,
-          "PUBLICATION_SOURCE_NOT_READY",
-          "来源生成任务不存在或内容尚未完成",
-        );
-      contentHtml = publicationBodyHtml(job.articleBody);
-    }
-    if (input.sourceDocumentId) {
-      const document = await contentDocumentRepository.find(
-        {
-          organizationId: input.organizationId,
-          teamBindingId: input.teamBindingId,
-          brandId: input.brandId,
-        },
-        input.sourceDocumentId,
-        userId,
-      );
-      if (!document || document.status !== "ready" || !document.body)
-        throw new ApiError(
-          422,
-          "PUBLICATION_SOURCE_NOT_READY",
-          "来源文档不存在、尚未定稿或正文为空",
-        );
-      contentHtml = publicationBodyHtml(document.body);
-    }
-    if (channel.provider === "frog_media" && !contentHtml)
-      throw new ApiError(
-        422,
-        "PUBLICATION_CONTENT_REQUIRED",
-        "聚合发布需要 HTML 正文、已完成的生成任务或已定稿文档",
-      );
-    const result = await publicationRepository.createOrder({
-      organizationId: input.organizationId,
-      brandId: input.brandId,
-      channelId: input.channelId,
-      title: input.title,
-      contentUrl: input.contentUrl,
-      contentHtml,
-      sourceJobId: input.sourceJobId,
-      sourceDocumentId: input.sourceDocumentId,
-      note: input.note,
-      idempotencyKey: input.idempotencyKey,
-      createdBy: userId,
-    });
+    const result = await publicationRepository.createOrder(
+      {
+        ...input,
+        createdBy: userId,
+      },
+      (tx, orderId) =>
+        writeAudit(
+          { ...audit, organizationId: input.organizationId },
+          {
+            operation: "publication.order.create",
+            resourceType: "publication_order",
+            resourceId: orderId,
+            summary: `提交人民币计费发布订单：${input.title}`,
+          },
+          tx,
+        ),
+    );
     if (!result.ok) {
       if (result.code === "IDEMPOTENCY_CONFLICT")
         throw new ApiError(
@@ -603,43 +585,49 @@ export const publicationService = {
           "PUBLICATION_CHANNEL_NOT_FOUND",
           "发布渠道不存在或已下架",
         );
+      const contentErrors = {
+        SOURCE_NOT_READY: "来源文章不存在、范围不匹配、尚未完成或正文为空",
+        CONTENT_SOURCE_CONFLICT: "来源文章与直接正文不能同时提交",
+        CONTENT_URL_INVALID: "内容链接只支持有效的 HTTP(S) 地址",
+        CONTENT_REQUIRED:
+          "请提供正文、已定稿文章或内容链接；聚合渠道必须有正文",
+        CONTENT_TOO_LARGE: "投稿正文超过 500000 字符，请缩短文章后再提交",
+      };
+      if (result.code in contentErrors)
+        throw new ApiError(
+          422,
+          `PUBLICATION_${result.code}`,
+          contentErrors[result.code as keyof typeof contentErrors],
+        );
       throw new ApiError(
         422,
         "PUBLICATION_BALANCE_INSUFFICIENT",
         "品牌发布余额不足",
       );
     }
-    await writeAudit(
-      { ...audit, organizationId: input.organizationId },
-      {
-        operation: "publication.order.create",
-        resourceType: "publication_order",
-        resourceId: result.order.id,
-        summary: `提交人民币计费发布订单：${input.title}`,
-      },
-    ).catch(() =>
-      console.error(
-        JSON.stringify({
-          event: "publication.audit.failed",
-          orderId: result.order.id,
-        }),
-      ),
-    );
+    const response = {
+      ok: true as const,
+      order: result.order,
+      replayed: result.replayed,
+    };
     if (
       result.replayed ||
-      channel.provider !== "frog_media" ||
-      !channel.providerResourceId ||
-      !isFrogMediaType(channel.providerMediaType)
+      result.channel.provider !== "frog_media" ||
+      !result.channel.providerResourceId ||
+      !isFrogMediaType(result.channel.providerMediaType)
     )
-      return result;
+      return response;
     try {
-      const submitted = await frogClient!.submit(channel.providerMediaType, {
-        resourceId: channel.providerResourceId,
-        title: input.title,
-        content: contentHtml!,
-        remark: input.note || undefined,
-        thirdId: result.order.id,
-      });
+      const submitted = await frogClient!.submit(
+        result.channel.providerMediaType,
+        {
+          resourceId: result.channel.providerResourceId,
+          title: result.manuscript.title,
+          content: result.manuscript.contentHtml!,
+          remark: result.manuscript.submissionNote || undefined,
+          thirdId: result.order.id,
+        },
+      );
       const order = await publicationRepository.updateOrder({
         orderId: result.order.id,
         status: "processing",
@@ -649,7 +637,7 @@ export const publicationService = {
         providerMessage: "投稿成功",
         providerSyncedAt: new Date(),
       });
-      return { ...result, order: order ?? result.order };
+      return { ...response, order: order ?? result.order };
     } catch (error) {
       const explicitRejection =
         error instanceof FrogPublicationError && error.kind === "business";
@@ -749,6 +737,17 @@ export const publicationService = {
       includeTierPrices: true,
     });
   },
+  async adminChannel(channelId: string, userId: string) {
+    await requirePlatformPermission(userId, "platform.publication.manage");
+    const row = await publicationRepository.adminChannel(channelId, userId);
+    if (!row)
+      throw new ApiError(
+        404,
+        "PUBLICATION_CHANNEL_NOT_FOUND",
+        "发布渠道不存在",
+      );
+    return row;
+  },
   async createChannel(
     input: CreatePublicationChannelInput,
     userId: string,
@@ -780,42 +779,43 @@ export const publicationService = {
     audit: AuditContext,
   ) {
     await requirePlatformPermission(userId, "platform.publication.manage");
-    const current = await publicationRepository.findChannel(channelId);
-    if (!current)
+    const result = await publicationRepository.updateChannel(
+      channelId,
+      input,
+      userId,
+      (tx, row) =>
+        writeAudit(
+          audit,
+          {
+            operation: "publication.channel.update",
+            resourceType: "publication_channel",
+            resourceId: row.id,
+            summary: `更新发布渠道 ${row.name} 的分级售价与平台状态 ${row.status}；上游成本 ${row.providerCostAmount} 分`,
+          },
+          tx,
+        ),
+    );
+    if (result.kind === "missing")
       throw new ApiError(
         404,
         "PUBLICATION_CHANNEL_NOT_FOUND",
         "发布渠道不存在",
       );
-    if (
-      current.provider === "frog_media" &&
-      Object.values(input.tierPrices).some(
-        (price) => price !== null && price < current.providerCostAmount,
-      )
-    )
+    if (result.kind === "conflict")
+      throw new ApiError(
+        409,
+        "PUBLICATION_CHANNEL_CONFLICT",
+        "渠道设置已变化，请核对最新设置后重新确认",
+        { current: result.channel },
+      );
+    if (result.kind === "below_cost")
       throw new ApiError(
         422,
         "PUBLICATION_PRICE_BELOW_COST",
         "聚合渠道售价不能低于媒体发布渠道采购成本",
+        { current: result.channel },
       );
-    const row = await publicationRepository.upsertChannel({
-      id: channelId,
-      ...input,
-      updatedBy: userId,
-    });
-    if (!row)
-      throw new ApiError(
-        404,
-        "PUBLICATION_CHANNEL_NOT_FOUND",
-        "发布渠道不存在",
-      );
-    await writeAudit(audit, {
-      operation: "publication.channel.update",
-      resourceType: "publication_channel",
-      resourceId: row.id,
-      summary: `更新发布渠道 ${row.name} 的分级售价与平台状态 ${row.status}；上游成本 ${row.providerCostAmount} 分`,
-    });
-    return row;
+    return result.channel;
   },
   // @project-doc docs/architecture/platform_administration.md#publication_fulfillment
   async adminOrders(query: AdminPublicationOrderQuery, userId: string) {

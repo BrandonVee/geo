@@ -146,6 +146,34 @@ try {
   }
   if (!tenantFrogCredentialAccessDenied)
     throw new Error("TENANT_FROG_CREDENTIAL_ACCESS_ALLOWED");
+  const manuscriptProtection = await withPlatformDbContext(
+    { userId: randomUUID() },
+    (tx) =>
+      tx.execute<{ restricted: boolean }>(sql`
+        select c.relrowsecurity
+          and has_table_privilege('geo_tenant_app', c.oid, 'SELECT')
+          and has_table_privilege('geo_tenant_app', c.oid, 'INSERT')
+          and has_table_privilege('geo_platform_app', c.oid, 'SELECT')
+          and has_table_privilege('geo_platform_app', c.oid, 'INSERT')
+          and not has_table_privilege('geo_tenant_app', c.oid, 'UPDATE, DELETE, TRUNCATE')
+          and not has_table_privilege('geo_platform_app', c.oid, 'UPDATE, DELETE, TRUNCATE')
+          and exists (select 1 from pg_policy p where p.polrelid = c.oid and p.polname = 'tenant_organization_isolation')
+          and exists (select 1 from pg_policy p where p.polrelid = c.oid and p.polname = 'platform_unrestricted')
+          as restricted
+        from pg_class c where c.oid = 'public.publication_order_contents'::regclass
+      `),
+  );
+  if (!manuscriptProtection.rows[0]?.restricted)
+    throw new Error("PUBLICATION_MANUSCRIPT_PROTECTION_INCOMPLETE");
+  const crossTenantManuscripts = await withTenantDbContext(
+    { organizationId: first.id, userId: randomUUID() },
+    (tx) =>
+      tx.execute(
+        sql`select order_id from publication_order_contents where organization_id <> ${first.id}`,
+      ),
+  );
+  if (crossTenantManuscripts.rows.length)
+    throw new Error("PUBLICATION_MANUSCRIPT_CROSS_TENANT_READ_ALLOWED");
   const platformRuntimeRows = await withPlatformDbContext(
     { userId: randomUUID() },
     (tx) => tx.execute(sql`select id from runtime_heartbeats limit 1`),
@@ -185,6 +213,7 @@ try {
       tenantRuntimeTaskAccessDenied,
       tenantReleaseStateAccessDenied,
       tenantFrogCredentialAccessDenied,
+      manuscriptProtectionVerified: manuscriptProtection.rows[0].restricted,
       platformRuntimeVisible: platformRuntimeRows.rows.length,
       platformRuntimeTaskVisible: platformRuntimeTaskRows.rows.length,
       platformReleaseStateVisible: platformReleaseStateRows.rows.length,

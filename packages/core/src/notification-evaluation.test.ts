@@ -5,7 +5,27 @@ import {
   connectionFailureCriticalThreshold,
   connectionFailureLookbackLimit,
   countConsecutiveFailures,
+  notificationMetricPeriod,
 } from "./notification-evaluation";
+
+describe("通知指标日期窗口", () => {
+  it.each([
+    [1, "2026-03-07T23:55:00Z", "2026-03-07", "2026-03-07"],
+    [7, "2026-01-01T00:00:00Z", "2025-12-26", "2026-01-01"],
+    [7, "2024-03-01T12:00:00Z", "2024-02-24", "2024-03-01"],
+    [30, "2026-03-08T00:05:00+08:00", "2026-02-06", "2026-03-07"],
+  ])(
+    "%i 天窗口按 UTC 闭合日期处理跨年、闰日及本地日期边界",
+    (days, timestamp, beginDate, endDate) => {
+      const now = new Date(timestamp);
+      expect(notificationMetricPeriod(days, now)).toEqual({
+        beginDate,
+        endDate,
+      });
+      expect(now.toISOString()).toBe(new Date(timestamp).toISOString());
+    },
+  );
+});
 
 describe("连接连续失败判定", () => {
   it("从最新记录开始计数，并在第一次成功处复位", () => {

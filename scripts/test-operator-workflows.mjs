@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { cp } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
@@ -294,6 +295,7 @@ try {
       "vitest",
       "run",
       "src/server/repositories/notifications.integration.test.ts",
+      "src/server/integrations/answerbit/read-cache.integration.test.ts",
     ],
     { NOTIFICATION_WORKFLOW_DB_TESTS: "1" },
   );
@@ -309,6 +311,102 @@ try {
     ],
     { REPORT_HISTORY_DB_TESTS: "1" },
   );
+  await run(
+    pnpm,
+    [
+      "--filter",
+      "@geo/web",
+      "exec",
+      "vitest",
+      "run",
+      "src/server/auth/session.integration.test.ts",
+    ],
+    { AUTH_SESSION_DB_TESTS: "1" },
+  );
+  await run(
+    pnpm,
+    [
+      "--filter",
+      "@geo/web",
+      "exec",
+      "vitest",
+      "run",
+      "src/server/services/publication-channels.integration.test.ts",
+    ],
+    { PUBLICATION_CHANNEL_DB_TESTS: "1" },
+  );
+  await run(
+    pnpm,
+    [
+      "--filter",
+      "@geo/web",
+      "exec",
+      "vitest",
+      "run",
+      "src/server/services/publication-manuscripts.integration.test.ts",
+    ],
+    { PUBLICATION_MANUSCRIPT_DB_TESTS: "1" },
+  );
+  await run(
+    pnpm,
+    [
+      "--filter",
+      "@geo/worker",
+      "exec",
+      "vitest",
+      "run",
+      "src/job-access.integration.test.ts",
+    ],
+    { WORKER_ACCESS_DB_TESTS: "1" },
+  );
+  await run(
+    pnpm,
+    [
+      "--filter",
+      "@geo/worker",
+      "exec",
+      "vitest",
+      "run",
+      "src/article-dispatch.integration.test.ts",
+    ],
+    { ARTICLE_DISPATCH_DB_TESTS: "1" },
+  );
+  await run(
+    pnpm,
+    [
+      "--filter",
+      "@geo/worker",
+      "exec",
+      "vitest",
+      "run",
+      "src/notification-evaluation.integration.test.ts",
+    ],
+    { NOTIFICATION_EVALUATION_DB_TESTS: "1" },
+  );
+  await run(
+    pnpm,
+    [
+      "--filter",
+      "@geo/db",
+      "exec",
+      "vitest",
+      "run",
+      "src/enterprise-balances.integration.test.ts",
+    ],
+    { ENTERPRISE_BALANCE_DB_TESTS: "1" },
+  );
+  await run(
+    pnpm,
+    [
+      "--filter",
+      "@geo/db",
+      "exec",
+      "vitest",
+      "run",
+      "src/publications.integration.test.ts",
+    ],
+    { PUBLICATION_DB_TESTS: "1" },
+  );
   const seed = new Client({ connectionString: databaseUrl.href });
   await seed.connect();
   try {
@@ -319,12 +417,26 @@ try {
     await seed.end();
   }
   await run(pnpm, ["--filter", "@geo/web", "build"]);
+  const standaloneWeb = new URL(
+    "../apps/web/.next/standalone/apps/web/",
+    import.meta.url,
+  );
+  await cp(
+    new URL("../apps/web/.next/static/", import.meta.url),
+    new URL(".next/static/", standaloneWeb),
+    { recursive: true },
+  );
+  await cp(
+    new URL("../apps/web/public/", import.meta.url),
+    new URL("public/", standaloneWeb),
+    { recursive: true },
+  );
   server = spawn(
-    pnpm,
-    ["--filter", "@geo/web", "exec", "next", "start", "-p", String(port)],
+    process.execPath,
+    [fileURLToPath(new URL("server.js", standaloneWeb))],
     {
       cwd: root,
-      env,
+      env: { ...env, HOSTNAME: "127.0.0.1", PORT: String(port) },
       stdio: "inherit",
       detached: process.platform !== "win32",
     },
@@ -343,6 +455,7 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
   if (!ready) throw new Error("QA web server did not become ready");
+  await run(pnpm, ["smoke:web"], { SMOKE_BASE_URL: origin });
   await run(pnpm, [
     "exec",
     "playwright",

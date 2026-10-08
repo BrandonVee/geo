@@ -13,7 +13,7 @@ export function decideAsyncJobRecovery(input: {
   status: "queued" | "running";
   queueState: QueueJobState | null;
   hasExternalId?: boolean;
-  hasFeatureCharge?: boolean;
+  hasCreateDispatched?: boolean;
 }): AsyncJobRecoveryAction {
   if (
     input.queueState === "created" ||
@@ -21,7 +21,7 @@ export function decideAsyncJobRecovery(input: {
     input.queueState === "active"
   )
     return "none";
-  if (input.status === "queued" || input.kind === "report") return "requeue";
+  if (input.kind === "report") return "requeue";
   if (input.hasExternalId) return "requeue";
-  return input.hasFeatureCharge ? "fail_uncertain" : "requeue";
+  return input.hasCreateDispatched ? "fail_uncertain" : "requeue";
 }

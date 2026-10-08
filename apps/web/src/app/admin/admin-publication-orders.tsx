@@ -21,6 +21,7 @@ import {
   Space,
   Tag,
   Typography,
+  type FormInstance,
   type TableColumnsType,
 } from "antd";
 import dayjs from "dayjs";
@@ -34,6 +35,10 @@ import {
 } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { AccessibleTable } from "../accessible-table";
+import {
+  PublicationManuscriptDrawer,
+  type PublicationManuscriptTarget,
+} from "../publication-manuscript-drawer";
 
 type Status = "submitted" | "processing" | "published" | "failed" | "cancelled";
 type OrderRow = {
@@ -59,6 +64,10 @@ type OrderPage = {
   pagination: { page: number; pageSize: number; total: number; pages: number };
 };
 type Fulfillment = { resultUrl?: string; note: string };
+type EditingOrder = {
+  row: OrderRow;
+  status: "processing" | "published" | "failed";
+};
 const statusMeta = {
   submitted: { color: "blue", label: "投稿确认中" },
   processing: { color: "processing", label: "处理中" },
@@ -132,11 +141,12 @@ export function AdminPublicationOrders({
     message: string;
   }>();
   const [reading, setReading] = useState(false);
+  const [manuscript, setManuscript] = useState<
+    (PublicationManuscriptTarget & { directoryOrganizationId?: string }) | null
+  >(null);
+  useEffect(() => setManuscript(null), [query.organizationId]);
   const controllerRef = useRef<AbortController | undefined>(undefined);
-  const [editing, setEditing] = useState<{
-    row: OrderRow;
-    status: "processing" | "published" | "failed";
-  }>();
+  const [editing, setEditing] = useState<EditingOrder>();
   const [saving, setSaving] = useState(false);
   const [writeError, setWriteError] = useState("");
   const [verified, setVerified] = useState<OrderRow>();
@@ -153,6 +163,11 @@ export function AdminPublicationOrders({
         else params.set(key, String(value));
       }
       if (params.toString() === serialized) return;
+      if (
+        "organizationId" in change &&
+        change.organizationId !== query.organizationId
+      )
+        setManuscript(null);
       controllerRef.current?.abort();
       controllerRef.current = undefined;
       setSnapshot(undefined);
@@ -209,14 +224,6 @@ export function AdminPublicationOrders({
       window.removeEventListener("online", poll);
     };
   }, [refresh, refreshVersion, navigating]);
-  useEffect(() => {
-    if (!editing) return;
-    form.resetFields();
-    form.setFieldsValue({
-      resultUrl: editing.row.order.resultUrl ?? "",
-      note: editing.row.order.note ?? "",
-    });
-  }, [editing, form]);
   const active = snapshot?.key === url ? snapshot.value : undefined;
   const pagination = active?.pagination ?? {
     page: query.page,
@@ -374,6 +381,20 @@ export function AdminPublicationOrders({
       width: 220,
       render: (_, row) => (
         <Space wrap>
+          <Button
+            size="small"
+            onClick={() =>
+              setManuscript({
+                orderId: row.order.id,
+                title: row.order.title,
+                context: row.organization.name,
+                requestUrl: `/api/v1/admin/publication-orders/${encodeURIComponent(row.order.id)}/manuscript`,
+                directoryOrganizationId: query.organizationId,
+              })
+            }
+          >
+            查看稿件
+          </Button>
           {row.order.resultUrl ? (
             <Button
               type="link"
@@ -647,11 +668,18 @@ export function AdminPublicationOrders({
           ),
         }}
       />
+      <PublicationManuscriptDrawer
+        target={
+          manuscript?.directoryOrganizationId === query.organizationId
+            ? manuscript
+            : null
+        }
+        onClose={() => setManuscript(null)}
+      />
       <Modal
         title="处理发布订单"
         width={720}
         open={Boolean(editing)}
-        forceRender
         confirmLoading={saving}
         cancelButtonProps={{ disabled: saving }}
         okButtonProps={{
@@ -706,39 +734,69 @@ export function AdminPublicationOrders({
             style={{ marginBottom: 16 }}
           />
         ) : null}
-        <Form
-          form={form}
-          layout="vertical"
-          size="large"
-          disabled={saving}
-          onFinish={(values) => void fulfill(values)}
-        >
-          {editing?.status === "published" ? (
-            <Form.Item
-              name="resultUrl"
-              label="发布结果 URL"
-              rules={[
-                { required: true, message: "请填写交付链接" },
-                { type: "url", message: "请填写有效链接" },
-                {
-                  pattern: /^https?:\/\//i,
-                  message: "交付链接须使用 HTTP 或 HTTPS",
-                },
-                { max: 2000 },
-              ]}
-            >
-              <Input placeholder="https://" />
-            </Form.Item>
-          ) : null}
-          <Form.Item
-            name="note"
-            label="处理说明"
-            rules={[{ max: 2000, message: "处理说明最多 2000 字" }]}
-          >
-            <Input.TextArea rows={3} maxLength={2000} />
-          </Form.Item>
-        </Form>
+        {editing ? (
+          <FulfillmentForm
+            form={form}
+            editing={editing}
+            saving={saving}
+            onFinish={(values) => void fulfill(values)}
+          />
+        ) : null}
       </Modal>
     </Card>
+  );
+}
+
+function FulfillmentForm({
+  form,
+  editing,
+  saving,
+  onFinish,
+}: {
+  form: FormInstance<Fulfillment>;
+  editing: EditingOrder;
+  saving: boolean;
+  onFinish: (values: Fulfillment) => void;
+}) {
+  useEffect(() => {
+    form.resetFields();
+    form.setFieldsValue({
+      resultUrl: editing.row.order.resultUrl ?? "",
+      note: editing.row.order.note ?? "",
+    });
+  }, [editing, form]);
+  return (
+    <Form
+      form={form}
+      layout="vertical"
+      size="large"
+      disabled={saving}
+      onFinish={onFinish}
+    >
+      {editing.status === "published" ? (
+        <Form.Item
+          name="resultUrl"
+          label="发布结果 URL"
+          rules={[
+            { required: true, message: "请填写交付链接" },
+            { type: "url", message: "请填写有效链接" },
+            {
+              pattern: /^https?:\/\//i,
+              message: "交付链接须使用 HTTP 或 HTTPS",
+            },
+            { max: 2000 },
+          ]}
+        >
+          <Input placeholder="https://" />
+        </Form.Item>
+      ) : null}
+      <Form.Item
+        name="note"
+        label="处理说明"
+        rules={[{ max: 2000, message: "处理说明最多 2000 字" }]}
+      >
+        <Input.TextArea rows={3} maxLength={2000} />
+      </Form.Item>
+    </Form>
   );
 }

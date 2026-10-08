@@ -81,6 +81,10 @@ import {
   useAdminMemberCommand,
 } from "./admin-member-command";
 import { AdminPublicationOrders } from "./admin-publication-orders";
+import {
+  AdminChannelCommand,
+  type ChannelCommandTarget,
+} from "./admin-channel-command";
 import { MeteringClient } from "../dashboard/metering/metering-client";
 import type { ScopeOrganization } from "../dashboard/use-answerbit-scope";
 import { ThemeToggle } from "../theme-toggle";
@@ -795,10 +799,8 @@ export function AdminClient({
     Organization,
     "id" | "name" | "answerbitBrandId"
   > | null>(null);
-  const [editingChannel, setEditingChannel] = useState<Channel | null>(null);
-  const [channelTierPrices, setChannelTierPrices] = useState<
-    Record<PricingTier, number | null>
-  >({ retail: null, bronze: null, silver: null, gold: null });
+  const [channelCommand, setChannelCommand] =
+    useState<ChannelCommandTarget | null>(null);
   const loadRunRef = useRef(0);
   const channelLoadRunRef = useRef(0);
   const channelPageRef = useRef(1);
@@ -1215,22 +1217,6 @@ export function AdminClient({
       websiteAutoTrace: editingPlatformBrand.websiteAutoTrace ?? false,
     });
   }, [editingPlatformBrand, platformBrandUpdateForm]);
-  async function patch(url: string, body: unknown, key: string) {
-    setBusy(key);
-    try {
-      await api(url, {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      setMessage("操作已完成并写入审计");
-      await load();
-    } catch (error) {
-      setMessage((error as Error).message);
-    } finally {
-      setBusy("");
-    }
-  }
   async function createUser(values: UserForm) {
     setBusy("user");
     try {
@@ -1665,61 +1651,6 @@ export function AdminClient({
       setBusy("");
     }
   }
-  function openChannelPrice(channel: Channel) {
-    setEditingChannel(channel);
-    setChannelTierPrices(
-      Object.fromEntries(
-        pricingTiers.map((tier) => [
-          tier,
-          channel.tierPrices[tier].overridden
-            ? channel.tierPrices[tier].priceAmount / 100
-            : null,
-        ]),
-      ) as Record<PricingTier, number | null>,
-    );
-  }
-  async function saveChannelPrice() {
-    if (!editingChannel) return;
-    await patch(
-      `/api/v1/admin/publication-channels/${editingChannel.id}`,
-      {
-        name: editingChannel.name,
-        category: editingChannel.category,
-        priceAmount: editingChannel.priceAmount,
-        status: editingChannel.status,
-        tierPrices: Object.fromEntries(
-          pricingTiers.map((tier) => [
-            tier,
-            channelTierPrices[tier] === null
-              ? null
-              : Math.round(channelTierPrices[tier]! * 100),
-          ]),
-        ),
-      },
-      `channel-${editingChannel.id}`,
-    );
-    setEditingChannel(null);
-  }
-  async function toggleChannel(channel: Channel) {
-    await patch(
-      `/api/v1/admin/publication-channels/${channel.id}`,
-      {
-        name: channel.name,
-        category: channel.category,
-        priceAmount: channel.priceAmount,
-        status: channel.status === "active" ? "inactive" : "active",
-        tierPrices: Object.fromEntries(
-          pricingTiers.map((tier) => [
-            tier,
-            channel.tierPrices[tier].overridden
-              ? channel.tierPrices[tier].priceAmount
-              : null,
-          ]),
-        ),
-      },
-      `channel-${channel.id}`,
-    );
-  }
   function openPricingTierRule(rule: PricingTierRule) {
     setEditingPricingTier(rule);
     pricingTierRuleForm.setFieldsValue({
@@ -2126,8 +2057,16 @@ export function AdminClient({
       width: 180,
       render: (_, item) => (
         <Space>
-          <Button onClick={() => openChannelPrice(item)}>分级定价</Button>
-          <Button onClick={() => void toggleChannel(item)}>
+          <Button
+            onClick={() =>
+              setChannelCommand({ channel: item, mode: "pricing" })
+            }
+          >
+            分级定价
+          </Button>
+          <Button
+            onClick={() => setChannelCommand({ channel: item, mode: "status" })}
+          >
             {item.status === "active" ? "下架" : "启用"}
           </Button>
         </Space>
@@ -5808,76 +5747,24 @@ export function AdminClient({
         }}
       />
 
-      <Modal
-        cancelText="取消"
-        confirmLoading={Boolean(
-          editingChannel && busy === "channel-" + editingChannel.id,
-        )}
-        okText="保存分级售价"
-        onCancel={() => setEditingChannel(null)}
-        onOk={() => void saveChannelPrice()}
-        open={Boolean(editingChannel)}
-        title={`分级定价 · ${editingChannel?.name ?? ""}`}
-        width={760}
-      >
-        {editingChannel ? (
-          <Flex gap={16} vertical>
-            <Descriptions bordered column={mobile ? 1 : 3} size="small">
-              <Descriptions.Item label="来源">
-                {editingChannel.provider === "frog_media"
-                  ? "媒体发布"
-                  : "人工渠道"}
-              </Descriptions.Item>
-              <Descriptions.Item label="采购成本">
-                {editingChannel.provider === "frog_media"
-                  ? money(editingChannel.providerCostAmount)
-                  : "自营渠道"}
-              </Descriptions.Item>
-              <Descriptions.Item label="平台状态">
-                {editingChannel.status === "active" ? "启用" : "下架"}
-              </Descriptions.Item>
-            </Descriptions>
-            <Alert
-              message={
-                editingChannel.provider === "frog_media"
-                  ? "留空使用等级加价规则自动计算；填写后使用固定售价。聚合渠道售价不得低于采购成本，避免倒挂。"
-                  : "留空沿用人工渠道基础价；填写后可为该客户等级设置固定售价。"
-              }
-              showIcon
-              type="info"
-            />
-            <Row gutter={[12, 12]}>
-              {pricingTiers.map((tier) => (
-                <Col key={tier} md={12} xs={24}>
-                  <Typography.Text strong>
-                    {pricingTierMeta[tier].label}
-                  </Typography.Text>
-                  <InputNumber
-                    suffix="元"
-                    min={
-                      editingChannel.provider === "frog_media"
-                        ? editingChannel.providerCostAmount / 100
-                        : 0
-                    }
-                    onChange={(value) =>
-                      setChannelTierPrices((current) => ({
-                        ...current,
-                        [tier]: value,
-                      }))
-                    }
-                    placeholder={`自动 ${money(
-                      editingChannel.tierPrices[tier].priceAmount,
-                    )}`}
-                    precision={2}
-                    style={{ marginTop: 8, width: "100%" }}
-                    value={channelTierPrices[tier]}
-                  />
-                </Col>
-              ))}
-            </Row>
-          </Flex>
-        ) : null}
-      </Modal>
+      <AdminChannelCommand
+        target={channelCommand}
+        userId={userId}
+        onClose={() => setChannelCommand(null)}
+        onSaved={async (message) => {
+          try {
+            await loadPublicationChannels(
+              channelPageRef.current,
+              channelPageSizeRef.current,
+            );
+            setMessage(message);
+          } catch (error) {
+            setMessage(
+              `${message}；渠道目录刷新失败：${error instanceof Error ? error.message : "请重试加载"}`,
+            );
+          }
+        }}
+      />
 
       <Modal
         cancelText="取消"

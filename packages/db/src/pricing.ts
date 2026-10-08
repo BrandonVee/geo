@@ -31,8 +31,13 @@ const defaultRule = {
   Omit<typeof pricingTierRules.$inferInsert, "tier">
 >;
 
-export async function getUserPricingTier(userId: string): Promise<PricingTier> {
-  const [row] = await db
+type PricingExecutor = Pick<typeof db, "select">;
+
+export async function getUserPricingTier(
+  userId: string,
+  executor: PricingExecutor = db,
+): Promise<PricingTier> {
+  const [row] = await executor
     .select({ pricingTier: users.pricingTier })
     .from(users)
     .where(eq(users.id, userId))
@@ -40,8 +45,11 @@ export async function getUserPricingTier(userId: string): Promise<PricingTier> {
   return row?.pricingTier ?? "retail";
 }
 
-export async function getPricingTierRule(tier: PricingTier) {
-  const [row] = await db
+export async function getPricingTierRule(
+  tier: PricingTier,
+  executor: PricingExecutor = db,
+) {
+  const [row] = await executor
     .select()
     .from(pricingTierRules)
     .where(eq(pricingTierRules.tier, tier))
@@ -85,17 +93,18 @@ export async function setPricingTierRule(input: {
 export async function getEffectiveFeaturePointCost(
   featureCode: string,
   userId: string,
+  executor: PricingExecutor = db,
 ) {
   const [basePoints, tier] = await Promise.all([
-    db
+    executor
       .select({ points: featurePointCosts.points })
       .from(featurePointCosts)
       .where(eq(featurePointCosts.featureCode, featureCode))
       .limit(1)
       .then(([row]) => row?.points ?? 0),
-    getUserPricingTier(userId),
+    getUserPricingTier(userId, executor),
   ]);
-  const rule = await getPricingTierRule(tier);
+  const rule = await getPricingTierRule(tier, executor);
   return {
     tier,
     basePoints,

@@ -35,6 +35,10 @@ import type { PublicationProviderAction } from "@geo/core";
 import { publicationProviderActionSchema } from "@geo/contracts";
 import { AccessibleTable } from "../../accessible-table";
 import {
+  PublicationManuscriptDrawer,
+  type PublicationManuscriptTarget,
+} from "../../publication-manuscript-drawer";
+import {
   ScopeFields,
   scopeQuery,
   type ScopeOrganization,
@@ -185,6 +189,12 @@ function BillingWorkspace({
 }: BillingProps & { scope: ReturnType<typeof useAnswerBitScope> }) {
   const router = useRouter();
   const canPublish = scope.can("publication.create");
+  const canReadOrders = scope.can("publication.read");
+  const [manuscript, setManuscript] =
+    useState<PublicationManuscriptTarget | null>(null);
+  useEffect(() => {
+    if (!canReadOrders) setManuscript(null);
+  }, [canReadOrders]);
   const draftScope = useMemo(
     () => ({
       userId,
@@ -1071,6 +1081,23 @@ function BillingWorkspace({
       width: 180,
       render: (_, item) => (
         <Space wrap>
+          {canReadOrders ? (
+            <Button
+              size="small"
+              onClick={() =>
+                setManuscript({
+                  orderId: item.order.id,
+                  title: item.order.title,
+                  context: organizations.find(
+                    (organization) => organization.id === scope.organizationId,
+                  )?.name,
+                  requestUrl: `/api/v1/publication-orders/${encodeURIComponent(item.order.id)}/manuscript?${scopeQuery({ organizationId: scope.organizationId, teamBindingId: scope.teamBindingId, brandId: scope.brandId })}`,
+                })
+              }
+            >
+              查看稿件
+            </Button>
+          ) : null}
           {scope.canWrite &&
           scope.can("publication.read") &&
           item.order.status === "published" &&
@@ -1723,6 +1750,11 @@ function BillingWorkspace({
           </Row>
         </Form>
       ) : null}
+
+      <PublicationManuscriptDrawer
+        target={canReadOrders ? manuscript : null}
+        onClose={() => setManuscript(null)}
+      />
 
       <Modal
         footer={null}

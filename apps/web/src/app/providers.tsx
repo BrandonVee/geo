@@ -115,6 +115,12 @@ export function Providers({
               colorPrimary: "#4f46e5",
               colorPrimaryHover: "#4338ca",
               colorPrimaryActive: "#3730a3",
+              // Outlined actions use the accent as text on a dark surface,
+              // so they must not inherit the filled primary background colors.
+              defaultHoverColor: mode === "dark" ? "#818cf8" : "#4338ca",
+              defaultHoverBorderColor: mode === "dark" ? "#818cf8" : "#4338ca",
+              defaultActiveColor: mode === "dark" ? "#a5b4fc" : "#3730a3",
+              defaultActiveBorderColor: mode === "dark" ? "#a5b4fc" : "#3730a3",
               primaryColor: "#ffffff",
               dangerColor: mode === "dark" ? "#171d2a" : "#ffffff",
               contentFontSize: 14,

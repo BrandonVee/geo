@@ -60,6 +60,11 @@ try {
         AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'content_folders' AND column_name = 'creation_fingerprint')
         AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'content_folders' AND column_name = 'deleted_at')
         AND to_regclass('public.content_folders_org_creation_key_ux') IS NOT NULL
+        AND to_regclass('public.publication_order_contents') IS NOT NULL
+        AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'article_generation_jobs' AND column_name = 'create_dispatched_at')
+        AND EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = to_regclass('public.publication_order_contents') AND tgname = 'publication_order_contents_immutable_trg' AND NOT tgisinternal AND tgenabled IN ('O', 'A'))
+        AND EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = to_regclass('public.publication_order_contents') AND tgname = 'publication_order_contents_scope_trg' AND NOT tgisinternal AND tgenabled IN ('O', 'A'))
+        AND EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = to_regclass('public.article_generation_jobs') AND tgname = 'article_generation_jobs_dispatch_immutable_trg' AND NOT tgisinternal AND tgenabled IN ('O', 'A'))
         AND to_regclass('public.article_tracking_submissions_org_key_ux') IS NOT NULL
         AND to_regclass('public.platform_frog_credentials') IS NOT NULL
         AND to_regclass('public.pricing_tier_rules') IS NOT NULL
@@ -101,7 +106,7 @@ try {
     `)
     ).rows[0]?.complete
   )
-    throw new Error("DATABASE_V14_STRUCTURE_INCOMPLETE");
+    throw new Error("DATABASE_V15_STRUCTURE_INCOMPLETE");
 
   const currentVRevision = currentVersion?.match(/^v([1-9]\d*)$/);
   if (

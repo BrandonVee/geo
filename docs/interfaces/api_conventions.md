@@ -14,7 +14,7 @@
 
 除健康检查和首次初始化状态/创建外，业务 API 依赖 Better Auth Session Cookie。Route 先解析 Session，再由 Service 验证平台权限、企业成员权限和品牌范围。认证通过不表示已授权；返回资源前必须完成对象级组织与品牌检查。
 
-固定 Tencent TeamID 与统一 API Key 是系统业务就绪的全局前置条件。除平台腾讯配置读取/写入外，所有业务 API 在 Session 校验后确认统一配置状态为 `active`；未完成接入时返回 `422 PLATFORM_TENCENT_CONNECTION_REQUIRED`。腾讯配置 `PUT` 会在一次请求中完成上游验证、目录导入和企业投影；日常目录一致性由 Worker 自动维护，`POST /api/v1/admin/answerbit-enterprise-syncs` 只保留为运维诊断和兼容调用。平台监控品牌扩容由 `POST /api/v1/answerbit/metering/quota-purchases` 调用腾讯官方写接口，只有腾讯返回成功后才响应成功。
+登录与本地数据读取不依赖统一腾讯配置；用户可继续按权限访问工作区、历史内容、订单、余额和通知记录。实际调用腾讯 AnswerBit 的操作仍要求统一配置状态为 `active`，由 Gateway 返回 `ANSWERBIT_KEY_NOT_CONFIGURED` 或 `ANSWERBIT_UNAUTHORIZED` 等上游接入错误。腾讯配置 `PUT` 会在一次请求中完成上游验证、目录导入和企业投影；日常目录一致性由 Worker 自动维护，`POST /api/v1/admin/answerbit-enterprise-syncs` 只保留为运维诊断和兼容调用。平台监控品牌扩容由 `POST /api/v1/answerbit/metering/quota-purchases` 调用腾讯官方写接口，只有腾讯返回成功后才响应成功。
 
 浏览器 `POST`、`PUT`、`PATCH`、`DELETE` 请求（包括 Better Auth POST）在 Session 查询和正文读取前统一校验 Origin；`APP_URL`、`BETTER_AUTH_URL` 或 `BETTER_AUTH_TRUSTED_ORIGINS` 中未登记的来源返回 `403 UNTRUSTED_ORIGIN`。显式登记的跨站前端可以写入；携带 `same-site`/`cross-site` 浏览器信号却缺少 Origin 的请求同样拒绝。没有 Origin 与 Fetch Metadata 的服务端调用继续使用 Session 和权限校验。部署到新域名时同时配置上述三项，不能通过放宽 Cookie 或代理改写来源绕过门禁。
 
@@ -29,6 +29,8 @@ JSON 请求使用 `Content-Type: application/json`；允许标准的 `applicatio
 `GET /v1/publication-orders` 默认每页 20 条，上限 100 条；可按 `keyword`、`status` 及成对的 `beginDate`/`endDate` 筛选。`data` 保持订单数组，envelope 新增 `pagination`（`page`、`pageSize`、`total`、`pages`）；日期按北京时间计算，超出末页返回实际末页。只即时同步本次授权分页的履约状态，再读取最新匹配结果。
 
 管理端 `GET /v1/admin/publication-orders` 同样默认 20 条、上限 100 条，按 `q`、企业、来源、状态和成对日期筛选；`data` 为 `{ list, pagination }`，行记录包含企业名称。列表和 `GET /v1/admin/publication-orders/{orderId}` 只读本地记录，都要求 `platform.publication.manage`，不调用上游或扣费；单笔读取用于人工处理响应丢失后核对已保存状态。人工交付的 `PATCH` 仅接受 HTTP(S) 结果链接，聚合订单仍拒绝手工结单。
+
+渠道 `PATCH /v1/admin/publication-channels/{channelId}` 至少提交 `name`、`category`、`priceAmount`、`status`、`tierPrices` 中一项；可选 `expected` 覆盖全部修改字段的原值。行锁内原值不一致返回 `409 PUBLICATION_CHANNEL_CONFLICT` 和 `details.current`；目标已达到的重放返回200，不重复审计。聚合固定售价按锁内最新成本校验，低于成本返回 `422 PUBLICATION_PRICE_BELOW_COST` 和当前快照。写入与审计原子提交。管理列表、PATCH 和新增单笔 GET 返回相同的 `basePriceAmount`（原基础价）、`priceAmount`（普通用户有效售价）及 `tierPrices`；输入和 expected 的 `priceAmount` 指基础价，四档固定售价输入为整数分或 `null`。GET 需要 `platform.publication.manage`，只读核对本地渠道与价格，不调用上游；非法 UUID 返回400，渠道不存在返回404。
 
 账号 `PATCH /v1/admin/users/{userId}` 主动停用或把代理商调整为当前不可用时，会逐家校验有效企业管理员；`409 LAST_TENANT_ADMIN` 的 `details.organizations` 返回需交接企业的 ID 与名称，拒绝时不更新账号、Session 或功能范围。租户成员目录在成员 `status` 之外、平台企业详情的 `members` 在 `memberStatus` 之外返回 `accountState`（active/disabled/scheduled/expired），两者分别代表企业成员关系和全局账号当前可用状态。
 
@@ -96,6 +98,10 @@ JSON 请求使用 `Content-Type: application/json`；允许标准的 `applicatio
 ## 幂等与并发
 
 人工入账、品牌划拨、发布下单以及外部计费请求需要调用方提供或服务端生成稳定幂等键。相同企业范围内重复提交同一键应返回首次结果，而不是重复产生副作用。状态机更新以数据库当前状态为前置条件，失败使用 `409` 而非静默覆盖。
+
+发布订单创建在租户事务内原子保存余额、订单、冻结原稿和创建审计，成功后才调用聚合发布。`contentHtml`、`sourceDocumentId`、`sourceJobId` 互斥；人工渠道至少提供正文或 HTTP(S) 内容链接，聚合渠道必须有正文，来源状态、范围或内容不符合要求返回422。相同键核对操作者、完整范围、渠道、标题、直接正文、来源 ID、链接和原备注，不一致返回 `409 PUBLICATION_IDEMPOTENCY_CONFLICT`；来源后来编辑或归档不改变已提交请求的确认结果。旧订单无原稿时兼容原先身份字段核对。
+
+`GET /v1/publication-orders/{orderId}/manuscript` 要求 UUID 订单号及完整的 `organizationId`、`teamBindingId`、`brandId` 查询，权限为当前品牌 `publication.read`；`GET /v1/admin/publication-orders/{orderId}/manuscript` 要求 `platform.publication.manage`，不接受租户范围覆盖。不存在或不属于请求范围的订单返回404。响应 `PublicationManuscript` 包含标题、提交时间、来源及文档版本、正文、内容链接和原始备注；历史缺失返回 `snapshotStatus=legacy_unavailable` 与空正文/原备注。读取只查本地冻结快照，不取当前文档、不请求外部链接或上游、不计费。订单列表不返回正文或指纹，HTML 展示必须转义或安全处理，具体规则见[投稿原稿](../domains/balance_and_publication.md#publication_manuscripts)。
 
 文章生成在企业范围内保存幂等键，并校验原操作者、品牌、内部绑定和请求内容；不一致返回 `409 ARTICLE_JOB_IDEMPOTENCY_CONFLICT`。任务、入队及提交审计原子完成，首次成功返回 `202`，重放或恢复旧的未入队任务返回 `200`；队列不可用返回 `503 ARTICLE_QUEUE_UNAVAILABLE`，不保留新建失败任务。旧任务恢复保留原请求和价格快照，执行中与已结束任务不会重新入队。网络失败重试必须继续使用同一个键，明确失败或取消的任务重新生成使用新键。
 

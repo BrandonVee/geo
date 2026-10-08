@@ -13,13 +13,12 @@ import {
   SendOutlined,
   SettingOutlined,
   SwapOutlined,
-  SyncOutlined,
   TeamOutlined,
   UnorderedListOutlined,
 } from "@ant-design/icons";
 import {
+  Alert,
   Avatar,
-  Badge,
   Button,
   Divider,
   Drawer,
@@ -183,7 +182,8 @@ export function DashboardShell({
     members: "tenant.member.manage",
   };
   const canNavigate = (key: string) => {
-    if (!currentOrganization) return key !== "balances" || canManageBalances;
+    if (!currentOrganization) return false;
+    if (key === "balances" && !canManageBalances) return false;
     return workspacePermission(
       currentOrganization,
       currentOrganization.role,
@@ -215,28 +215,57 @@ export function DashboardShell({
         ? (searchParams.get("brandId") ?? undefined)
         : undefined,
     );
-  const navigation = (
-    <Menu
-      className="dashboard-navigation"
-      items={navigationGroups.map((group) => ({
-        key: group.label,
-        label: group.label,
-        type: "group" as const,
-        children: group.keys.filter(canNavigate).map((key) => {
-          const item = items.find((candidate) => candidate.key === key)!;
-          return { key: item.key, label: item.label, icon: item.icon };
-        }),
-      }))}
-      mode="inline"
-      onClick={({ key }) => {
-        const item = items.find((candidate) => candidate.key === key);
-        if (!item) return;
-        setDrawerOpen(false);
-        router.push(scopePath(item.path));
-      }}
-      selectedKeys={[active]}
-      style={{ borderInlineEnd: 0 }}
+  const navigationItems = navigationGroups.flatMap((group) => {
+    const children = group.keys.filter(canNavigate).map((key) => {
+      const item = items.find((candidate) => candidate.key === key)!;
+      return {
+        key: item.key,
+        label: item.label,
+        icon: item.icon,
+        "aria-current": key === active ? ("page" as const) : undefined,
+      };
+    });
+    return children.length
+      ? [
+          {
+            key: group.label,
+            label: group.label,
+            type: "group" as const,
+            children,
+          },
+        ]
+      : [];
+  });
+  const notificationShortcut = canNavigate("notifications") ? (
+    <Button
+      aria-label="打开通知中心"
+      href={scopePath("/dashboard/notifications")}
+      icon={<BellOutlined />}
+      type="text"
     />
+  ) : null;
+  const navigation = navigationItems.length ? (
+    <nav aria-label="工作台导航">
+      <Menu
+        className="dashboard-navigation"
+        items={navigationItems}
+        mode="inline"
+        onClick={({ key }) => {
+          const item = items.find((candidate) => candidate.key === key);
+          if (!item) return;
+          setDrawerOpen(false);
+          router.push(scopePath(item.path));
+        }}
+        selectedKeys={[active]}
+        style={{ borderInlineEnd: 0 }}
+      />
+    </nav>
+  ) : (
+    <Typography.Paragraph type="secondary" style={{ padding: "12px 16px" }}>
+      {currentOrganization
+        ? "当前企业暂无可用业务模块，请联系管理员配置权限。"
+        : "分配企业与品牌后，业务入口将在这里显示。"}
+    </Typography.Paragraph>
   );
 
   const sidebar = (
@@ -286,18 +315,9 @@ export function DashboardShell({
               <ThemeToggle />
             </span>
           </Tooltip>
-          <Tooltip title="通知中心">
-            <Button
-              aria-label="打开通知中心"
-              href={scopePath("/dashboard/notifications")}
-              icon={
-                <Badge dot>
-                  <BellOutlined />
-                </Badge>
-              }
-              type="text"
-            />
-          </Tooltip>
+          {notificationShortcut ? (
+            <Tooltip title="通知中心">{notificationShortcut}</Tooltip>
+          ) : null}
           {workspace.platformAdmin ? (
             <Tooltip title="平台管理">
               <Button
@@ -320,6 +340,16 @@ export function DashboardShell({
 
   return (
     <Layout className="dashboard-shell">
+      {!workspace.platformReady ? (
+        <Alert
+          className="dashboard-platform-status-alert"
+          description="腾讯接入未填写或已失效，依赖腾讯的新查询、任务执行和管理操作暂时不可用。历史记录、内容文档和已完成数据仍可按权限查看。"
+          message="腾讯接入暂不可用"
+          showIcon
+          type="warning"
+        />
+      ) : null}
+
       {!mobile ? (
         <Layout.Sider
           className="dashboard-sidebar"
@@ -346,16 +376,7 @@ export function DashboardShell({
               </Typography.Text>
             </Space>
             <Space size={2}>
-              <Button
-                aria-label="打开通知中心"
-                href={scopePath("/dashboard/notifications")}
-                icon={
-                  <Badge dot>
-                    <BellOutlined />
-                  </Badge>
-                }
-                type="text"
-              />
+              {notificationShortcut}
               <Avatar className="dashboard-user-avatar" size={28}>
                 {userName.slice(0, 1).toUpperCase()}
               </Avatar>
@@ -407,7 +428,7 @@ export function DashboardPageHeader({
           {title}
         </Typography.Title>
       </div>
-      {status ? <Tag icon={<SyncOutlined spin />}>{status}</Tag> : null}
+      {status ? <Tag>{status}</Tag> : null}
     </Flex>
   );
 }

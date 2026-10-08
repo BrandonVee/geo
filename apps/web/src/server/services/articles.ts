@@ -315,6 +315,7 @@ export const articleService = {
         existing.status === "queued" &&
         !existing.queueJobId &&
         !existing.executionId &&
+        !existing.createDispatchedAt &&
         !existing.answerbitArticleId
       )
         return submitJob(input, existing, userId, audit);

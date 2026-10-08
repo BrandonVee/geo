@@ -1,6 +1,19 @@
 export type NotificationSeverity = "warning" | "critical";
 export type NotificationMetric = "exposure" | "score" | "avg_rank";
 
+// @project-doc docs/domains/geo_operations.md#notification_workflow
+export const notificationMetricPeriod = (
+  windowDays: number,
+  now = new Date(),
+) => {
+  const begin = new Date(now);
+  begin.setUTCDate(begin.getUTCDate() - windowDays + 1);
+  return {
+    beginDate: begin.toISOString().slice(0, 10),
+    endDate: now.toISOString().slice(0, 10),
+  };
+};
+
 export type ConnectionFailureClassification =
   | {
       consecutiveFailures: number;

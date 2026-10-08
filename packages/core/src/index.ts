@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+export { stableErrorCode } from "./error-code";
 export * from "./publication-actions";
 export { publicationBodyHtml } from "./publication-content";
 export * from "./user-access";
@@ -26,6 +27,7 @@ export {
   connectionFailureCriticalThreshold,
   connectionFailureLookbackLimit,
   countConsecutiveFailures,
+  notificationMetricPeriod,
   type ConnectionFailureClassification,
   type MetricAnomalyClassification,
   type NotificationMetric,

@@ -29,7 +29,7 @@ pnpm dev
 如果本机 `5432` 或 `6379` 已占用，可通过 `POSTGRES_PORT`、`REDIS_PORT` 修改映射端口，并同步修改 `.env` 中的连接 URL。
 根目录脚本会自动读取根目录 `.env`。Web 与 Worker 使用 `DATABASE_URL`；完整数据库发布使用单独的 `MIGRATION_DATABASE_URL`，本地环境允许两者指向同一开发数据库，生产环境必须注入独立迁移身份。
 
-Readiness 会同时校验服务端运行配置、数据库连接、Redis 连接、当前应用要求的最低迁移版本和基础种子版本；任一发布步骤未完成时都不会接收生产流量。数据库/Redis URL、32 字节 Base64 加密主密钥、认证密钥或可信 Origin 无效时同样拒绝接流。Redis 用于 Better Auth 分布式限流和会话缓存，持久 Session 仍保存到 PostgreSQL。Worker 使用同一配置包在启动时快速失败，避免带错误配置持续运行。
+Readiness 会同时校验服务端运行配置、数据库连接、Redis 连接、当前应用要求的最低迁移版本和基础种子版本；任一发布步骤未完成时都不会接收生产流量。数据库/Redis URL、32 字节 Base64 加密主密钥、认证密钥或可信 Origin 无效时同样拒绝接流。Redis 用于 Better Auth 原子分布式限流；Session 与当前账号资料直接读取 PostgreSQL，使账号停用和会话撤销即时生效。Worker 使用同一配置包在启动时快速失败，避免带错误配置持续运行。
 
 业务数据库连接池和 pg-boss 连接池分别通过 `DB_POOL_MAX` 与 `JOB_DB_POOL_MAX` 限流，并配置建连/查询超时、空闲回收和连接最长生命周期；生产副本扩容前应按部署手册核算 PostgreSQL 总连接预算。
 

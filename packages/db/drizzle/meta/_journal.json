@@ -99,6 +99,13 @@
       "when": 1790863243285,
       "tag": "v14",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1790913119060,
+      "tag": "v15",
+      "breakpoints": true
     }
   ]
 }

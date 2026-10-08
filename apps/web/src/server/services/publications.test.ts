@@ -5,6 +5,9 @@ const m = vi.hoisted(() => ({
   settleAction: vi.fn(),
   resolveAction: vi.fn(),
   findByIdempotency: vi.fn(),
+  findSubmissionReplay: vi.fn(),
+  manuscript: vi.fn(),
+  adminManuscript: vi.fn(),
   findChannel: vi.fn(),
   findChannelForUser: vi.fn(),
   createOrder: vi.fn(),
@@ -125,7 +128,20 @@ beforeEach(() => {
   m.reconcile.mockResolvedValue({ errors: 0 });
   m.findChannel.mockResolvedValue(channel);
   m.findChannelForUser.mockResolvedValue(channel);
-  m.createOrder.mockResolvedValue({ ok: true, order, replayed: false });
+  m.createOrder.mockImplementation(async (_input, audit) => {
+    await audit?.({}, order.id);
+    return {
+      ok: true,
+      order,
+      replayed: false,
+      channel,
+      manuscript: {
+        title: input.title,
+        contentHtml: input.contentHtml,
+        submissionNote: input.note,
+      },
+    };
+  });
   m.writeAudit.mockResolvedValue(undefined);
   m.submit.mockResolvedValue({ order_nid: "upstream" });
   m.updateOrder.mockResolvedValue({
@@ -394,7 +410,11 @@ describe("发布业务闭环", () => {
     expect(m.submit).not.toHaveBeenCalled();
   });
   it("幂等重放不受后续渠道下架影响，也不再投稿扣款", async () => {
-    m.findByIdempotency.mockResolvedValue(order);
+    m.findSubmissionReplay.mockResolvedValue({
+      ok: true,
+      order,
+      replayed: true,
+    });
     expect(await publicationService.create(input, "user", audit)).toMatchObject(
       { replayed: true },
     );
@@ -429,14 +449,18 @@ describe("发布业务闭环", () => {
       }),
     );
   });
-  it.each([
-    ["<p>文档库正文</p>", "<p>文档库正文</p>"],
-    ["文档 <内容>\n第二行", "<p>文档 &lt;内容&gt;<br />第二行</p>"],
-  ])("从当前品牌已定稿文档读取正文投稿：%s", async (body, expectedHtml) => {
-    m.findDocument.mockResolvedValue({
-      id: "document",
-      status: "ready",
-      body,
+  it("只用扣款事务保存的文档快照投稿，不重新读取文档当前正文", async () => {
+    const expectedHtml = "<p>已冻结的文档正文</p>";
+    m.createOrder.mockResolvedValue({
+      ok: true,
+      order,
+      replayed: false,
+      channel,
+      manuscript: {
+        title: "原始标题",
+        contentHtml: expectedHtml,
+        submissionNote: "原始备注",
+      },
     });
     await publicationService.create(
       {
@@ -447,28 +471,28 @@ describe("发布业务闭环", () => {
       "user",
       audit,
     );
-    expect(m.findDocument).toHaveBeenCalledWith(
-      {
-        organizationId: "org",
-        teamBindingId: "team",
-        brandId: "brand",
-      },
-      "8a951454-70d8-44fb-8854-4cbbce2d57d7",
-      "user",
-    );
+    expect(m.findDocument).not.toHaveBeenCalled();
     expect(m.createOrder).toHaveBeenCalledWith(
       expect.objectContaining({
-        contentHtml: expectedHtml,
+        teamBindingId: "team",
         sourceDocumentId: "8a951454-70d8-44fb-8854-4cbbce2d57d7",
       }),
+      expect.any(Function),
     );
     expect(m.submit).toHaveBeenCalledWith(
       "website",
-      expect.objectContaining({ content: expectedHtml }),
+      expect.objectContaining({
+        content: expectedHtml,
+        title: "原始标题",
+        remark: "原始备注",
+      }),
     );
   });
   it("其他品牌或操作者的幂等键不返回订单", async () => {
-    m.findByIdempotency.mockResolvedValue({ ...order, brandId: "other" });
+    m.findSubmissionReplay.mockResolvedValue({
+      ok: false,
+      code: "IDEMPOTENCY_CONFLICT",
+    });
     await expect(
       publicationService.create(input, "user", audit),
     ).rejects.toMatchObject({ code: "PUBLICATION_IDEMPOTENCY_CONFLICT" });
@@ -494,12 +518,12 @@ describe("发布业务闭环", () => {
       expect.objectContaining({ status: "failed" }),
     );
   });
-  it("审计旁路失败不遗留已扣款但未投稿的订单", async () => {
+  it("创建审计事务失败不调用外部投稿", async () => {
     m.writeAudit.mockRejectedValue(new Error("audit"));
-    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
-    await publicationService.create(input, "user", audit);
-    expect(m.submit).toHaveBeenCalledTimes(1);
-    spy.mockRestore();
+    await expect(
+      publicationService.create(input, "user", audit),
+    ).rejects.toThrow("audit");
+    expect(m.submit).not.toHaveBeenCalled();
   });
   it("管理员不直接把聚合订单标记失败退款", async () => {
     await expect(

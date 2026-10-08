@@ -6,7 +6,7 @@ import { APIError, createAuthMiddleware } from "better-auth/api";
 import { nextCookies } from "better-auth/next-js";
 import { username } from "better-auth/plugins";
 import { identityService } from "@/server/modules/identity/identity.service";
-import { redisSecondaryStorage } from "@/server/redis";
+import { redisRateLimitStorage } from "@/server/redis";
 import { getServerEnv } from "../env";
 import { getTrustedOrigins } from "./trusted-origins";
 import { getUserAccessState } from "./user-access";
@@ -14,6 +14,7 @@ import { getUserAccessState } from "./user-access";
 const runtimeEnv = getServerEnv();
 const trustedOrigins = Array.from(getTrustedOrigins());
 
+// @project-doc docs/domains/identity_and_access.md#login_session
 export const auth = betterAuth({
   appName: "AnswerBit GEO",
   baseURL: runtimeEnv.BETTER_AUTH_URL,
@@ -24,7 +25,6 @@ export const auth = betterAuth({
     schema,
     usePlural: true,
   }),
-  secondaryStorage: redisSecondaryStorage,
   emailAndPassword: {
     enabled: true,
     disableSignUp: true,
@@ -33,7 +33,7 @@ export const auth = betterAuth({
   },
   rateLimit: {
     enabled: true,
-    storage: "secondary-storage",
+    customStorage: redisRateLimitStorage,
     window: 60,
     max: 100,
     customRules: {
@@ -103,6 +103,7 @@ export const auth = betterAuth({
     expiresIn: 60 * 60 * 24 * 7,
     updateAge: 60 * 60 * 24,
     storeSessionInDatabase: true,
+    cookieCache: { enabled: false },
   },
   advanced: {
     database: { generateId: "uuid" },

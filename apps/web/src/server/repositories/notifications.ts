@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { and, count, desc, eq, gte, isNull, sql, lt } from "drizzle-orm";
 import {
   answerbitApiCalls,
@@ -9,6 +8,8 @@ import {
   notificationReads,
   notificationRules,
   notifications,
+  publishRuleNotification,
+  recordNotificationEvaluation,
   withTenantDbContext,
   type DatabaseTransaction,
 } from "@geo/db";
@@ -313,16 +314,7 @@ export const notificationRepository = {
       .limit(1);
     return rule;
   },
-  async recordEvaluation(ruleId: string, errorCode?: string) {
-    await db
-      .update(notificationRules)
-      .set({
-        lastEvaluatedAt: new Date(),
-        lastEvaluationError: errorCode ?? null,
-        updatedAt: new Date(),
-      })
-      .where(eq(notificationRules.id, ruleId));
-  },
+  recordEvaluation: recordNotificationEvaluation,
   async recentConnectionChecks(connectionId: string, limit: number) {
     return db
       .select({ status: answerbitApiCalls.status })
@@ -336,55 +328,7 @@ export const notificationRepository = {
       .orderBy(desc(answerbitApiCalls.createdAt))
       .limit(limit);
   },
-  async publish(
-    rule: StoredNotificationRule,
-    event: {
-      severity: "info" | "warning" | "critical";
-      title: string;
-      message: string;
-      payload: Record<string, unknown>;
-      occurredAt?: Date;
-    },
-  ) {
-    return db.transaction(async (tx) => {
-      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${rule.id}))`);
-      const now = event.occurredAt ?? new Date();
-      const cutoff = new Date(now.getTime() - rule.cooldownMinutes * 60_000);
-      const [recent] = await tx
-        .select({ id: notifications.id })
-        .from(notifications)
-        .where(
-          and(
-            eq(notifications.ruleId, rule.id),
-            gte(notifications.occurredAt, cutoff),
-          ),
-        )
-        .orderBy(desc(notifications.occurredAt))
-        .limit(1);
-      if (recent) return undefined;
-      const bucket = Math.floor(
-        now.getTime() / (rule.cooldownMinutes * 60_000),
-      );
-      const eventKey = createHash("sha256")
-        .update(`${rule.id}:${bucket}`)
-        .digest("hex");
-      const [created] = await tx
-        .insert(notifications)
-        .values({
-          organizationId: rule.organizationId,
-          ruleId: rule.id,
-          teamBindingId: rule.teamBindingId,
-          brandId: rule.brandId,
-          type: rule.type,
-          eventKey,
-          ...event,
-          occurredAt: now,
-        })
-        .onConflictDoNothing()
-        .returning();
-      return created;
-    });
-  },
+  publish: publishRuleNotification,
   listAccesses(organizationId: string, userId: string) {
     return db
       .select()

@@ -197,8 +197,13 @@ export function useDirectoryAttempt(
       )
         return false;
       sessionStorage.removeItem(storageKey);
+      const hadPending = Boolean(pendingRef.current);
       pendingRef.current = null;
       if (mountedRef.current) {
+        // This instance clears its ref before broadcasting, so its listener
+        // cannot observe the pending record. Notify it once here; restored
+        // instances still receive their update through the shared event.
+        if (hadPending) setResolvedVersion((current) => current + 1);
         setStorageError("");
         setPending(null);
         setReady(true);

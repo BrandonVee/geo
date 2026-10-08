@@ -3,8 +3,9 @@ import {
   assertEnterpriseAccess,
   claimReportExport,
   redeliverReportExport,
-  redeliverArticleJob,
   scheduleArticleResultPoll,
+  recoverArticleJob,
+  failArticleJob,
   recoverStaleTrackingSubmissions,
 } from "@geo/db";
 import {
@@ -12,7 +13,7 @@ import {
   loadFrogPublicationChannels,
   reconcilePublicationOrders,
 } from "@geo/publication";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { workerEnvSchema } from "@geo/config";
 import {
   traceArticleSchema,
@@ -25,13 +26,8 @@ import {
   answerBitTaskListSchema,
 } from "@geo/contracts";
 import {
-  answerBitAvailableCredits,
   BoundedJsonResponseError,
   type AnswerBitOperation,
-  classifyConnectionFailure,
-  classifyMetricAnomaly,
-  connectionFailureLookbackLimit,
-  countConsecutiveFailures,
   decideAsyncJobRecovery,
   discardResponseBody,
   InvalidAnswerBitEnvelopeError,
@@ -47,7 +43,6 @@ import {
 } from "@geo/core";
 import {
   and,
-  desc,
   eq,
   gte,
   inArray,
@@ -67,14 +62,12 @@ import {
   answerbitCredentialAssignments,
   answerbitTeamBindings,
   articleGenerationJobs,
-  balanceAccounts,
   balanceTransactions,
   commitQuota,
   contentDocuments,
   contentDocumentVersions,
   db,
   notificationRules,
-  notifications,
   operationLogs,
   organizations,
   platformAnswerbitCredentials,
@@ -97,13 +90,19 @@ import {
 } from "@geo/db";
 import { PgBoss, type Job } from "pg-boss";
 import { runtimeTaskErrorCode } from "./runtime-task";
+import { evaluateNotificationRules } from "./notification-evaluation";
 import { assertWorkerJobAccess, WorkerJobAccessError } from "./job-access";
 import {
   type AnswerBitDataSchema,
   InvalidAnswerBitDataError,
   parseAnswerBitData,
+  AnswerBitHttpError,
+  AnswerBitBusinessError,
 } from "./answerbit-response";
-import { consumeFeaturePoints, restoreFeaturePoints } from "./feature-billing";
+import {
+  createArticleOnce,
+  ArticleCreationUncertainError,
+} from "./article-create";
 import {
   InvalidArticleJobPayloadError,
   parseArticleJobPayload,
@@ -495,6 +494,7 @@ async function callAnswerBit<T>(
   },
   timeoutMs: number,
   schema: AnswerBitDataSchema<T>,
+  beforeSend?: () => Promise<void>,
 ): Promise<T> {
   const credential = await resolveWorkerCredential({
     organizationId: context.organizationId,
@@ -502,6 +502,7 @@ async function callAnswerBit<T>(
     operation,
     brandId: context.brandId,
   });
+  if (beforeSend) await beforeSend();
   const started = performance.now();
   const apiCallContext = {
     organizationId: context.organizationId,
@@ -528,13 +529,13 @@ async function callAnswerBit<T>(
     httpStatus = response.status;
     if (!response.ok) {
       await discardResponseBody(response);
-      throw new Error(`HTTP_${response.status}`);
+      throw new AnswerBitHttpError(response.status);
     }
     const envelope = parseAnswerBitEnvelope(
       await readBoundedJsonResponse(response),
     );
     answerbitCode = envelope.code;
-    if (envelope.code !== 0) throw new Error(`BUSINESS_${envelope.code}`);
+    if (envelope.code !== 0) throw new AnswerBitBusinessError(envelope.code);
     const data = parseAnswerBitData(schema, envelope.data);
     await recordAnswerBitApiCall({
       ...apiCallContext,
@@ -627,14 +628,6 @@ async function processArticleGeneration(data: {
   if (!claimed.length) return;
   const context = await loadJob(data.organizationId, data.jobId);
   let articleId = context.job.answerbitArticleId ?? undefined;
-  let chargedPoints = 0;
-  const featureContext = {
-    organizationId: data.organizationId,
-    brandId: context.job.brandId,
-    actorUserId: context.job.requestedBy,
-    referenceId: context.job.id,
-    pricingSnapshot: context.job.pricingSnapshot,
-  };
   try {
     if (!context.team) throw new Error("TEAM_BINDING_NOT_FOUND");
     if (!articleId) {
@@ -656,37 +649,27 @@ async function processArticleGeneration(data: {
         language: context.job.language,
       },
     );
-    chargedPoints = await consumeFeaturePoints(
-      "ai_article_generation",
-      "AI 文章生成",
-      featureContext,
-    );
     if (!articleId) {
-      const created = await callAnswerBit(
-        "/geo/article/create",
-        requestPayload,
-        {
-          organizationId: data.organizationId,
-          teamBindingId: context.team.id,
-          requestId: randomUUID(),
-          brandId: context.job.brandId,
-          actorUserId: context.job.requestedBy,
-        },
-        120_000,
-        answerBitIdResultSchema,
-      );
-      articleId = created.id;
-      const [storedArticleId] = await db
-        .update(articleGenerationJobs)
-        .set({ answerbitArticleId: articleId, updatedAt: new Date() })
-        .where(
-          and(
-            eq(articleGenerationJobs.id, data.jobId),
-            eq(articleGenerationJobs.executionId, executionId),
+      const created = await createArticleOnce(
+        { ...data, executionId },
+        ({ requestId, beforeSend }) =>
+          callAnswerBit(
+            "/geo/article/create",
+            requestPayload,
+            {
+              organizationId: data.organizationId,
+              teamBindingId: context.team!.id,
+              requestId,
+              brandId: context.job.brandId,
+              actorUserId: context.job.requestedBy,
+            },
+            120_000,
+            answerBitIdResultSchema,
+            beforeSend,
           ),
-        )
-        .returning({ id: articleGenerationJobs.id });
-      if (!storedArticleId) throw new Error("ARTICLE_JOB_SUPERSEDED");
+      );
+      if (created.kind === "skipped") return;
+      articleId = created.articleId;
     }
     const deadline =
       (claimed[0].startedAt?.getTime() ?? Date.now()) +
@@ -881,42 +864,28 @@ async function processArticleGeneration(data: {
       );
       return;
     }
-    const transportUncertain =
-      error instanceof TypeError ||
-      (error instanceof DOMException && error.name === "TimeoutError");
-    const uncertain = !articleId && transportUncertain;
-    const [failed] = await db
-      .update(articleGenerationJobs)
-      .set({
-        status: "failed",
-        errorCode:
-          error instanceof EnterpriseAccessError
-            ? error.code
-            : error instanceof WorkerJobAccessError
-              ? error.code === "JOB_PERMISSION_REVOKED"
-                ? "ARTICLE_PERMISSION_REVOKED"
-                : error.code
-              : error instanceof InvalidArticleJobPayloadError
-                ? "INVALID_ARTICLE_JOB_PAYLOAD"
-                : error instanceof Error &&
-                    error.message === "ARTICLE_GENERATION_TIMEOUT"
-                  ? "ARTICLE_GENERATION_TIMEOUT"
-                  : uncertain
-                    ? "ANSWERBIT_CREATE_UNCERTAIN"
-                    : articleId
-                      ? "ARTICLE_CONTENT_FETCH_FAILED"
-                      : "ARTICLE_CREATE_FAILED",
-        completedAt: new Date(),
-        executionId: null,
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(articleGenerationJobs.id, data.jobId),
-          eq(articleGenerationJobs.executionId, executionId),
-        ),
-      )
-      .returning({ id: articleGenerationJobs.id });
+    const uncertain = error instanceof ArticleCreationUncertainError;
+    const failed = await failArticleJob({
+      ...data,
+      executionId,
+      errorCode:
+        error instanceof EnterpriseAccessError
+          ? error.code
+          : error instanceof WorkerJobAccessError
+            ? error.code === "JOB_PERMISSION_REVOKED"
+              ? "ARTICLE_PERMISSION_REVOKED"
+              : error.code
+            : error instanceof InvalidArticleJobPayloadError
+              ? "INVALID_ARTICLE_JOB_PAYLOAD"
+              : error instanceof Error &&
+                  error.message === "ARTICLE_GENERATION_TIMEOUT"
+                ? "ARTICLE_GENERATION_TIMEOUT"
+                : uncertain
+                  ? "ANSWERBIT_CREATE_UNCERTAIN"
+                  : articleId
+                    ? "ARTICLE_CONTENT_FETCH_FAILED"
+                    : "ARTICLE_CREATE_FAILED",
+    });
     if (!failed) {
       console.info(
         JSON.stringify({
@@ -926,26 +895,6 @@ async function processArticleGeneration(data: {
         }),
       );
       return;
-    }
-    if (chargedPoints > 0) {
-      try {
-        await restoreFeaturePoints(
-          "ai_article_generation",
-          "AI 文章生成",
-          chargedPoints,
-          featureContext,
-        );
-      } catch (restoreError) {
-        console.error(
-          JSON.stringify({
-            event: "feature-usage.restore-failed",
-            featureCode: "ai_article_generation",
-            jobId: data.jobId,
-            message:
-              restoreError instanceof Error ? restoreError.message : "unknown",
-          }),
-        );
-      }
     }
     if (context.job.quotaReservationKey) {
       try {
@@ -1165,30 +1114,6 @@ async function queueJobState(
   return job?.state ?? null;
 }
 
-async function enqueueRecoveredArticle(input: {
-  id: string;
-  organizationId: string;
-  queueJobId: string | null;
-}) {
-  return redeliverArticleJob(
-    {
-      organizationId: input.organizationId,
-      jobId: input.id,
-      expectedQueueJobId: input.queueJobId,
-    },
-    async (data, executor) => {
-      const queueJobId = await boss.send("article-generation", data, {
-        db: executor,
-        singletonKey: data.jobId,
-        retryLimit: 0,
-        expireInSeconds: 300,
-      });
-      if (!queueJobId) throw new Error("ARTICLE_JOB_REDELIVERY_FAILED");
-      return queueJobId;
-    },
-  );
-}
-
 async function enqueueRecoveredReport(input: {
   id: string;
   organizationId: string;
@@ -1299,105 +1224,32 @@ async function processAsyncJobReconciliation() {
           "article-generation",
           candidate.queueJobId,
         );
-        const [charge] =
-          candidate.status === "running" && !candidate.answerbitArticleId
-            ? await db
-                .select({ amount: balanceTransactions.amount })
-                .from(balanceTransactions)
-                .where(
-                  and(
-                    eq(
-                      balanceTransactions.organizationId,
-                      candidate.organizationId,
-                    ),
-                    eq(
-                      balanceTransactions.idempotencyKey,
-                      `feature:ai_article_generation:${candidate.id}:consume`,
-                    ),
-                  ),
-                )
-                .limit(1)
-            : [];
-        const action = decideAsyncJobRecovery({
-          kind: "article",
-          status: candidate.status as "queued" | "running",
-          queueState: state,
-          hasExternalId: Boolean(candidate.answerbitArticleId),
-          hasFeatureCharge: Boolean(charge),
-        });
-        if (action === "none") {
-          result.activeJobs += 1;
-          continue;
-        }
-        const candidateCutoff =
-          candidate.status === "queued" ? queuedCutoff : runningCutoff;
-        const executionCondition = candidate.executionId
-          ? eq(articleGenerationJobs.executionId, candidate.executionId)
-          : isNull(articleGenerationJobs.executionId);
-        if (action === "fail_uncertain") {
-          const [failed] = await db
-            .update(articleGenerationJobs)
-            .set({
-              status: "failed",
-              executionId: null,
-              errorCode: "ARTICLE_RECOVERY_UNCERTAIN",
-              completedAt: now,
-              updatedAt: now,
-            })
-            .where(
-              and(
-                eq(articleGenerationJobs.id, candidate.id),
-                eq(articleGenerationJobs.status, candidate.status),
-                executionCondition,
-                lte(articleGenerationJobs.updatedAt, candidateCutoff),
-              ),
-            )
-            .returning({ id: articleGenerationJobs.id });
-          if (!failed) {
-            result.races += 1;
-            continue;
-          }
-          result.uncertainArticles += 1;
-          if (charge)
-            await restoreFeaturePoints(
-              "ai_article_generation",
-              "AI 文章生成",
-              charge.amount,
-              {
-                organizationId: candidate.organizationId,
-                brandId: candidate.brandId,
-                actorUserId: candidate.requestedBy,
-                referenceId: candidate.id,
-              },
-            );
-          continue;
-        }
-
-        const [reset] = await db
-          .update(articleGenerationJobs)
-          .set({
-            status: "queued",
-            executionId: null,
-            ...(candidate.answerbitArticleId ? {} : { startedAt: null }),
-            completedAt: null,
-            errorCode: null,
-            updatedAt: now,
-          })
-          .where(
-            and(
-              eq(articleGenerationJobs.id, candidate.id),
-              eq(articleGenerationJobs.status, candidate.status),
-              executionCondition,
-              lte(articleGenerationJobs.updatedAt, candidateCutoff),
-            ),
-          )
-          .returning({ id: articleGenerationJobs.id });
-        if (!reset) {
-          result.races += 1;
-          continue;
-        }
-        if (await enqueueRecoveredArticle(candidate))
-          result.requeuedArticles += 1;
+        const action = await recoverArticleJob(
+          {
+            organizationId: candidate.organizationId,
+            jobId: candidate.id,
+            expectedQueueJobId: candidate.queueJobId,
+            expectedExecutionId: candidate.executionId,
+            status: candidate.status as "queued" | "running",
+            staleBefore:
+              candidate.status === "queued" ? queuedCutoff : runningCutoff,
+            queueState: state,
+          },
+          async (data, executor) => {
+            const queueJobId = await boss.send("article-generation", data, {
+              db: executor,
+              singletonKey: data.jobId,
+              retryLimit: 0,
+              expireInSeconds: 300,
+            });
+            if (!queueJobId) throw new Error("ARTICLE_JOB_REDELIVERY_FAILED");
+            return queueJobId;
+          },
+        );
+        if (action === "none") result.activeJobs += 1;
+        else if (action === "superseded") result.races += 1;
+        else if (action === "fail_uncertain") result.uncertainArticles += 1;
+        else result.requeuedArticles += 1;
       } catch (error) {
         result.errors += 1;
         console.error(
@@ -1484,53 +1336,6 @@ async function processAsyncJobReconciliation() {
   return result;
 }
 
-type NotificationRule = typeof notificationRules.$inferSelect;
-async function publishNotification(
-  rule: NotificationRule,
-  event: {
-    severity: "info" | "warning" | "critical";
-    title: string;
-    message: string;
-    payload: Record<string, unknown>;
-  },
-) {
-  return db.transaction(async (tx) => {
-    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${rule.id}))`);
-    const now = new Date();
-    const cutoff = new Date(now.getTime() - rule.cooldownMinutes * 60_000);
-    const [recent] = await tx
-      .select({ id: notifications.id })
-      .from(notifications)
-      .where(
-        and(
-          eq(notifications.ruleId, rule.id),
-          gte(notifications.occurredAt, cutoff),
-        ),
-      )
-      .orderBy(desc(notifications.occurredAt))
-      .limit(1);
-    if (recent) return false;
-    const bucket = Math.floor(now.getTime() / (rule.cooldownMinutes * 60_000));
-    const eventKey = createHash("sha256")
-      .update(`${rule.id}:${bucket}`)
-      .digest("hex");
-    const created = await tx
-      .insert(notifications)
-      .values({
-        organizationId: rule.organizationId,
-        ruleId: rule.id,
-        teamBindingId: rule.teamBindingId,
-        brandId: rule.brandId,
-        type: rule.type,
-        eventKey,
-        occurredAt: now,
-        ...event,
-      })
-      .onConflictDoNothing()
-      .returning({ id: notifications.id });
-    return Boolean(created.length);
-  });
-}
 async function processNotificationEvaluation() {
   const rulesToEvaluate = await db
     .select({
@@ -1558,196 +1363,26 @@ async function processNotificationEvaluation() {
       ),
     )
     .where(eq(notificationRules.enabled, true));
-  let evaluated = 0;
-  let emitted = 0;
-  let failed = 0;
-  for (const item of rulesToEvaluate) {
-    const { rule, team } = item;
-    const context = {
-      organizationId: rule.organizationId,
-      teamBindingId: team.id,
-      requestId: randomUUID(),
-      brandId: rule.brandId ?? undefined,
-    };
-    try {
-      if (rule.type === "low_credits") {
-        const [account] = await db
-          .select({ balance: balanceAccounts.balance })
-          .from(balanceAccounts)
-          .innerJoin(
-            answerbitBrandMappings,
-            and(
-              eq(
-                answerbitBrandMappings.organizationId,
-                balanceAccounts.organizationId,
-              ),
-              eq(answerbitBrandMappings.brandId, balanceAccounts.brandId),
-            ),
-          )
-          .where(
-            and(
-              eq(balanceAccounts.organizationId, rule.organizationId),
-              eq(balanceAccounts.asset, "answerbit_points"),
-            ),
-          )
-          .limit(1);
-        const available = answerBitAvailableCredits({
-          total_amount: account?.balance ?? 0,
-        });
-        if (
-          available <= rule.threshold &&
-          (await publishNotification(rule, {
-            severity: available === 0 ? "critical" : "warning",
-            title:
-              available === 0 ? "AnswerBit 积分已耗尽" : "AnswerBit 积分不足",
-            message: `当前品牌可用平台积分 ${available.toLocaleString("zh-CN")}，已达到企业配置的 ${rule.threshold.toLocaleString("zh-CN")} 阈值。`,
-            payload: {
-              available,
-              asset: "answerbit_points",
-              scope: "brand",
-              threshold: rule.threshold,
-            },
-          }))
-        )
-          emitted += 1;
-      } else if (rule.type === "connection_failure") {
-        const teamCredentials = await db
-          .select({ connectionId: answerbitCredentialAssignments.connectionId })
-          .from(answerbitCredentialAssignments)
-          .where(eq(answerbitCredentialAssignments.teamBindingId, team.id));
-        const connectionIds = [
-          ...new Set([
-            team.connectionId,
-            ...teamCredentials.map((credential) => credential.connectionId),
-          ]),
-        ];
-        const checks = connectionIds.length
-          ? await db
-              .select({
-                status: answerbitApiCalls.status,
-                errorCode: answerbitApiCalls.errorCode,
-              })
-              .from(answerbitApiCalls)
-              .where(
-                and(
-                  eq(answerbitApiCalls.organizationId, rule.organizationId),
-                  inArray(answerbitApiCalls.connectionId, connectionIds),
-                  gte(
-                    answerbitApiCalls.createdAt,
-                    new Date(Date.now() - 24 * 60 * 60_000),
-                  ),
-                ),
-              )
-              .orderBy(desc(answerbitApiCalls.createdAt))
-              .limit(connectionFailureLookbackLimit(rule.threshold))
-          : [];
-        const consecutive =
-          team.status === "invalid"
-            ? Math.max(rule.threshold, countConsecutiveFailures(checks))
-            : countConsecutiveFailures(checks);
-        const classification = classifyConnectionFailure(
-          consecutive,
-          rule.threshold,
-        );
-        if (
-          classification.triggered &&
-          (await publishNotification(rule, {
-            severity: classification.severity,
-            title: "AnswerBit 连接连续失败",
-            message: `最近业务调用连续失败 ${classification.consecutiveFailures} 次，请检查 API Key、TeamID 与上游服务状态。`,
-            payload: {
-              consecutiveFailures: classification.consecutiveFailures,
-              threshold: rule.threshold,
-              errorCode:
-                team.status === "invalid"
-                  ? (team.lastErrorCode ?? "ANSWERBIT_CONNECTION_INVALID")
-                  : (checks[0]?.errorCode ?? "ANSWERBIT_CONNECTION_FAILED"),
-            },
-          }))
-        )
-          emitted += 1;
-      } else {
-        if (!rule.brandId || !rule.metric || !rule.windowDays)
-          throw new Error("INVALID_METRIC_RULE");
-        const end = new Date();
-        const begin = new Date(end);
-        begin.setUTCDate(begin.getUTCDate() - rule.windowDays + 1);
-        const iso = (date: Date) => date.toISOString().slice(0, 10);
-        const result = await callAnswerBit(
-          "/geo/base/dashboard",
-          {
-            brand_id: rule.brandId,
-            begin_date: iso(begin),
-            end_date: iso(end),
-            title_ids: [],
-            platforms: [],
-            tag_ids: [],
-          },
-          context,
-          15_000,
-          answerBitDashboardMetricsSchema,
-        );
-        const { value, fluctuation } = result[rule.metric];
-        const classification = classifyMetricAnomaly(
-          rule.metric,
-          fluctuation,
-          rule.threshold,
-        );
-        if (classification.anomalous) {
-          const names = {
-            exposure: "品牌提及率",
-            score: "GEO 得分",
-            avg_rank: "平均排名",
-          } as const;
-          const direction = classification.direction === "up" ? "上升" : "下降";
-          if (
-            await publishNotification(rule, {
-              severity: classification.severity,
-              title: `${names[rule.metric]}异常`,
-              message: `${names[rule.metric]}${direction} ${Math.abs(fluctuation).toFixed(1)}%，超过 ${rule.threshold}% 阈值。`,
-              payload: {
-                metric: rule.metric,
-                value,
-                fluctuation,
-                threshold: rule.threshold,
-                windowDays: rule.windowDays,
-              },
-            })
-          )
-            emitted += 1;
-        }
-      }
-      evaluated += 1;
-      await db
-        .update(notificationRules)
-        .set({
-          lastEvaluatedAt: new Date(),
-          lastEvaluationError: null,
-          updatedAt: new Date(),
-        })
-        .where(eq(notificationRules.id, rule.id));
-    } catch (error) {
-      failed += 1;
-      await db
-        .update(notificationRules)
-        .set({
-          lastEvaluatedAt: new Date(),
-          lastEvaluationError:
-            error instanceof Error
-              ? error.message.slice(0, 128)
-              : "NOTIFICATION_EVALUATION_FAILED",
-          updatedAt: new Date(),
-        })
-        .where(eq(notificationRules.id, rule.id));
-    }
-  }
-  console.info(
-    JSON.stringify({
-      event: "notification-evaluation.completed",
-      evaluated,
-      emitted,
-      failed,
-    }),
+  return evaluateNotificationRules(rulesToEvaluate, (rule, period) =>
+    callAnswerBit(
+      "/geo/base/dashboard",
+      {
+        brand_id: rule.brandId!,
+        begin_date: period.beginDate,
+        end_date: period.endDate,
+        title_ids: [],
+        platforms: [],
+        tag_ids: [],
+      },
+      {
+        organizationId: rule.organizationId,
+        teamBindingId: rule.teamBindingId,
+        requestId: randomUUID(),
+        brandId: rule.brandId ?? undefined,
+      },
+      15_000,
+      answerBitDashboardMetricsSchema,
+    ),
   );
 }
 

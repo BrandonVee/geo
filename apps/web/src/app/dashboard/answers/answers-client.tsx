@@ -1419,6 +1419,8 @@ function AnswersWorkspace({
         maskClosable={!toolBusy}
         keyboard={!toolBusy}
         okButtonProps={{
+          "aria-label": "保存",
+          "aria-busy": toolBusy === "view",
           disabled:
             !viewName.trim() ||
             !canRead ||

@@ -155,9 +155,10 @@ if ! confirm "现在构建并启动服务" "y"; then
   cat <<EOF
 
 稍后执行：
-  docker compose --env-file .env.production -f docker-compose.production.yml --profile tools build release web worker
-  docker compose --env-file .env.production -f docker-compose.production.yml --profile bundled up -d postgres redis
-  docker compose --env-file .env.production -f docker-compose.production.yml --profile tools run --rm release
+  docker compose --env-file .env.production -f docker-compose.production.yml --profile tools build release web worker && \\
+  docker compose --env-file .env.production -f docker-compose.production.yml --profile bundled up -d postgres redis && \\
+  docker compose --env-file .env.production -f docker-compose.production.yml stop web worker && \\
+  docker compose --env-file .env.production -f docker-compose.production.yml --profile tools run --rm release && \\
   docker compose --env-file .env.production -f docker-compose.production.yml up -d web worker
 EOF
   exit 0
@@ -175,6 +176,9 @@ if grep -q '^COMPOSE_PROFILES=bundled$' "$ENV_FILE"; then
   wait_healthy postgres
   wait_healthy redis
 fi
+
+say "停止 Web 与 Worker，等待旧实例退出"
+compose stop web worker
 
 say "执行数据库迁移、版本记录、种子和 RLS 检查"
 compose --profile tools run --rm release

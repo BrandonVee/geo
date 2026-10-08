@@ -3,7 +3,7 @@ info:
   title: AnswerBit GEO SaaS API
   version: 1.0.0
   description: >-
-    除认证、初始化和平台腾讯配置外，业务 API 要求固定 TeamID 与统一 API Key 已完成验证；前置接入未完成时返回 `422 PLATFORM_TENCENT_CONNECTION_REQUIRED`。所有 API 响应统一返回 `Cache-Control: no-store, max-age=0` 和 `X-Request-ID`；自有 API 的响应头标识与 JSON envelope 一致，Better Auth 保留原生响应体。自有业务 API 只接受 `application/json` 或 `application/*+json` 的 UTF-8 JSON 正文，其他媒体类型返回 `415 UNSUPPORTED_MEDIA_TYPE`；自有业务 API 与 Better Auth POST 的请求体上限均为 4 MiB，超限返回 `413 PAYLOAD_TOO_LARGE`；自有业务 API 的非空正文解析失败返回 `400 INVALID_JSON`。业务写入统一校验浏览器 Origin，未登记来源返回 `403 UNTRUSTED_ORIGIN`。
+    除认证、初始化和平台腾讯配置外，业务 API 依赖 Session、组织/品牌权限与资源校验；本地历史记录可按权限读取。实际调用腾讯 AnswerBit 的操作要求固定 TeamID 与统一 API Key 可用，由 Gateway 返回 `ANSWERBIT_KEY_NOT_CONFIGURED` 或上游错误。所有 API 响应统一返回 `Cache-Control: no-store, max-age=0` 和 `X-Request-ID`；自有 API 的响应头标识与 JSON envelope 一致，Better Auth 保留原生响应体。自有业务 API 只接受 `application/json` 或 `application/*+json` 的 UTF-8 JSON 正文，其他媒体类型返回 `415 UNSUPPORTED_MEDIA_TYPE`；自有业务 API 与 Better Auth POST 的请求体上限均为 4 MiB，超限返回 `413 PAYLOAD_TOO_LARGE`；自有业务 API 的非空正文解析失败返回 `400 INVALID_JSON`。业务写入统一校验浏览器 Origin，未登记来源返回 `403 UNTRUSTED_ORIGIN`。
 servers:
   - url: /api
 paths:
@@ -4168,7 +4168,7 @@ paths:
           description: 无企业或品牌发布查询权限
     post:
       summary: 提交人民币余额计费发布单
-      description: 按渠道价格快照从品牌 publication_cny 余额扣减；免费渠道不生成零元流水。相同幂等键返回已有订单；失败或取消时原路返还。
+      description: 按渠道价格快照从品牌 publication_cny 余额扣减，与订单、不可变原稿和创建审计原子提交；免费渠道仍保存原稿及审计，不生成零元流水。相同幂等键确认原请求，不因来源后来修改而再次投稿；失败或取消时原路返还。
       tags:
         - Publications
       security: *id001
@@ -4188,15 +4188,79 @@ paths:
         "200":
           description: 幂等重放
         "409":
-          description: 同一幂等键对应不同品牌、渠道、标题、操作用户、来源任务或来源链接
+          description: 同一幂等键对应不同完整范围、渠道、标题、操作用户、直接正文、来源ID、内容链接或原备注
         "422":
-          description: 品牌发布余额不足、正文缺失或来源任务尚未完成
+          description: 品牌发布余额不足、内容缺失或过长、非法链接、来源冲突，或来源文档/任务不属于当前完整范围或未就绪
         "503":
           description: 媒体发布平台发布余额明确不足，未创建订单且未扣品牌余额
         "502":
           description: 聚合发布上游明确拒绝或请求结果不确定
         "504":
           description: 聚合发布上游超时且结果不确定
+  /v1/publication-orders/{orderId}/manuscript:
+    get:
+      summary: 读取订单提交时的不可变原稿
+      description: 要求当前品牌 publication.read；只读本地快照，不查询上游或来源文档当前内容。历史缺失返回 legacy_unavailable，不返回内部指纹。
+      tags: [Publications]
+      security: *id001
+      parameters:
+        - in: path
+          name: orderId
+          required: true
+          schema: { type: string, format: uuid }
+        - in: query
+          name: organizationId
+          required: true
+          schema: { type: string, format: uuid }
+        - in: query
+          name: teamBindingId
+          required: true
+          schema: { type: string, format: uuid }
+        - in: query
+          name: brandId
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 128 }
+      responses:
+        "200":
+          description: 原稿快照或历史缺失标记
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, requestId]
+                properties:
+                  data: { $ref: "#/components/schemas/PublicationManuscript" }
+                  requestId: { type: string }
+        "400": { description: 订单编号或完整品牌范围无效 }
+        "401": { description: 未登录 }
+        "403": { description: 没有当前品牌发布读取权限 }
+        "404": { description: 订单不存在或不属于当前范围 }
+  /v1/admin/publication-orders/{orderId}/manuscript:
+    get:
+      summary: 平台读取订单投稿原稿
+      description: 要求 platform.publication.manage；只读取本地不可变稿件，不调用上游。订单目录不包含正文。
+      tags: [Publications]
+      security: *id001
+      parameters:
+        - in: path
+          name: orderId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: 原稿快照或历史缺失标记
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, requestId]
+                properties:
+                  data: { $ref: "#/components/schemas/PublicationManuscript" }
+                  requestId: { type: string }
+        "400": { description: 订单编号无效 }
+        "401": { description: 未登录 }
+        "403": { description: 没有平台发布管理权限 }
+        "404": { description: 订单不存在 }
   /v1/publication-orders/{orderId}/tracking-source:
     get:
       summary: 读取已发布订单的效果追踪来源
@@ -4390,7 +4454,7 @@ paths:
   /v1/admin/publication-channels:
     get:
       summary: 平台管理员查询全部发布渠道
-      description: 分页读取本地缓存，不触发上游目录刷新。
+      description: 分页读取本地缓存，不触发上游目录刷新。每行包含 basePriceAmount 原基础价、priceAmount 普通用户有效售价和 tierPrices 四档有效售价及 overridden 标记，金额均为人民币分。
       tags:
         - Platform Publications
       security: *id001
@@ -4855,8 +4919,37 @@ paths:
         "403":
           $ref: "#/components/responses/Forbidden"
   /v1/admin/publication-channels/{channelId}:
+    get:
+      summary: 平台管理员只读核对单个发布渠道及分级售价
+      description: 需要 platform.publication.manage，在平台角色的同一只读快照读取渠道与价格，不调用上游、不写入数据。
+      tags: [Platform Publications]
+      security: *id001
+      parameters:
+        - in: path
+          name: channelId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: 当前渠道与价格快照
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, requestId]
+                properties:
+                  data:
+                    $ref: "#/components/schemas/AdminPublicationChannel"
+                  requestId: { type: string }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: 渠道不存在
     patch:
       summary: 平台管理员调整人工或媒体发布渠道的分级售价及平台上下架
+      description: 仅保存提交字段，至少修改一项。可选 expected 必须覆盖全部修改字段的原值；行锁内核对原值与最新采购成本，写入与审计原子提交。目标已达到的重放不重复写入或审计。priceAmount 输入指基础价。
       tags:
         - Platform Publications
       security:
@@ -4880,9 +4973,26 @@ paths:
         "415":
           $ref: "#/components/responses/UnsupportedMediaType"
         "200":
-          description: 渠道已更新
+          description: 渠道已更新或已达到目标配置
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, requestId]
+                properties:
+                  data:
+                    $ref: "#/components/schemas/AdminPublicationChannel"
+                  requestId: { type: string }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           description: 渠道不存在
+        "409":
+          description: PUBLICATION_CHANNEL_CONFLICT；error.details.current 返回与 GET 相同的最新渠道快照
+        "422":
+          description: PUBLICATION_PRICE_BELOW_COST；固定售价低于锁内最新采购成本，error.details.current 返回当前渠道快照
 components:
   securitySchemes:
     cookieSession:
@@ -6406,15 +6516,19 @@ components:
         retail:
           type: [integer, "null"]
           minimum: 0
+          maximum: 1000000000
         bronze:
           type: [integer, "null"]
           minimum: 0
+          maximum: 1000000000
         silver:
           type: [integer, "null"]
           minimum: 0
+          maximum: 1000000000
         gold:
           type: [integer, "null"]
           minimum: 0
+          maximum: 1000000000
       description: 人民币分固定售价；null 表示删除固定价并恢复等级规则自动计算
     CreatePublicationChannel:
       type: object
@@ -6438,6 +6552,29 @@ components:
           description: 人民币分
         tierPrices:
           $ref: "#/components/schemas/PublicationTierPrices"
+    PublicationManuscript:
+      type: object
+      required: [orderId, title, submittedAt, snapshotStatus, source, contentHtml, contentUrl, submissionNote]
+      properties:
+        orderId: { type: string, format: uuid }
+        title: { type: string }
+        submittedAt: { type: string, format: date-time }
+        snapshotStatus: { type: string, enum: [available, legacy_unavailable] }
+        source:
+          type: object
+          required: [kind]
+          properties:
+            kind: { type: string, enum: [inline_html, url, document, generated, unknown] }
+            documentId: { type: string, format: uuid }
+            documentVersion: { type: integer, minimum: 1 }
+            jobId: { type: string, format: uuid }
+        contentHtml:
+          type: [string, "null"]
+          description: 冻结的投稿HTML；仅链接或历史缺失时为空。展示必须转义或经过安全处理。
+        contentUrl: { type: [string, "null"], format: uri }
+        submissionNote:
+          type: [string, "null"]
+          description: 原始投稿备注；历史缺失时为空，不用后续运营备注替代。
     CreatePublicationOrder:
       type: object
       additionalProperties: false
@@ -6468,19 +6605,22 @@ components:
         contentUrl:
           type: string
           format: uri
+          maxLength: 2000
+          pattern: "^https?://"
+          description: HTTP(S)内容链接；仅人工渠道允许以链接代替正文，不抓取远端页面。
         contentHtml:
           type: string
           minLength: 1
           maxLength: 500000
-          description: 直接投稿的 HTML 正文；聚合渠道必须在它、sourceJobId 或 sourceDocumentId 中提供一种正文来源
+          description: 直接投稿的 HTML 正文；与sourceJobId、sourceDocumentId互斥。聚合渠道必须提供一种正文来源；人工渠道也必须有正文来源或HTTP(S)内容链接。原稿与扣款、订单和审计原子保存。
         sourceJobId:
           type: string
           format: uuid
-          description: 当前品牌下已成功并完成审核的文章生成任务
+          description: 当前企业、内部绑定和品牌下已成功且具有非空正文的文章生成任务；不能与直接正文或 sourceDocumentId 同时提交
         sourceDocumentId:
           type: string
           format: uuid
-          description: 当前品牌文档库中状态为 ready 的文档；不能与 sourceJobId 同时提交
+          description: 当前企业、内部绑定和品牌下状态为 ready 的非空正文文档；不能与直接正文或 sourceJobId 同时提交。正文与版本在订单事务内冻结。
         note:
           type: string
           maxLength: 2000
@@ -6611,19 +6751,117 @@ components:
         note:
           type: string
           maxLength: 2000
+    PublicationChannelExpected:
+      type: object
+      additionalProperties: false
+      properties:
+        name: { type: string, minLength: 2, maxLength: 160 }
+        category: { type: string, minLength: 2, maxLength: 64 }
+        priceAmount:
+          type: integer
+          minimum: 0
+          maximum: 1000000000
+          description: 原基础价，对应读取快照的 basePriceAmount
+        status: { type: string, enum: [active, inactive] }
+        tierPrices:
+          $ref: "#/components/schemas/PublicationTierPrices"
     UpdatePublicationChannel:
+      type: object
+      additionalProperties: false
+      properties:
+        name: { type: string, minLength: 2, maxLength: 160 }
+        category: { type: string, minLength: 2, maxLength: 64 }
+        priceAmount:
+          type: integer
+          minimum: 0
+          maximum: 1000000000
+          description: 人民币分基础价
+        status: { type: string, enum: [active, inactive] }
+        tierPrices:
+          $ref: "#/components/schemas/PublicationTierPrices"
+        expected:
+          $ref: "#/components/schemas/PublicationChannelExpected"
+      anyOf:
+        - required: [name]
+        - required: [category]
+        - required: [priceAmount]
+        - required: [status]
+        - required: [tierPrices]
       allOf:
-        - $ref: "#/components/schemas/CreatePublicationChannel"
-        - type: object
-          required:
-            - status
-            - tierPrices
+        - if: { required: [expected, name] }
+          then:
+            properties:
+              expected: { required: [name] }
+        - if: { required: [expected, category] }
+          then:
+            properties:
+              expected: { required: [category] }
+        - if: { required: [expected, priceAmount] }
+          then:
+            properties:
+              expected: { required: [priceAmount] }
+        - if: { required: [expected, status] }
+          then:
+            properties:
+              expected: { required: [status] }
+        - if: { required: [expected, tierPrices] }
+          then:
+            properties:
+              expected: { required: [tierPrices] }
+    PublicationChannelTierPrice:
+      type: object
+      required: [priceAmount, overridden]
+      properties:
+        priceAmount: { type: integer, minimum: 0 }
+        overridden: { type: boolean }
+    AdminPublicationChannel:
+      type: object
+      required:
+        [
+          id,
+          name,
+          category,
+          basePriceAmount,
+          priceAmount,
+          providerCostAmount,
+          provider,
+          status,
+          providerStatus,
+          tierPrices,
+        ]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        category: { type: string }
+        basePriceAmount:
+          { type: integer, minimum: 0, description: 数据库原基础价，人民币分 }
+        priceAmount:
+          { type: integer, minimum: 0, description: 普通用户有效售价，人民币分 }
+        providerCostAmount:
+          { type: integer, minimum: 0, description: 采购成本，人民币分 }
+        currency: { type: string, enum: [CNY] }
+        provider: { type: string, enum: [manual, frog_media] }
+        status: { type: string, enum: [active, inactive] }
+        providerStatus: { type: string, enum: [active, inactive] }
+        providerResourceId: { type: [string, "null"] }
+        providerMediaType: { type: [string, "null"] }
+        remarks: { type: string }
+        caseLink: { type: [string, "null"] }
+        providerMetadata: { type: object, additionalProperties: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        tierPrices:
+          type: object
+          required: [retail, bronze, silver, gold]
           properties:
-            status:
-              type: string
-              enum:
-                - active
-                - inactive
+            retail:
+              $ref: "#/components/schemas/PublicationChannelTierPrice"
+            bronze:
+              $ref: "#/components/schemas/PublicationChannelTierPrice"
+            silver:
+              $ref: "#/components/schemas/PublicationChannelTierPrice"
+            gold:
+              $ref: "#/components/schemas/PublicationChannelTierPrice"
   parameters:
     CredentialId:
       in: path

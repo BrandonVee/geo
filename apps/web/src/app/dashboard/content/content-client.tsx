@@ -1863,7 +1863,12 @@ export function ContentClient({
             </Space>
           ) : (
             <Empty
-              description={selectedJob.errorCode ?? "任务处理中"}
+              description={
+                selectedJob.errorCode === "ANSWERBIT_CREATE_UNCERTAIN" ||
+                selectedJob.errorCode === "ARTICLE_RECOVERY_UNCERTAIN"
+                  ? `生成结果待核对：腾讯可能已接收此任务。请先核对腾讯文章目录或联系管理员，再决定是否创建新任务。任务编号：${selectedJob.id}`
+                  : selectedJob.errorCode ?? "任务处理中"
+              }
               image={Empty.PRESENTED_IMAGE_SIMPLE}
             >
               <AntTag color={jobStatusMeta[selectedJob.status].color}>

@@ -8,6 +8,12 @@ dist
 **/dist
 coverage
 **/coverage
+test-results
+**/test-results
+playwright-report
+**/playwright-report
+.apifox
+**/.apifox
 .env
 .env.*
 !.env.example

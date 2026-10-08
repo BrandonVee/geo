@@ -71,10 +71,23 @@ describe("database release readiness", () => {
       "utf8",
     );
     expect(migration).toContain(`('schema', '${CURRENT_SCHEMA_VERSION}')`);
-    expect(migration).toContain("creation_key");
-    expect(migration).toContain("creation_fingerprint");
-    expect(migration).toContain("deleted_at");
-    expect(migration).toContain("content_folders_org_creation_key_ux");
+    expect(migration).toContain("publication_order_contents");
+    expect(migration).toContain("publication_order_contents_immutable_trg");
+    expect(migration).toContain("publication_order_contents_scope_trg");
+    expect(migration).toContain("create_dispatched_at");
+    expect(migration).toContain(
+      "article_generation_jobs_dispatch_immutable_trg",
+    );
+    const folderCreationMigration = await readFile(
+      new URL("../drizzle/v14.sql", import.meta.url),
+      "utf8",
+    );
+    expect(folderCreationMigration).toContain("creation_key");
+    expect(folderCreationMigration).toContain("creation_fingerprint");
+    expect(folderCreationMigration).toContain("deleted_at");
+    expect(folderCreationMigration).toContain(
+      "content_folders_org_creation_key_ux",
+    );
     const savedViewMigration = await readFile(
       new URL("../drizzle/v13.sql", import.meta.url),
       "utf8",

@@ -21,10 +21,12 @@ export type WorkspaceOrganization = {
 type WorkspaceAccess = {
   organizations: WorkspaceOrganization[];
   platformAdmin: boolean;
+  platformReady: boolean;
 };
 const Context = createContext<WorkspaceAccess>({
   organizations: [],
   platformAdmin: false,
+  platformReady: false,
 });
 export function WorkspaceAccessProvider({
   value,

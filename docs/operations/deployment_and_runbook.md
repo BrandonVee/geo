@@ -19,7 +19,7 @@
 生产环境至少包含：
 
 1. PostgreSQL 18 兼容实例，持久化业务数据与 pg-boss 队列；
-2. Redis 8 兼容实例，承载 Better Auth 会话缓存和分布式登录限流；
+2. Redis 8 兼容实例，承载 Better Auth 原子分布式登录限流；
 3. 一个或多个 Web 实例，以 Next.js standalone 产物运行；
 4. 至少一个 Worker 实例，以构建后的 `apps/worker/dist/index.mjs` 运行；
 5. 每个版本执行一次的数据库发布任务，使用独立迁移身份；
@@ -43,29 +43,32 @@ docker build --target worker -t REGISTRY/answerbit-geo-worker:VERSION .
 
 `release` 目标只包含数据库包、核心包、配置包及执行迁移、版本记录、种子和 RLS 检查所需依赖；它要求运行时注入 `MIGRATION_DATABASE_URL`，先校验数据库发布配置，再按固定顺序执行迁移、记录 schema 版本、种子与 RLS 检查，任一步失败即非零退出。只读根文件系统下为 `/tmp` 挂载临时可写目录，任务完成后不保持常驻。`web` 目标只包含 Next.js standalone 服务端、构建静态资源和 `public` 模型图标等公开资源，内置 `/api/health/ready` 容器健康检查；`worker` 目标只包含带 source map 的 Node.js bundle，通过进程状态和平台 Worker 心跳观测。
 
-镜像构建阶段只使用不可用于运行的占位配置完成静态分析，真实运行 `DATABASE_URL`、迁移 `MIGRATION_DATABASE_URL`、认证密钥、加密主密钥和腾讯地址必须由运行环境注入，禁止写入 build args、镜像层或前端变量。数据库迁移、种子和 RLS 检查不在 Web/Worker 容器启动时自动执行；`MIGRATION_DATABASE_URL` 不得注入 Web 或 Worker。
+Docker 构建上下文排除 `.env` 等环境文件、浏览器测试结果与 trace、Playwright 报告以及本地 Apifox 配置，避免会话记录和本地接入配置进入构建缓存或镜像。镜像构建阶段只使用不可用于运行的占位配置完成静态分析，真实运行 `DATABASE_URL`、迁移 `MIGRATION_DATABASE_URL`、认证密钥、加密主密钥和腾讯地址必须由运行环境注入，禁止写入 build args、镜像层或前端变量。数据库迁移、种子和 RLS 检查不在 Web/Worker 容器启动时自动执行；`MIGRATION_DATABASE_URL` 不得注入 Web 或 Worker。
 
-当前仓库用 `packages/db/drizzle/v1.sql` 表达初始数据库基线，`v2.sql` 增加网页保存的媒体发布平台凭证，`v3.sql` 增加客户价格等级与渠道成本/售价，`v4.sql` 增加品牌文档库、不可变版本、文件夹和发布来源关联，并回填已有成功生成内容，`v5.sql` 增加 AnswerBit 只读数据缓存，`v6.sql` 转换积分加价率并保留旧自定义折扣，`v7.sql` 增加异步文章价格快照，`v8.sql` 增加企业服务与积分到期日（存量企业不强制补期，新企业默认一个月服务和一年积分有效期）。`v9.sql` 增加文档创建幂等键和原请求指纹。`v10.sql` 增加效果追踪提交、加密原请求与幂等状态。`v11.sql` 增加企业历史流水操作者的受限显示函数。`v12.sql` 增加发布订单 `provider_action`，持久保存取消与申诉的当前操作；`v13.sql` 增加个人视图原创建键、指纹和删除标记，保留原请求确认记录；`v14.sql` 增加内容文件夹创建键、原指纹与删除标记；需在部署本版 Web/Worker 前执行 `pnpm db:release`。全新环境依次执行 v1—v14；已完整应用旧 0000—0044 迁移链或 `0044_baseline` 的环境依据保留的最终时间戳跳过基线建表，再执行后续版本。版本记录步骤校验当前结构并把 schema 修订推进为 `v14`，种子修订推进为 `v2`。切换前必须确认历史库已经执行 `0044_lively_shard`；不得在发布任务之外手工清空或篡改 `drizzle.__drizzle_migrations`。未完整升级的历史库先使用旧版本补齐迁移。新结构变更继续追加迁移并递增 `vN` 发布修订。
+当前仓库用 `packages/db/drizzle/v1.sql` 表达初始数据库基线，`v2.sql` 增加网页保存的媒体发布平台凭证，`v3.sql` 增加客户价格等级与渠道成本/售价，`v4.sql` 增加品牌文档库、不可变版本、文件夹和发布来源关联，并回填已有成功生成内容，`v5.sql` 增加 AnswerBit 只读数据缓存，`v6.sql` 转换积分加价率并保留旧自定义折扣，`v7.sql` 增加异步文章价格快照，`v8.sql` 增加企业服务与积分到期日（存量企业不强制补期，新企业默认一个月服务和一年积分有效期）。`v9.sql` 增加文档创建幂等键和原请求指纹。`v10.sql` 增加效果追踪提交、加密原请求与幂等状态。`v11.sql` 增加企业历史流水操作者的受限显示函数。`v12.sql` 增加发布订单 `provider_action`，持久保存取消与申诉的当前操作；`v13.sql` 增加个人视图原创建键、指纹和删除标记，保留原请求确认记录；`v14.sql` 增加内容文件夹创建键、原指纹与删除标记；`v15.sql` 增加发布稿件不可变快照与文章创建派发标记；需在部署本版 Web/Worker 前执行 `pnpm db:release`。全新环境依次执行 v1—v15；已完整应用旧 0000—0044 迁移链或 `0044_baseline` 的环境依据保留的最终时间戳跳过基线建表，再执行后续版本。版本记录步骤校验当前结构并把 schema 修订推进为 `v15`，种子修订推进为 `v2`。切换前必须确认历史库已经执行 `0044_lively_shard`；不得在发布任务之外手工清空或篡改 `drizzle.__drizzle_migrations`。未完整升级的历史库先使用旧版本补齐迁移。新结构变更继续追加迁移并递增 `vN` 发布修订。
+
+v15 对没有 ArticleID 的历史 `running` 任务，以及已经尝试过的 `queued` 任务，保守补记为可能已派发；这些任务后续以结果待核对结束并返还实际扣款，不自动重新创建。尚未执行的等待任务仍可正常领取；有 ArticleID 的任务继续只读查询正文。历史发布订单没有原稿快照时明确显示无法还原，升级不抓取当前链接或当前文档冒充原稿。
 
 ## 持续集成门禁
 
-`.github/workflows/ci.yml` 在 push、pull request 和手工触发时执行三层门禁：
+`.github/workflows/ci.yml` 在 push、pull request 和手工触发时执行四项门禁：
 
 1. Quality gate 使用锁文件安装依赖，依次执行格式、类型/lint、单元测试和完整构建；本地等价命令为 `pnpm verify`。
 2. Database release gate 在一次性 PostgreSQL 18 与 Redis 8 环境完整执行两次 `pnpm db:release`，验证迁移、版本记录、种子、RLS 与整个发布流程的幂等性；随后启用真实 PostgreSQL 事务回归，覆盖发布单并发幂等扣款、退款、零元订单、迟到上游状态隔离，以及成员新增和恢复并发占用最后一个名额；最后按生产镜像布局启动 Web standalone 产物，执行 `pnpm smoke:web` 验证存活、就绪、初始化入口、安全响应头、逐请求 CSP nonce、全部脚本 nonce 覆盖、构建静态资源和 `public` 模型图标可读性，以 Chromium 完成首次管理员初始化、错误登录、成功登录和路由守卫验收，并使用 axe-core 阻止初始化、登录及腾讯接入页面出现 serious/critical 级 WCAG 2/2.1 A、AA 问题；Worker bundle 同时验证队列注册、初始维护、运行心跳及优雅退出。
-3. Container matrix 分别构建 `release`、`web`、`worker` 目标并检查最终镜像用户为 `node`，同时确认 Web 镜像包含运行时所需的 `public` 模型图标。
+3. Operator workflow gate 通过 `pnpm test:workflows` 创建一次性数据库，运行真实事务与认证回归，按 Docker 镜像布局准备并直接启动 Web standalone 产物，先执行 `pnpm smoke:web`，再执行完整运营流程浏览器回归；包括等待任务的当前权限复核、企业有效期与余额事务，以及权限变更、余额、内容、通知、发布及渠道定价的异常恢复和多尺寸明暗主题检查。冒烟与浏览器使用同一临时本地地址，验证入口、静态资源与安全响应头随产物一起可用。测试明确启用运营用例，不能用未设置 `WORKFLOW_E2E` 的普通 Playwright 命令替代。腾讯与发布地址指向本地测试服务，不执行真实外部收费操作。结束后删除整个测试数据库。
+4. Container matrix 分别构建 `release`、`web`、`worker` 目标并检查最终镜像用户为 `node`，同时确认 Web 镜像包含运行时所需的 `public` 模型图标。
 
-外部 GitHub Actions 使用不可变提交摘要固定，`.github/dependabot.yml` 每周为 pnpm 工作区、Actions 与 Docker 基础镜像提出独立更新。CI 只使用一次性占位密钥和本地服务数据库，不读取生产 Secrets。保护分支应把 Quality gate、Database release gate 和三个 Container 检查设为必需状态；只有全部通过的提交才能进入镜像发布流程。
+外部 GitHub Actions 使用不可变提交摘要固定，`.github/dependabot.yml` 每周为 pnpm 工作区、Actions 与 Docker 基础镜像提出独立更新。CI 只使用一次性占位密钥和本地服务数据库，不读取生产 Secrets。保护分支应把 Quality gate、Database release gate、Operator workflow gate 和三个 Container 检查设为必需状态；只有全部通过的提交才能进入镜像发布流程。
 
 ## 发布顺序
 
 1. 备份数据库并记录当前应用版本；
 2. 安装锁文件固定的依赖并执行 `pnpm build`，或从同一版本构建 `release`、`web`、`worker` 三个镜像；
-3. 使用该版本的 release 镜像和独立迁移身份执行一次性数据库发布任务；本地/裸机等价命令为 `pnpm db:release`；
+3. 首次升级到 v15 时暂停新投稿并停止全部旧 Web/Worker，等待正在执行的请求结束；再使用该版本的 release 镜像和独立迁移身份执行一次性数据库发布任务；本地/裸机等价命令为 `pnpm db:release`。安装引导同样在 release 前停止 Web/Worker；迁移失败时保持应用停止，先排障再继续；
 4. 确认任务依次输出 `validate`、`migrate`、`record-schema-version`、`seed`、`rls-check` 成功并以 0 退出；该步骤会单调推进 `system_release_state` 中的 schema 与 seed `vN` 修订；
-5. 向镜像仓库推送同一 `VERSION` 的三个镜像，滚动发布 Web，再发布 Worker；
-6. 等待 Web readiness 通过，并检查 live、登录、核心读请求、Worker 心跳和队列消费；
-7. 保留可回滚应用镜像。数据库回滚优先采用向前修复迁移，禁止直接删除生产数据结构；readiness 接受高于应用最低要求的修订，因此向后兼容迁移不会阻止旧应用重新接流。
+5. 向镜像仓库推送同一 `VERSION` 的三个镜像，滚动发布 Web，确认全部副本更新后恢复投稿，再启动同版 Worker；首次升级到 v15 不能让旧 Worker 与新 Worker 混跑。
+6. 等待 Web readiness 通过，并检查 live、登录、核心读请求、Worker 心跳和队列消费；确认全部 Web 副本已更新，并验证账号停用后旧 Cookie 无法继续访问，避免滚动发布期间旧副本沿用会话缓存逻辑；
+7. 保留可回滚应用镜像。数据库回滚优先采用向前修复迁移，禁止直接删除生产数据结构；readiness 接受更高修订，但不代表旧业务代码具备新保障。v15 的稿件保存和派发防重不能回滚到不识别这些事实的 Web/Worker 后继续接受写入；故障时先暂停投稿与 Worker，再向前修复。
 
 Docker 一次性发布任务示例：
 
@@ -94,6 +97,7 @@ docker run --rm \
 - `operation_logs` 提供管理员和企业敏感操作审计；
 - `runtime_heartbeats` 记录每个 Worker 实例的启动时间、版本与最近心跳。Worker 每 30 秒更新一次；平台控制台只把 90 秒内的记录计为在线，启用通知规则超过 30 分钟未评估时标记过期。优雅退出会删除当前实例行，异常退出由心跳超时识别；7 天前的旧 Worker 记录在下次启动时清理。
 - `runtime_task_statuses` 记录计费维护、异步任务恢复、通知评估、腾讯企业同步和聚合发布同步的当前 run ID、执行实例、最近启动/成功/失败、耗时和稳定错误码。聚合发布同步每 5 分钟核对订单，同时只在渠道缓存超过 30 分钟或网页 Key 更新后同步一次完整渠道目录；页面分页读取不会触发目录刷新。平台将失败、执行超时、超过两个调度周期未成功和未上报显示为异常；旧执行完成时因 run ID 不匹配不能覆盖新状态。`runtime-task-tracking.failed` 只表示观测写入失败，原任务仍按自己的结果完成或失败。
+- 腾讯统一凭证未填写、被停用或上游授权失效时，用户仍可登录并按权限查看内容、订单、余额和通知等本地记录；平台应通过全局提示和管理端“腾讯接入”页引导重新验证或轮换 Key。
 - 平台总览直接统计文章与报告的等待、执行、24 小时失败和过期数量；`queued` 超过 10 分钟或 `running` 超过 15 分钟视为过期。`async-job-reconciliation.completed` 应至少每 5 分钟出现一次，`requeuedArticles`、`uncertainArticles`、`requeuedReports`、`activeJobs`、`races` 与 `errors` 用于判断恢复效果；`ASYNC_JOB_RECONCILIATION_PARTIAL_FAILURE` 或 `async-job-reconciliation.item-failed` 需要按任务 ID 排查。
 - pg-boss 表与 Worker 日志用于判断文章、报告、通知、腾讯企业自动同步和维护队列是否积压；`tencent-enterprise-sync.completed` 应至少每日出现一次，`last_synced_at` 随成功同步推进；`notification-evaluation.completed` 应至少每 15 分钟出现一次，其 `evaluated`、`emitted`、`failed` 字段用于判断本轮规则覆盖和失败数量，规则表的 `last_evaluated_at`、`last_evaluation_error` 用于定位单条持续检测故障。
 
@@ -103,7 +107,7 @@ docker run --rm \
 
 至少对 PostgreSQL 执行加密的周期全量备份与可恢复性演练。恢复步骤：
 
-Redis 可启用 AOF 并纳入基础设施备份，但它只承载登录限流和会话缓存；持久 Session 与业务数据以 PostgreSQL 为准，Redis 丢失时不应从缓存反向覆盖数据库。
+Redis 可启用 AOF 并纳入基础设施备份，但它只承载登录限流；Session 与当前用户资料直接读取 PostgreSQL，Redis 丢失不改变会话撤销事实。升级前遗留的会话缓存键不参与认证，等待原 TTL 到期清理即可。
 
 1. 隔离写流量并记录故障窗口；
 2. 在独立实例恢复指定恢复点的备份，使用目标应用版本的 release 镜像完成数据库发布，并验证 `system_release_state`；
@@ -148,7 +152,9 @@ Redis 可启用 AOF 并纳入基础设施备份，但它只承载登录限流和
 
 Worker 在线但存在过期异步任务时，先查看“异步任务恢复”任务卡和 `async-job-reconciliation.*` 日志，再核对业务任务的 `status`、`updated_at`、`execution_id`、`queue_job_id` 与 pg-boss 状态。恢复器会跳过仍为 created/retry/active 的队列任务；其他安全任务自动重新投递。`ARTICLE_RECOVERY_UNCERTAIN` 表示文章可能已在腾讯创建但本地没有 ArticleID，系统会退款且不会自动重建，应按调用日志和腾讯后台人工核对后再由用户决定是否新建。不要手工清除正在执行的 `execution_id`，也不要绕过状态机直接修改终态。报告恢复后仍会重新检查有效企业、成员、团队、品牌权限和额度。
 
-通知长时间没有推进时，先确认 `notification-evaluation` 定时任务和消费进程，再按 `notification-evaluation.completed` 的 `failed` 数量查询规则 `last_evaluation_error`。连接失败规则读取最近 24 小时真实业务调用历史及本地连接状态，不额外调用腾讯目录接口；warning 在配置阈值触发，critical 在 `max(阈值 × 2, 5)` 次连续失败时触发。通知发布受规则级事务锁、唯一事件键和冷却窗口保护，不应通过手工插入通知补偿；根因解除后保留规则启用，等待下一周期重新评估。
+通知长时间没有推进时，先确认 `notification-evaluation` 定时任务和消费进程，再按 `notification-evaluation.completed` 的 `failed` 数量查询规则 `last_evaluation_error`。`NOTIFICATION_EVALUATION_PARTIAL_FAILURE` 表示本轮已处理全部规则但存在失败，不代表后续规则被跳过；`evaluated` 与 `failed` 分别统计成功和失败规则，`emitted` 统计实际发布量。按 `notification-evaluation.rule-failed` 的 `ruleId` 与 `errorCode` 定位检测或健康写入故障；若同时出现 `notification-evaluation.health-write-failed`，数据库没有保存本次错误状态，应以日志核对，不能仅凭规则表判断健康。连接失败规则读取最近 24 小时真实业务调用历史及本地连接状态，不额外调用腾讯目录接口；warning 在配置阈值触发，critical 在 `max(阈值 × 2, 5)` 次连续失败时触发。通知发布受规则级事务锁、唯一事件键和冷却窗口保护，不应通过手工插入通知补偿；根因解除后保留规则启用，等待下一周期重新评估。
+
+Web 即时通知异常按 `notification.evaluate.failed` 的 `ruleId`、`errorCode` 排查；出现 `notification.evaluate.health-write-failed` 时，本次错误状态未持久化，应以日志核对而非只看规则表。尚未加载规则就失败的即时评估由 `notification.metric.failed` 记录 `requestId` 和 `errorCode`。通知健康状态与上述日志只包含稳定错误码，未知或自由文本异常回退为 `NOTIFICATION_EVALUATION_FAILED`，不输出 SQL、参数或异常原文；检测失败不改变已成功读取的总览指标响应。
 
 腾讯企业目录长时间未更新时，先在“运行与审计”检查 `tencent-enterprise-sync` 最近成功时间、Worker 心跳、队列和 `tencent-enterprise-sync.failed` 日志；恢复 Worker 后若最近 20 小时没有成功同步，会在启动时补做一次同步。确需绕过调度核对时，运维人员可调用 `POST /api/v1/admin/answerbit-enterprise-syncs`，该资源不作为日常页面操作。限流、超时、5xx 和非法响应不会覆盖上一次成功目录；401/403 会把当前统一凭证标记为异常，应在平台“腾讯接入”轮换或重新验证 Key。直接在腾讯删除的品牌需要连续两次成功目录核对后才关闭本地企业投影。
 

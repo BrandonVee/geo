@@ -977,6 +977,67 @@ export const publicationOrders = pgTable(
     ),
   ],
 );
+// @project-doc docs/domains/balance_and_publication.md#publication_manuscripts
+export const publicationOrderContents = pgTable(
+  "publication_order_contents",
+  {
+    orderId: uuid("order_id")
+      .primaryKey()
+      .references(() => publicationOrders.id, { onDelete: "restrict" }),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id),
+    teamBindingId: uuid("team_binding_id")
+      .notNull()
+      .references(() => answerbitTeamBindings.id),
+    brandId: varchar("brand_id", { length: 128 }).notNull(),
+    title: varchar("title", { length: 255 }).notNull(),
+    sourceKind: varchar("source_kind", { length: 24 })
+      .$type<"inline_html" | "url" | "document" | "generated">()
+      .notNull(),
+    contentHtml: text("content_html"),
+    contentUrl: text("content_url"),
+    submissionNote: text("submission_note").notNull(),
+    sourceDocumentId: uuid("source_document_id"),
+    sourceDocumentVersion: integer("source_document_version"),
+    sourceJobId: uuid("source_job_id"),
+    creationFingerprint: varchar("creation_fingerprint", {
+      length: 64,
+    }).notNull(),
+    fingerprintVersion: smallint("fingerprint_version").default(1).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (t) => [
+    index("publication_order_contents_org_idx").on(t.organizationId),
+    check(
+      "publication_order_contents_fingerprint_ck",
+      sql`${t.fingerprintVersion} = 1 and ${t.creationFingerprint} ~ '^[a-f0-9]{64}$'`,
+    ),
+    check(
+      "publication_order_contents_body_ck",
+      sql`${t.contentHtml} is null or (char_length(btrim(${t.contentHtml})) > 0 and char_length(${t.contentHtml}) <= 500000)`,
+    ),
+    check(
+      "publication_order_contents_url_ck",
+      sql`${t.contentUrl} is null or (char_length(${t.contentUrl}) <= 2000 and ${t.contentUrl} ~* '^https?://')`,
+    ),
+    check(
+      "publication_order_contents_note_ck",
+      sql`char_length(${t.submissionNote}) <= 2000`,
+    ),
+    check(
+      "publication_order_contents_source_ck",
+      sql`
+      (${t.sourceKind} = 'url' and ${t.contentHtml} is null and ${t.contentUrl} is not null and ${t.sourceDocumentId} is null and ${t.sourceDocumentVersion} is null and ${t.sourceJobId} is null)
+      or (${t.sourceKind} = 'inline_html' and ${t.contentHtml} is not null and ${t.sourceDocumentId} is null and ${t.sourceDocumentVersion} is null and ${t.sourceJobId} is null)
+      or (${t.sourceKind} = 'document' and ${t.contentHtml} is not null and ${t.sourceDocumentId} is not null and ${t.sourceDocumentVersion} is not null and ${t.sourceDocumentVersion} > 0 and ${t.sourceJobId} is null)
+      or (${t.sourceKind} = 'generated' and ${t.contentHtml} is not null and ${t.sourceJobId} is not null and ${t.sourceDocumentId} is null and ${t.sourceDocumentVersion} is null)
+    `,
+    ),
+  ],
+);
 export const answerbitCompetitorMappings = pgTable(
   "answerbit_competitor_mappings",
   {
@@ -1224,6 +1285,9 @@ export const articleGenerationJobs = pgTable(
       .default(sql`'{}'::jsonb`)
       .notNull(),
     status: jobStatus("status").default("queued").notNull(),
+    createDispatchedAt: timestamp("create_dispatched_at", {
+      withTimezone: true,
+    }),
     answerbitArticleId: varchar("answerbit_article_id", { length: 128 }),
     articleTitle: text("article_title"),
     articleBody: text("article_body"),

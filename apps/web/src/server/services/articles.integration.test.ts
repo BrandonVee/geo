@@ -535,6 +535,28 @@ describe.skipIf(process.env.ARTICLE_SUBMISSION_DB_TESTS !== "1")(
         queue: 0,
       });
     });
+    it("已有派发记录的旧 queued 任务重放保持原任务，不能从提交接口再次入队", async () => {
+      const job = await legacy();
+      await db
+        .update(articleGenerationJobs)
+        .set({ createDispatchedAt: new Date() })
+        .where(eq(articleGenerationJobs.id, job.id));
+      mocks.afterEnqueue = async () => {
+        throw new Error("must not enqueue");
+      };
+      expect(await create(job.idempotencyKey)).toMatchObject({
+        id: job.id,
+        status: "queued",
+        replayed: true,
+      });
+      expect(await counts()).toEqual({
+        jobs: 1,
+        audits: 0,
+        balances: 0,
+        queue: 0,
+      });
+      expect(mocks.templates).not.toHaveBeenCalled();
+    });
     it.each(["running", "failed", "cancelled", "succeeded"] as const)(
       "%s 任务重放不会重新入队",
       async (status) => {

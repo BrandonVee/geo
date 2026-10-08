@@ -9,6 +9,10 @@ import {
   publicationOrders,
   balanceAccounts,
   balanceTransactions,
+  answerbitConnections,
+  answerbitTeamBindings,
+  answerbitBrandMappings,
+  organizationMembers,
 } from "./schema";
 import {
   createPublicationOrderWithBalance,
@@ -24,16 +28,27 @@ describe.skipIf(process.env.PUBLICATION_DB_TESTS !== "1")(
       user = randomUUID(),
       channel = randomUUID(),
       free = randomUUID();
+    const teamBindingId = randomUUID(),
+      connectionId = randomUUID();
     const input = {
       organizationId: org,
+      teamBindingId,
       brandId: "fixture-brand",
       channelId: channel,
       title: "回归测试",
+      contentHtml: "<p>回归测试正文</p>",
       note: "",
       idempotencyKey: randomUUID(),
       createdBy: user,
     };
     beforeAll(async () => {
+      if (
+        process.env.WORKFLOW_DISPOSABLE_DB !== "1" ||
+        !/^\/geo_workflow_qa_[a-z0-9_]+$/.test(
+          new URL(process.env.DATABASE_URL!).pathname,
+        )
+      )
+        throw new Error("Disposable QA database required");
       await db.insert(users).values({
         id: user,
         name: "Publication test",
@@ -51,6 +66,30 @@ describe.skipIf(process.env.PUBLICATION_DB_TESTS !== "1")(
         },
         { id: free, name: "Free fixture", category: "test", priceAmount: 0 },
       ]);
+      await db
+        .insert(organizationMembers)
+        .values({ organizationId: org, userId: user });
+      await db.insert(answerbitConnections).values({
+        id: connectionId,
+        organizationId: org,
+        encryptedApiKey: "unused",
+        apiKeyFingerprint: "fixture",
+        apiKeyHint: "fixture",
+        createdBy: user,
+      });
+      await db.insert(answerbitTeamBindings).values({
+        id: teamBindingId,
+        organizationId: org,
+        connectionId,
+        teamId: "fixture-team",
+        displayName: "Fixture",
+      });
+      await db.insert(answerbitBrandMappings).values({
+        organizationId: org,
+        teamBindingId,
+        brandId: input.brandId,
+        brandName: "Fixture",
+      });
       await db.insert(balanceAccounts).values({
         organizationId: org,
         brandId: input.brandId,
@@ -59,20 +98,7 @@ describe.skipIf(process.env.PUBLICATION_DB_TESTS !== "1")(
       });
     });
     afterAll(async () => {
-      await db
-        .delete(balanceTransactions)
-        .where(eq(balanceTransactions.organizationId, org));
-      await db
-        .delete(publicationOrders)
-        .where(eq(publicationOrders.organizationId, org));
-      await db
-        .delete(balanceAccounts)
-        .where(eq(balanceAccounts.organizationId, org));
-      await db
-        .delete(publicationChannels)
-        .where(sql`${publicationChannels.id} in (${channel}, ${free})`);
-      await db.delete(organizations).where(eq(organizations.id, org));
-      await db.delete(users).where(eq(users.id, user));
+      // Immutable manuscripts and ledger evidence are removed with the QA database.
       await pool.end();
     });
     it("并发同键下单只创建并扣款一次，取消并发仅返还一次", async () => {

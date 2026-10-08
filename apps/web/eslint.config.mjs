@@ -5,6 +5,16 @@ import nextTypeScript from "eslint-config-next/typescript";
 export default defineConfig([
   ...nextVitals,
   ...nextTypeScript,
-  { rules: { "react-hooks/set-state-in-effect": "off", "react-hooks/use-memo": "off", "@next/next/no-html-link-for-pages": "off" } },
+  {
+    rules: {
+      "@next/next/no-html-link-for-pages": "off",
+      "@typescript-eslint/no-unused-vars": [
+        "error",
+        { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
+      ],
+      "react-hooks/set-state-in-effect": "off",
+      "react-hooks/use-memo": "off",
+    },
+  },
   globalIgnores([".next/**", "next-env.d.ts"]),
 ]);

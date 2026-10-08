@@ -1,4 +1,5 @@
 import type { DashboardBaseQuery, DashboardQuery } from "@geo/contracts";
+import { stableErrorCode } from "@geo/core";
 import { loadAnswerBitTeamContext } from "@/server/integrations/answerbit/context";
 import {
   queryDashboardMetricsLogged,
@@ -56,26 +57,30 @@ export const dashboardService = {
   async metrics(input: DashboardBaseQuery, userId: string, requestId: string) {
     const { apiKey, log } = await prepare(input, userId, requestId);
     try {
-      const result = await queryDashboardMetricsLogged(
+      return await queryDashboardMetricsLogged(
         apiKey,
         payload(input),
         log,
+        (result) =>
+          evaluateMetricAnomaly(
+            input.organizationId,
+            input.teamBindingId,
+            input.brandId,
+            result,
+            input,
+          ).catch((error) =>
+            console.error(
+              JSON.stringify({
+                event: "notification.metric.failed",
+                requestId,
+                errorCode: stableErrorCode(
+                  error,
+                  "NOTIFICATION_EVALUATION_FAILED",
+                ),
+              }),
+            ),
+          ),
       );
-      await evaluateMetricAnomaly(
-        input.organizationId,
-        input.teamBindingId,
-        input.brandId,
-        result,
-      ).catch((error) =>
-        console.error(
-          JSON.stringify({
-            event: "notification.metric.failed",
-            requestId,
-            error: error instanceof Error ? error.message : "unknown",
-          }),
-        ),
-      );
-      return result;
     } catch (error) {
       return mapUpstreamError(error);
     }

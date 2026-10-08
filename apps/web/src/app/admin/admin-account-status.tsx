@@ -31,6 +31,7 @@ export function AdminAccountStatusAction({
   const [failure, setFailure] = useState<Failure | null>(null);
   const [checking, setChecking] = useState(false);
   const submitting = useRef(false);
+  const pendingOrganization = useRef<string | null>(null);
   const mounted = useRef(true);
   const [desiredStatus, setDesiredStatus] = useState<"active" | "disabled">(
     "disabled",
@@ -39,6 +40,7 @@ export function AdminAccountStatusAction({
     mounted.current = true;
     return () => {
       mounted.current = false;
+      pendingOrganization.current = null;
     };
   }, []);
 
@@ -129,6 +131,7 @@ export function AdminAccountStatusAction({
         danger={user.status === "active"}
         disabled={user.id === currentUserId && user.status === "active"}
         onClick={() => {
+          pendingOrganization.current = null;
           setDesiredStatus(user.status === "active" ? "disabled" : "active");
           setFailure(null);
           setChecking(false);
@@ -150,7 +153,17 @@ export function AdminAccountStatusAction({
           "aria-label": okText,
         }}
         maskClosable={!busy}
-        onCancel={() => !busy && setOpen(false)}
+        onCancel={() => {
+          if (busy) return;
+          pendingOrganization.current = null;
+          setOpen(false);
+        }}
+        afterClose={() => {
+          const organizationId = pendingOrganization.current;
+          pendingOrganization.current = null;
+          if (mounted.current && organizationId)
+            onManageOrganization(organizationId);
+        }}
         onOk={() => void submit()}
       >
         <Typography.Paragraph strong>
@@ -174,8 +187,8 @@ export function AdminAccountStatusAction({
                   <Button
                     key={organization.id}
                     onClick={() => {
+                      pendingOrganization.current = organization.id;
                       setOpen(false);
-                      onManageOrganization(organization.id);
                     }}
                   >
                     管理企业 · {organization.name}

@@ -1,4 +1,10 @@
 import { assertEnterpriseAccess } from "./enterprise-access";
+import {
+  lockPublicationSubmission,
+  readPublicationSubmissionReplay,
+  resolvePublicationManuscript,
+  type PublicationSubmissionInput,
+} from "./publication-manuscripts";
 import { observePublicationAction, publicationActionPending } from "@geo/core";
 import {
   and,
@@ -23,6 +29,7 @@ import {
   publicationChannels,
   publicationChannelPriceOverrides,
   publicationOrders,
+  publicationOrderContents,
   pricingTierRules,
   users,
   organizations,
@@ -55,11 +62,12 @@ const calculateChannelPrice = (
 
 async function enrichChannelPricing(
   rows: Array<typeof publicationChannels.$inferSelect>,
+  executor: Pick<typeof db, "select"> = db,
 ) {
   if (!rows.length) return [];
   const [rules, overrides] = await Promise.all([
-    db.select().from(pricingTierRules),
-    db
+    executor.select().from(pricingTierRules),
+    executor
       .select()
       .from(publicationChannelPriceOverrides)
       .where(
@@ -91,8 +99,130 @@ async function enrichChannelPricing(
         ];
       }),
     ) as Record<PricingTier, { priceAmount: number; overridden: boolean }>;
-    return { ...row, priceAmount: tierPrices.retail.priceAmount, tierPrices };
+    return {
+      ...row,
+      basePriceAmount: row.priceAmount,
+      priceAmount: tierPrices.retail.priceAmount,
+      tierPrices,
+    };
   });
+}
+
+type PublicationChannelChanges = Partial<{
+  name: string;
+  category: string;
+  priceAmount: number;
+  status: "active" | "inactive";
+  tierPrices: Record<PricingTier, number | null>;
+}>;
+
+export function findAdminPublicationChannel(channelId: string, userId: string) {
+  return withPlatformDbContext(
+    { userId },
+    async (tx) => {
+      const rows = await tx
+        .select()
+        .from(publicationChannels)
+        .where(eq(publicationChannels.id, channelId));
+      return (await enrichChannelPricing(rows, tx))[0];
+    },
+    { isolationLevel: "repeatable read", accessMode: "read only" },
+  );
+}
+
+// @project-doc docs/domains/balance_and_publication.md#publication_channel_updates
+export function updatePublicationChannel(
+  channelId: string,
+  input: PublicationChannelChanges & { expected?: PublicationChannelChanges },
+  userId: string,
+  audit: (
+    tx: DatabaseTransaction,
+    row: typeof publicationChannels.$inferSelect,
+  ) => Promise<void>,
+) {
+  return withPlatformDbContext(
+    { userId },
+    async (tx) => {
+      const [current] = await tx
+        .select()
+        .from(publicationChannels)
+        .where(eq(publicationChannels.id, channelId))
+        .for("update");
+      if (!current) return { kind: "missing" as const };
+      const [snapshot] = await enrichChannelPricing([current], tx);
+      const matches = (values: PublicationChannelChanges) =>
+        Object.entries(values).every(([field, value]) => {
+          if (value === undefined) return true;
+          if (field === "tierPrices")
+            return pricingTiers.every((tier) => {
+              const price = snapshot.tierPrices[tier];
+              return (
+                (price.overridden ? price.priceAmount : null) ===
+                (value as Record<PricingTier, number | null>)[tier]
+              );
+            });
+          return (
+            current[
+              field as Exclude<keyof PublicationChannelChanges, "tierPrices">
+            ] === value
+          );
+        });
+      const { expected, tierPrices, ...changes } = input;
+      if (matches({ ...changes, tierPrices }))
+        return { kind: "saved" as const, channel: snapshot };
+      if (expected && !matches(expected))
+        return { kind: "conflict" as const, channel: snapshot };
+      if (
+        current.provider === "frog_media" &&
+        tierPrices &&
+        Object.values(tierPrices).some(
+          (price) => price !== null && price < current.providerCostAmount,
+        )
+      )
+        return { kind: "below_cost" as const, channel: snapshot };
+      const [row] = await tx
+        .update(publicationChannels)
+        .set({
+          ...changes,
+          ...(current.provider === "manual" && changes.priceAmount !== undefined
+            ? { providerCostAmount: changes.priceAmount }
+            : {}),
+          updatedAt: new Date(),
+        })
+        .where(eq(publicationChannels.id, channelId))
+        .returning();
+      if (tierPrices)
+        for (const tier of pricingTiers) {
+          const priceAmount = tierPrices[tier];
+          if (priceAmount === null)
+            await tx
+              .delete(publicationChannelPriceOverrides)
+              .where(
+                and(
+                  eq(publicationChannelPriceOverrides.channelId, channelId),
+                  eq(publicationChannelPriceOverrides.tier, tier),
+                ),
+              );
+          else
+            await tx
+              .insert(publicationChannelPriceOverrides)
+              .values({ channelId, tier, priceAmount, updatedBy: userId })
+              .onConflictDoUpdate({
+                target: [
+                  publicationChannelPriceOverrides.channelId,
+                  publicationChannelPriceOverrides.tier,
+                ],
+                set: { priceAmount, updatedBy: userId, updatedAt: new Date() },
+              });
+        }
+      await audit(tx, row);
+      return {
+        kind: "saved" as const,
+        channel: (await enrichChannelPricing([row], tx))[0],
+      };
+    },
+    { isolationLevel: "read committed" },
+  );
 }
 
 export type ProviderPublicationChannelInput = {
@@ -650,152 +780,153 @@ export function findAdminPublicationOrder(orderId: string, userId: string) {
   });
 }
 // @project-doc docs/domains/balance_and_publication.md#publication_state_machine
-export async function createPublicationOrderWithBalance(input: {
-  organizationId: string;
-  brandId: string;
-  channelId: string;
-  title: string;
-  contentUrl?: string;
-  contentHtml?: string;
-  sourceJobId?: string;
-  sourceDocumentId?: string;
-  note: string;
-  idempotencyKey: string;
-  createdBy: string;
-}) {
-  return db.transaction(async (tx) => {
-    await tx.execute(
-      sql`select pg_advisory_xact_lock(hashtext(${input.organizationId}), hashtext(${input.idempotencyKey}))`,
-    );
-    const [replay] = await tx
-      .select()
-      .from(publicationOrders)
-      .where(
-        and(
-          eq(publicationOrders.organizationId, input.organizationId),
-          eq(publicationOrders.idempotencyKey, input.idempotencyKey),
-        ),
-      )
-      .limit(1);
-    if (
-      replay &&
-      (replay.brandId !== input.brandId ||
-        replay.channelId !== input.channelId ||
-        replay.title !== input.title ||
-        replay.createdBy !== input.createdBy ||
-        (replay.sourceJobId ?? undefined) !== input.sourceJobId ||
-        (replay.sourceDocumentId ?? undefined) !== input.sourceDocumentId ||
-        (replay.contentUrl ?? undefined) !== input.contentUrl)
-    )
-      return { ok: false as const, code: "IDEMPOTENCY_CONFLICT" as const };
-    if (replay)
-      return { ok: true as const, order: replay, replayed: true as const };
-    await assertEnterpriseAccess(input.organizationId, false, tx);
-    const [channel] = await tx
-      .select()
-      .from(publicationChannels)
-      .where(
-        and(
-          eq(publicationChannels.id, input.channelId),
-          eq(publicationChannels.status, "active"),
-        ),
-      )
-      .limit(1);
-    if (!channel)
-      return { ok: false as const, code: "CHANNEL_NOT_FOUND" as const };
-    if (channel.providerStatus !== "active")
-      return { ok: false as const, code: "CHANNEL_NOT_FOUND" as const };
-    const [actor] = await tx
-      .select({ pricingTier: users.pricingTier })
-      .from(users)
-      .where(eq(users.id, input.createdBy))
-      .limit(1);
-    const tier = actor?.pricingTier ?? "retail";
-    const [[rule], [override]] = await Promise.all([
-      tx
-        .select({
-          publicationMarkupBps: pricingTierRules.publicationMarkupBps,
-        })
-        .from(pricingTierRules)
-        .where(eq(pricingTierRules.tier, tier))
-        .limit(1),
-      tx
-        .select({ priceAmount: publicationChannelPriceOverrides.priceAmount })
-        .from(publicationChannelPriceOverrides)
+export async function createPublicationOrderWithBalance(
+  input: PublicationSubmissionInput,
+  audit?: (tx: DatabaseTransaction, orderId: string) => Promise<void>,
+) {
+  return withTenantDbContext(
+    {
+      organizationId: input.organizationId,
+      teamBindingId: input.teamBindingId,
+      brandId: input.brandId,
+      userId: input.createdBy,
+    },
+    async (tx) => {
+      await lockPublicationSubmission(tx, input);
+      const replay = await readPublicationSubmissionReplay(tx, input);
+      if (replay) return replay;
+      await assertEnterpriseAccess(input.organizationId, false, tx);
+      const [channel] = await tx
+        .select()
+        .from(publicationChannels)
         .where(
           and(
-            eq(publicationChannelPriceOverrides.channelId, channel.id),
-            eq(publicationChannelPriceOverrides.tier, tier),
+            eq(publicationChannels.id, input.channelId),
+            eq(publicationChannels.status, "active"),
           ),
         )
-        .limit(1),
-    ]);
-    const chargePriceAmount = calculateChannelPrice(
-      channel,
-      rule?.publicationMarkupBps ??
-        fallbackPricingRules[tier].publicationMarkupBps,
-      override?.priceAmount,
-    );
-    await tx
-      .insert(balanceAccounts)
-      .values({
-        organizationId: input.organizationId,
-        brandId: input.brandId,
-        asset: "publication_cny",
-      })
-      .onConflictDoNothing();
-    const [account] = await tx
-      .select()
-      .from(balanceAccounts)
-      .where(
-        and(
-          eq(balanceAccounts.organizationId, input.organizationId),
-          eq(balanceAccounts.brandId, input.brandId),
-          eq(balanceAccounts.asset, "publication_cny"),
-        ),
-      )
-      .limit(1);
-    if (!account) throw new Error("BALANCE_ACCOUNT_NOT_FOUND");
-    const [debited] = await tx
-      .update(balanceAccounts)
-      .set({
-        balance: sql`${balanceAccounts.balance} - ${chargePriceAmount}`,
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(balanceAccounts.id, account.id),
-          sql`${balanceAccounts.balance} >= ${chargePriceAmount}`,
-        ),
-      )
-      .returning();
-    if (!debited)
-      return { ok: false as const, code: "INSUFFICIENT_BALANCE" as const };
-    const { contentHtml: _contentHtml, ...orderInput } = input;
-    const [order] = await tx
-      .insert(publicationOrders)
-      .values({
-        ...orderInput,
-        priceAmount: chargePriceAmount,
-        currency: "CNY",
-      })
-      .returning();
-    if (chargePriceAmount > 0)
-      await tx.insert(balanceTransactions).values({
-        organizationId: input.organizationId,
-        asset: "publication_cny",
-        operation: "consume",
-        amount: chargePriceAmount,
-        sourceAccountId: account.id,
-        sourceBalanceAfter: debited.balance,
-        referenceType: "publication_order",
-        referenceId: order!.id,
-        idempotencyKey: `publication:${order!.id}:consume`,
-        reason: `发布订单：${channel.name}（${tier}）`,
-        actorUserId: input.createdBy,
-      });
-    return { ok: true as const, order: order!, replayed: false as const };
-  });
+        .limit(1);
+      if (!channel)
+        return { ok: false as const, code: "CHANNEL_NOT_FOUND" as const };
+      if (channel.providerStatus !== "active")
+        return { ok: false as const, code: "CHANNEL_NOT_FOUND" as const };
+      const manuscript = await resolvePublicationManuscript(
+        tx,
+        input,
+        channel.provider,
+      );
+      if (!manuscript.ok) return manuscript;
+      const [actor] = await tx
+        .select({ pricingTier: users.pricingTier })
+        .from(users)
+        .where(eq(users.id, input.createdBy))
+        .limit(1);
+      const tier = actor?.pricingTier ?? "retail";
+      const [[rule], [override]] = await Promise.all([
+        tx
+          .select({
+            publicationMarkupBps: pricingTierRules.publicationMarkupBps,
+          })
+          .from(pricingTierRules)
+          .where(eq(pricingTierRules.tier, tier))
+          .limit(1),
+        tx
+          .select({ priceAmount: publicationChannelPriceOverrides.priceAmount })
+          .from(publicationChannelPriceOverrides)
+          .where(
+            and(
+              eq(publicationChannelPriceOverrides.channelId, channel.id),
+              eq(publicationChannelPriceOverrides.tier, tier),
+            ),
+          )
+          .limit(1),
+      ]);
+      const chargePriceAmount = calculateChannelPrice(
+        channel,
+        rule?.publicationMarkupBps ??
+          fallbackPricingRules[tier].publicationMarkupBps,
+        override?.priceAmount,
+      );
+      await tx
+        .insert(balanceAccounts)
+        .values({
+          organizationId: input.organizationId,
+          brandId: input.brandId,
+          asset: "publication_cny",
+        })
+        .onConflictDoNothing();
+      const [account] = await tx
+        .select()
+        .from(balanceAccounts)
+        .where(
+          and(
+            eq(balanceAccounts.organizationId, input.organizationId),
+            eq(balanceAccounts.brandId, input.brandId),
+            eq(balanceAccounts.asset, "publication_cny"),
+          ),
+        )
+        .limit(1);
+      if (!account) throw new Error("BALANCE_ACCOUNT_NOT_FOUND");
+      const [debited] = await tx
+        .update(balanceAccounts)
+        .set({
+          balance: sql`${balanceAccounts.balance} - ${chargePriceAmount}`,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(balanceAccounts.id, account.id),
+            sql`${balanceAccounts.balance} >= ${chargePriceAmount}`,
+          ),
+        )
+        .returning();
+      if (!debited)
+        return { ok: false as const, code: "INSUFFICIENT_BALANCE" as const };
+      const [order] = await tx
+        .insert(publicationOrders)
+        .values({
+          organizationId: input.organizationId,
+          brandId: input.brandId,
+          channelId: input.channelId,
+          title: manuscript.content.title,
+          contentUrl: manuscript.content.contentUrl,
+          sourceJobId: input.sourceJobId,
+          sourceDocumentId: input.sourceDocumentId,
+          note: manuscript.content.submissionNote,
+          idempotencyKey: input.idempotencyKey,
+          createdBy: input.createdBy,
+          priceAmount: chargePriceAmount,
+          currency: "CNY",
+        })
+        .returning();
+      const [savedManuscript] = await tx
+        .insert(publicationOrderContents)
+        .values({ ...manuscript.content, orderId: order!.id })
+        .returning();
+      if (chargePriceAmount > 0)
+        await tx.insert(balanceTransactions).values({
+          organizationId: input.organizationId,
+          asset: "publication_cny",
+          operation: "consume",
+          amount: chargePriceAmount,
+          sourceAccountId: account.id,
+          sourceBalanceAfter: debited.balance,
+          referenceType: "publication_order",
+          referenceId: order!.id,
+          idempotencyKey: `publication:${order!.id}:consume`,
+          reason: `发布订单：${channel.name}（${tier}）`,
+          actorUserId: input.createdBy,
+        });
+      await audit?.(tx, order!.id);
+      return {
+        ok: true as const,
+        order: order!,
+        replayed: false as const,
+        manuscript: savedManuscript!,
+        channel,
+      };
+    },
+  );
 }
 export async function updatePublicationOrder(
   input: {

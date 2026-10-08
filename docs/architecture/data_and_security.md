@@ -18,7 +18,7 @@
 | 身份与租户           | `users`、`sessions`、`accounts`、`organizations`、`organization_members`                                                                                                    |
 | RBAC 与品牌范围      | `roles`、`permissions`、`role_permissions`、`member_roles`、`platform_user_roles`、`brand_access`、`organization_user_feature_scopes`                                       |
 | AnswerBit 配置与映射 | `platform_answerbit_credentials`、`platform_answerbit_brands`、`answerbit_connections`、`answerbit_team_bindings`、各类业务 mapping                                         |
-| 双余额与发布         | `balance_accounts`、`balance_transactions`、`feature_point_costs`、`platform_frog_credentials`、`publication_channels`、`publication_orders`                                |
+| 双余额与发布         | `balance_accounts`、`balance_transactions`、`feature_point_costs`、`platform_frog_credentials`、`publication_channels`、`publication_orders`、`publication_order_contents`                                |
 | 平台资源额度         | `billing_plans`、`billing_plan_versions`、`platform_subscriptions`、`subscription_entitlements`、`quota_ledgers`                                                            |
 | 工作流与用户数据     | `article_generation_jobs`、`article_tracking_submissions`、`content_folders`、`content_documents`、`content_document_versions`、`saved_views`、`report_exports`、通知相关表 |
 | 可观测与审计         | `answerbit_api_calls`、`operation_logs`、`runtime_heartbeats`、`runtime_task_statuses`                                                                                      |
@@ -56,6 +56,8 @@
 
 平台管理员可创建各类账号；具有成员管理权限的企业管理员可在添加成员时创建普通客户账号。客户账号、密码哈希、企业成员关系与本企业品牌权限在同一数据库事务内写入，企业端不能创建代理商或平台管理员。
 
+Better Auth 会话读取直接关联 PostgreSQL 的当前 Session 与用户，Redis 和 Cookie 均不缓存认证结果。账号停用与类型切换在更新用户的同一事务删除 Session，后续请求立即拒绝旧 Cookie；代理商期限及资料变更在下次请求生效。Redis 仅承载原子分布式认证限流，避免会话缓存绕过数据库撤销，详见[登录与会话](../domains/identity_and_access.md#login_session)。
+
 用户密码由 Better Auth 以 scrypt 哈希保存到 `accounts`，服务端不保留明文。用户名规范化为小写并满足固定格式；系统关闭自行注册。Session 默认有效期 7 天，每 24 小时刷新；生产环境启用安全 Cookie。所有浏览器写请求在 Session 查询和正文解析前复用 Better Auth 的可信 Origin 集合，未知、空值、非法来源以及缺少 Origin 的同站/跨站浏览器请求返回 `403 UNTRUSTED_ORIGIN`；没有浏览器来源信号的服务端调用仍按 Session 与权限校验。Web 在 Next.js 响应边界为所有 `/api/*` 成功与错误响应以及所有 HTML 页面统一写入 `Cache-Control: no-store, max-age=0`，避免浏览器或共享代理保存认证结果、租户数据、动态运行状态或可复用的页面 nonce；静态构建资产继续使用长期不可变缓存。自有业务 API 只把 `application/json` 或 `application/*+json` 的 UTF-8 正文交给共享流式解析器；Better Auth POST 保留原生媒体解析，但同样先经过共享的流式字节上限。两类入口均核对声明长度和实际接收字节，超过 4 MiB 时立即停止读取并返回 `413 PAYLOAD_TOO_LARGE`；自有业务 API 的媒体类型错误返回 `415 UNSUPPORTED_MEDIA_TYPE`，以避免内容嗅探和无界正文缓冲。全站 CSP 把脚本、样式、连接、字体和 Worker 限定到业务所需来源，禁止对象、子框架、内联事件处理器和跨站表单目标；HTML 响应为每次请求生成独立 nonce，Next.js 框架脚本、主题初始化脚本以及 Ant Design 服务端和动态样式元素必须携带该 nonce。服务端样式注册器使用与 Ant Design 5 相同的 `@ant-design/cssinjs` 1.x 缓存，提取样式时显式写入 nonce；客户端页面切换继续使用当前 HTML 文档的 nonce，直到完整导航生成新文档。RSC 响应不重复插入带新请求 nonce 的服务端样式，由客户端缓存注册新组件样式。`@rc-component/portal` 的锁屏样式和 `rc-util` 的滚动条测量样式通过受版本控制的 pnpm 补丁读取当前文档 nonce，避免弹窗和抽屉滚动锁被拦截；升级该依赖时需复核补丁及浏览器 CSP 回归。脚本通过 `strict-dynamic` 信任其加载链，生产脚本和样式元素策略均不开放 `unsafe-inline`，脚本策略也不开放 `unsafe-eval`。现有 React 内联 `style` 属性由独立的 `style-src-attr` 兼容策略允许，不会放宽 `<style>` 元素；开发环境仅为热更新额外允许 eval、WebSocket 与本地 HTTP(S) 连接。
 
 AnswerBit 只使用一组平台凭证。`platform_answerbit_credentials` 保存固定 TeamID 和 API Key 密文；密文使用独立平台 AAD 做 AES-256-GCM 加密。其 `permissions` 列只为迁移兼容保留，保存时自动写入全部已接入 operation，不参与统一凭证的运行时授权判断。`platform_answerbit_brands` 保存该 TeamID 的官方品牌目录，也是平台企业的唯一来源。完整密钥只在平台管理端提交，任何读取接口只返回掩码，统一配置表只授予平台数据库角色访问。
@@ -74,7 +76,7 @@ Web Gateway 与 Worker 在验证企业绑定和 BrandID 归属后，使用平台
 
 `system_release_state` 是平台只读的数据库发布门禁，分别记录 schema 与幂等种子的当前修订；schema 修订由迁移和紧随其后的版本记录步骤推进，seed 修订只在完整种子执行成功后推进。两类修订统一使用 `vN` 格式并按数字比较。Web readiness 通过 `geo_platform_app` 读取并确认修订不低于应用内要求的最低版本，更高修订保持旧应用 readiness 可用。迁移身份使用独立 `MIGRATION_DATABASE_URL`，运行实例不得持有发布权限。
 
-数据库初始化历史以 `v1.sql` 表达清理后的基线，该脚本直接创建当时有效的表、枚举、约束、索引、触发器、RLS 和授权，不包含已删除表或中间 `ALTER/DROP` 过程；其 Drizzle 时间戳保留原 `0044_lively_shard` 的最终时间戳。基线末尾只恢复当前迁移会话的 `search_path`，确保 Drizzle 在同一连接中继续执行增量 SQL，不改变持久对象。`v2.sql` 追加平台媒体发布加密凭证表，`v3.sql` 追加客户价格等级、渠道采购成本、上游状态与固定售价表，`v4.sql` 追加品牌文档库、不可变文档版本、文件夹和发布来源关联，并回填已有成功生成内容。v5—v7 追加读取缓存、积分加价率和任务价格快照，v8 追加企业服务与积分到期日，v9 追加文档创建幂等键及原请求指纹，v10 追加效果追踪提交、加密请求及结果状态，v11 追加企业历史流水操作者的受限显示查询，v12 追加发布取消与申诉当前操作记录，v13 追加个人视图创建幂等键、原指纹和删除标记，v14 追加内容文件夹创建幂等键、原指纹和删除标记。全新数据库依次执行 v1—v14，并把 schema 修订推进为 `v14`；已经完整执行旧 0000—0044 迁移链或上一版 `0044_baseline` 的数据库按时间戳跳过基线建表，再执行后续版本。`record-schema-version` 校验对应结构；未完成旧 0044 迁移的历史数据库必须先用旧版本升级完整。
+数据库初始化历史以 `v1.sql` 表达清理后的基线，该脚本直接创建当时有效的表、枚举、约束、索引、触发器、RLS 和授权，不包含已删除表或中间 `ALTER/DROP` 过程；其 Drizzle 时间戳保留原 `0044_lively_shard` 的最终时间戳。基线末尾只恢复当前迁移会话的 `search_path`，确保 Drizzle 在同一连接中继续执行增量 SQL，不改变持久对象。`v2.sql` 追加平台媒体发布加密凭证表，`v3.sql` 追加客户价格等级、渠道采购成本、上游状态与固定售价表，`v4.sql` 追加品牌文档库、不可变文档版本、文件夹和发布来源关联，并回填已有成功生成内容。v5—v7 追加读取缓存、积分加价率和任务价格快照，v8 追加企业服务与积分到期日，v9 追加文档创建幂等键及原请求指纹，v10 追加效果追踪提交、加密请求及结果状态，v11 追加企业历史流水操作者的受限显示查询，v12 追加发布取消与申诉当前操作记录，v13 追加个人视图创建幂等键、原指纹和删除标记，v14 追加内容文件夹创建幂等键、原指纹和删除标记，v15 追加发布稿件不可变快照及文章创建派发标记。全新数据库依次执行 v1—v15，并把 schema 修订推进为 `v15`；已经完整执行旧 0000—0044 迁移链或上一版 `0044_baseline` 的数据库按时间戳跳过基线建表，再执行后续版本。`record-schema-version` 校验对应结构；未完成旧 0044 迁移的历史数据库必须先用旧版本升级完整。
 
 ## 完整性与幂等
 
@@ -83,9 +85,11 @@ Web Gateway 与 Worker 在验证企业绑定和 BrandID 归属后，使用平台
 - 余额、订单和对应流水在同一数据库事务内变化；扣减使用数据库条件防止负数。
 - 人工入账、品牌划拨、外部调用和返还均使用组织范围内的幂等键，并在余额事务开始时以事务级 advisory lock 串行化相同“企业 + 幂等键”的并发请求；发布订单使用同范围唯一键和事务约束。
 - 发布状态更新限定合法前态并使用条件更新，终态不可再次推进。
+- `publication_order_contents` 按订单一对一保存投稿时标题、HTML、链接、原要求、来源文档版本或生成任务标识及原请求指纹。稿件与订单、扣款和创建审计在同一租户事务中提交，正文只由独立授权接口按需读取，不进入订单列表。数据库校验订单、内部绑定和品牌范围一致，租户 RLS 限制企业，两类应用角色均只有读取和插入权限；触发器禁止修改或删除已保存稿件。后续文档编辑、履约备注和渠道变更不改变原稿及请求指纹，历史缺失稿件不从当前来源伪造回填。
 - 首次管理员创建使用 advisory transaction lock，保证整个部署只成功一次。
+- 通知发布由 Web/Worker 共用数据库事务：规则行锁串行协调配置修改与发布，并复核评估时的完整配置和当前启用状态。已停用或已改配置的旧评估不产生通知，也不能覆盖新配置的健康记录；有效发布按滚动冷却窗口去重，不仅依赖事件分桶唯一键。
 - 异步任务执行前重新读取主体、租户和品牌权限，不信任陈旧任务载荷。报告和文章的业务记录、pg-boss 任务及创建审计共享同一 PostgreSQL 连接与事务，中途失败一起回滚，报告同时预留资源额度。资源额度预留校验稳定键对应的权益、数量、引用及已记录的操作人；确认和释放使用相同预留锁且互斥，不能重复结算或占用另一任务的预留。
-- `article_generation_jobs` 与 `report_exports` 使用每次领取时生成的 `execution_id` 作为执行租约；中间态、成功和失败更新都必须匹配当前租约，恢复任务清空旧租约后，迟到 Worker 不再有写权限。
+- `article_generation_jobs` 与 `report_exports` 使用每次领取时生成的 `execution_id` 作为执行租约；中间态、成功和失败更新都必须匹配当前租约，恢复任务清空旧租约后，迟到 Worker 不再有推进状态的权限。文章创建在外部调用前于任务行锁内复核当前租约，将首次积分预扣与一次性的 `create_dispatched_at` 同事务提交，扣款或标记写入失败一起回滚；失效租约、终态和已有 ArticleID 的查询不能产生新扣款。数据库禁止后续改写或清空 `create_dispatched_at`，是否可能派发不依赖收费金额。该标记与恢复行锁互斥；有标记但没有 ArticleID 时禁止自动重新创建，零积分任务同样适用。迟到的真实 ArticleID 可补存为原次派发的回执，但不能复活旧租约、终态或已经返还的扣款。
 - `article_tracking_submissions` 保存企业、品牌、内部绑定、原操作者和加密请求，并启用企业 RLS；Service 只返回当前操作者在授权品牌的提交。提交与积分预扣原子写入，企业与键的事务锁避免并发重发；上游成功 ArticleID 单独持久化后可恢复映射和成功审计。失败/结果不确定状态与返还同一事务提交，后台维护不自动调用外部创建。迟到成功保留已返还事实，不额外收费。
 - 发布取消与申诉的当前操作保存于原订单 `provider_action`，沿用订单的企业 RLS；租户 Repository 同时限定企业、品牌和订单。行锁串行化操作登记与解除，开始、明确失败和人工核对与审计原子提交；上游调用在事务外执行。发送及完成均复核操作编号，过期不会自动允许重发，取消完成与原订单退款、审计同一事务提交。
 - 内容文档、版本和文件夹均保存 `organization_id` 并启用租户 RLS；文档同时保存内部团队绑定与品牌范围。列表总数与摘要、详情正文与版本目录各自在租户角色的同一只读快照中读取；文件夹关联显式校验完整范围和活动状态。手工创建和导入使用 `(organization_id, creation_key)` 唯一约束及事务级 advisory lock 保证并发重放只创建一份文档与首版，创建、编辑、归档与历史恢复的审计、内容和版本在租户角色事务中原子写入，审计失败不留下新内容或新版本；历史恢复仅在当前品牌范围读取不可变快照。原请求指纹用于拒绝不同内容或操作者重用同一键。AI 生成任务通过唯一 `source_job_id` 最多自动入库一次，文档版本使用 `(document_id, version)` 唯一约束并在事务锁内单调递增。

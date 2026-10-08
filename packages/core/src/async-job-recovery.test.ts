@@ -9,7 +9,7 @@ describe("异步任务恢复决策", () => {
           kind: "article",
           status: "running",
           queueState,
-          hasFeatureCharge: true,
+          hasCreateDispatched: true,
         }),
       ).toBe("none");
   });
@@ -35,19 +35,30 @@ describe("异步任务恢复决策", () => {
         status: "running",
         queueState: "failed",
         hasExternalId: true,
-        hasFeatureCharge: true,
+        hasCreateDispatched: true,
       }),
     ).toBe("requeue");
   });
 
-  it("已扣费但没有上游 ID 的中断文章任务标记为结果不确定", () => {
-    expect(
-      decideAsyncJobRecovery({
-        kind: "article",
-        status: "running",
-        queueState: "failed",
-        hasFeatureCharge: true,
-      }),
-    ).toBe("fail_uncertain");
-  });
+  it.each(["queued", "running"] as const)(
+    "%s 文章有派发事实就禁止重创，与价格无关",
+    (status) => {
+      expect(
+        decideAsyncJobRecovery({
+          kind: "article",
+          status,
+          queueState: "failed",
+          hasCreateDispatched: true,
+        }),
+      ).toBe("fail_uncertain");
+      expect(
+        decideAsyncJobRecovery({
+          kind: "article",
+          status,
+          queueState: null,
+          hasCreateDispatched: false,
+        }),
+      ).toBe("requeue");
+    },
+  );
 });

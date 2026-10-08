@@ -32,14 +32,15 @@ bash scripts/install-docker.sh
 1. 校验 Compose 配置；
 2. 构建 `release`、`web` 与 `worker` 三个目标；
 3. 内置模式启动并等待 PostgreSQL 与 Redis 健康；
-4. 一次性运行 release 服务，依次执行迁移、记录 schema 版本、种子和 RLS 检查；
-5. 启动 Web 与 Worker；
-6. 等待 `/api/health/ready` 同时确认配置、PostgreSQL、Redis 和数据库发布版本；
-7. 输出 `/setup` 首位管理员初始化地址。
+4. 停止 Web 与 Worker，等待旧实例退出；沿用现有配置重新运行时也执行此步骤；
+5. 一次性运行 release 服务，依次执行迁移、记录 schema 版本、种子和 RLS 检查；失败时保持应用停止，不启动新实例；
+6. 启动 Web 与 Worker；
+7. 等待 `/api/health/ready` 同时确认配置、PostgreSQL、Redis 和数据库发布版本；
+8. 输出 `/setup` 首位管理员初始化地址。
 
 ## 外部服务连接
 
-外部 PostgreSQL 使用 `postgres://` 或 `postgresql://`；外部 Redis 使用 `redis://`，启用 TLS 时使用 `rediss://`。生产环境应分别提供业务连接和权限更高、短时使用的迁移连接。Redis 承载 Better Auth 分布式登录限流与会话缓存，PostgreSQL 继续保存持久 Session，因此 Redis 数据不作为账号恢复来源。
+外部 PostgreSQL 使用 `postgres://` 或 `postgresql://`；外部 Redis 使用 `redis://`，启用 TLS 时使用 `rediss://`。生产环境应分别提供业务连接和权限更高、短时使用的迁移连接。Redis 承载 Better Auth 原子分布式登录限流，Session 和当前账号资料直接读取 PostgreSQL，因此 Redis 数据不作为账号恢复来源。
 
 外部服务模式不会启动 Compose 中带 `bundled` profile 的 PostgreSQL 和 Redis。确保 Docker 容器能够访问填写的主机名；不要把容器内的 `localhost` 当作宿主机或数据库服务器。
 
@@ -61,12 +62,13 @@ docker compose --env-file .env.production -f docker-compose.production.yml down 
 
 ## 更新版本
 
-保留 `.env.production`，修改 `APP_VERSION` 后执行：
+保留 `.env.production`，修改 `APP_VERSION` 后执行。首次升级到 v15 时安排维护窗口，暂停投稿并停止旧 Web/Worker，等待正在执行的请求结束；旧 Worker 不能在新派发标记迁移后继续运行，旧 Web 也不能再创建没有原稿快照的订单：
 
 ```bash
-docker compose --env-file .env.production -f docker-compose.production.yml --profile tools build release web worker
-docker compose --env-file .env.production -f docker-compose.production.yml --profile tools run --rm release
+docker compose --env-file .env.production -f docker-compose.production.yml --profile tools build release web worker && \\
+docker compose --env-file .env.production -f docker-compose.production.yml stop web worker && \\
+docker compose --env-file .env.production -f docker-compose.production.yml --profile tools run --rm release && \\
 docker compose --env-file .env.production -f docker-compose.production.yml up -d web worker
 ```
 
-更新前备份 PostgreSQL。Redis AOF 卷可用于减少会话缓存丢失，但恢复业务的权威数据仍是 PostgreSQL。
+更新前备份 PostgreSQL。只有 release 成功退出后才启动新服务；检查 readiness、全部实例版本及投稿原稿读取后再结束维护。v15 不能回滚到不识别稿件快照或派发标记的旧版本后继续写入，故障时先停写并向前修复。Redis AOF 卷可保留登录限流状态，恢复业务和会话的权威数据是 PostgreSQL。
