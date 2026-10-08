@@ -2886,7 +2886,7 @@ paths:
   /v1/admin/answerbit-brands/{brandId}:
     get:
       summary: 查询腾讯品牌的平台目录项
-      description: 实时调用腾讯 `/geo/brand/get` 读取官方品牌资料，并合并对应平台企业投影。
+      description: 读取本地品牌目录、已保存品牌资料与对应平台企业投影，不调用腾讯；创建和修改成功后更新本地资料。
       tags:
         - Platform Admin
       security:
@@ -2908,17 +2908,6 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           description: 品牌不在平台目录中
-        "422":
-          description: 统一凭证未配置、不可用或腾讯拒绝品牌详情查询
-        "429":
-          description: 腾讯 AnswerBit 限流
-          headers:
-            Retry-After:
-              $ref: "#/components/headers/RetryAfter"
-        "502":
-          description: 腾讯服务或响应暂时异常
-        "504":
-          description: 腾讯品牌详情查询超时
     patch:
       summary: 修改腾讯企业
       description: 先读取腾讯官方品牌详情，再按上游契约保留默认语言和商品关键词、以数组提交官网，并调用 `/geo/brand/update`；上游成功后才更新品牌目录和对应平台企业投影。

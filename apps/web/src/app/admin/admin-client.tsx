@@ -828,7 +828,6 @@ export function AdminClient({
     children: group.keys.map((key) => ({
       key,
       label: tabs.find(([tabKey]) => tabKey === key)?.[2] ?? key,
-      disabled: key !== "integration" && !platformReady,
       icon:
         key === "overview" ? (
           <DashboardOutlined />
@@ -855,10 +854,6 @@ export function AdminClient({
   }));
   function selectTab(key: string) {
     if (!isTab(key)) return;
-    if (key !== "integration" && !platformReady) {
-      setMessage("请先完成腾讯 TeamID 与 API Key 接入");
-      return;
-    }
     setPage(1);
     setPageSize(20);
     setMobileMenuOpen(false);
@@ -991,13 +986,6 @@ export function AdminClient({
       );
       if (runId !== loadRunRef.current) return;
       setPlatformConfiguration(configuration);
-      if (configuration.status !== "active") {
-        setOverview(null);
-        if (tab !== "integration") {
-          router.replace("/admin?section=integration", { scroll: false });
-        }
-        return;
-      }
       const overviewPromise = api<Overview>("/api/v1/admin/overview").then(
         (value) => ({ ok: true as const, value }),
         (error: unknown) => ({ ok: false as const, error }),
@@ -1114,7 +1102,6 @@ export function AdminClient({
     callQuery,
     callStatus,
     loadPublicationChannels,
-    router,
     tab,
     userAccountType,
     userQuery,
@@ -2215,7 +2202,6 @@ export function AdminClient({
           <Tooltip title="客户工作台">
             <Button
               aria-label="返回客户工作台"
-              disabled={!platformReady}
               href="/dashboard"
               icon={<ArrowLeftOutlined />}
               type="text"
@@ -2389,7 +2375,7 @@ export function AdminClient({
                 />
               ) : null}
 
-              {platformReady && tab === "overview" ? (
+              {tab === "overview" ? (
                 <Flex gap={16} vertical>
                   <Row gutter={[16, 16]}>
                     <Col lg={4} md={8} xs={12}>
@@ -3126,10 +3112,10 @@ export function AdminClient({
                     description={
                       platformReady
                         ? "固定 TeamID 与统一 API Key 已生效。平台直接调用腾讯接口，最终授权以腾讯官方控制台为准。"
-                        : "填写固定 TeamID 与统一 API Key，并通过腾讯品牌接口验证。接入完成前，企业、用户、计费及业务模块保持锁定。"
+                        : "填写固定 TeamID 与统一 API Key，并通过腾讯品牌接口验证。其他管理模块可正常使用；调用腾讯接口的操作需要有效接入。"
                     }
                     message={
-                      platformReady ? "腾讯接入正常" : "第一步：先完成腾讯接入"
+                      platformReady ? "腾讯接入正常" : "腾讯服务尚未接入"
                     }
                     showIcon
                     type={platformReady ? "success" : "warning"}

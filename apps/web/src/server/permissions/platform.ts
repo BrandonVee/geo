@@ -1,8 +1,7 @@
-import { isPlatformTencentReady, type Permission } from "@geo/core";
+import type { Permission } from "@geo/core";
 import {
   db,
   permissions,
-  platformAnswerbitCredentials,
   platformUserRoles,
   rolePermissions,
   roles,
@@ -13,7 +12,7 @@ import { ApiError } from "@/server/http/errors";
 export async function requirePlatformPermission(
   userId: string,
   permission: Permission,
-  options: { allowBeforeTencentConnection?: boolean } = {},
+  _options: { allowBeforeTencentConnection?: boolean } = {},
 ) {
   const [grant] = await db
     .select({ role: roles.code })
@@ -31,22 +30,6 @@ export async function requirePlatformPermission(
     .limit(1);
   if (!grant)
     throw new ApiError(403, "PLATFORM_PERMISSION_DENIED", "没有平台管理权限");
-  if (!options.allowBeforeTencentConnection) {
-    const [configuration] = await db
-      .select({
-        status: platformAnswerbitCredentials.status,
-        teamId: platformAnswerbitCredentials.teamId,
-      })
-      .from(platformAnswerbitCredentials)
-      .where(eq(platformAnswerbitCredentials.id, 1))
-      .limit(1);
-    if (!isPlatformTencentReady(configuration))
-      throw new ApiError(
-        422,
-        "PLATFORM_TENCENT_CONNECTION_REQUIRED",
-        "请先完成腾讯 TeamID 与 API Key 接入，再使用平台管理功能",
-      );
-  }
   return { userId, role: grant.role };
 }
 

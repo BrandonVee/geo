@@ -67,52 +67,17 @@ export const platformAnswerbitService = {
     return publicConfiguration();
   },
 
-  async getBrand(brandId: string, userId: string, requestId: string) {
+  async getBrand(brandId: string, userId: string, _requestId: string) {
+    // @project-doc docs/domains/identity_and_access.md#workspace_directory
     await requirePlatformPermission(userId, "platform.answerbit.read");
-    const [configuration, brand] = await Promise.all([
-      repository.getConfiguration(),
-      repository.findBrand(brandId),
-    ]);
+    const brand = await repository.findBrand(brandId);
     if (!brand)
       throw new ApiError(
         404,
         "ANSWERBIT_BRAND_NOT_FOUND",
         "腾讯品牌不在平台目录中",
       );
-    if (!configuration?.teamId || configuration.status !== "active")
-      throw new ApiError(
-        422,
-        "ANSWERBIT_PLATFORM_CREDENTIAL_REQUIRED",
-        "请先配置并验证平台统一 TeamID 与 API Key",
-      );
-    let detail;
-    try {
-      detail = await getAnswerBitBrandDetail(
-        getSecretCipher().decrypt(
-          configuration.encryptedApiKey,
-          platformAnswerBitCredentialAad,
-        ),
-        brandId,
-        requestId,
-      );
-    } catch (error) {
-      return mapUpstreamError(error);
-    }
-    if (detail.belong_team_id !== configuration.teamId)
-      throw new ApiError(
-        409,
-        "ANSWERBIT_TEAM_SCOPE_MISMATCH",
-        "腾讯品牌不属于平台固定 TeamID",
-      );
-    return {
-      ...brand,
-      brandName: detail.brand_name,
-      alias: detail.alias,
-      website: detail.website[0] ?? "",
-      description: detail.description,
-      note: detail.note,
-      websiteAutoTrace: detail.website_auto_trace,
-    };
+    return brand;
   },
 
   async createBrand(

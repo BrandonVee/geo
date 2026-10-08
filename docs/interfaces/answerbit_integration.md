@@ -124,7 +124,7 @@ Apifox Schema 把计量时间字段声明为 Unix 整数，但当前腾讯生产
 - `PUT /v1/admin/answerbit-configuration` 验证并保存固定 TeamID 和新 API Key，同时刷新腾讯企业目录并生成缺失投影；
 - `POST /v1/admin/answerbit-enterprise-syncs` 使用当前统一凭证立即创建并完成一次目录核对，返回目录数及新增、更新、关闭和待确认数量；该资源仅用于运维诊断和兼容调用，管理页不展示日常操作按钮；
 - `POST /v1/admin/answerbit-brands` 在普通创建时调用腾讯 `/geo/brand/create`，附带初始化问题或竞品时调用 `/geo/brand/bundle/create`，再使用返回的真实 BrandID 更新目录并自动生成平台企业；
-- `GET /v1/admin/answerbit-brands/{brandId}` 通过腾讯 `/geo/brand/get` 读取官方品牌详情，并合并对应平台企业投影；
+- `GET /v1/admin/answerbit-brands/{brandId}` 读取本地品牌目录、资料映射与对应平台企业投影，不请求腾讯或解密统一凭证；资料以最近一次成功创建、修改或目录同步的本地记录为准；
 - `PATCH /v1/admin/answerbit-brands/{brandId}` 先读取官方详情并按上游字段契约调用腾讯 `/geo/brand/update`，成功后更新本地目录、映射和企业名称；
 - `PUT /v1/admin/answerbit-brands/{brandId}/icon` 独立调用腾讯 `/geo/brand/update/icon` 更新品牌 Logo，并返回腾讯图片地址；
 - `DELETE /v1/admin/answerbit-brands/{brandId}` 先调用腾讯 `/geo/brand/delete`，成功后关闭平台投影、内部范围绑定和连接，同时保留历史数据及删除标记；

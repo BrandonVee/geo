@@ -7,6 +7,10 @@ const mocks = vi.hoisted(() => ({
   updateBrandIcon: vi.fn(),
   updateBrandProjection: vi.fn(),
   writeAudit: vi.fn(),
+  findBrand: vi.fn(),
+  getBrandDetail: vi.fn(),
+  getConfiguration: vi.fn(),
+  permission: vi.fn(),
 }));
 
 vi.mock("@geo/db", () => ({
@@ -34,22 +38,22 @@ vi.mock("@/server/integrations/answerbit/modules/brands", () => ({
   createBrand: mocks.createBrand,
   createBrandBundle: mocks.createBrandBundle,
   deleteBrand: vi.fn(),
-  getBrandDetail: vi.fn(),
+  getBrandDetail: mocks.getBrandDetail,
   queryBrands: vi.fn(),
   updateBrand: vi.fn(),
   updateBrandIcon: mocks.updateBrandIcon,
 }));
 vi.mock("@/server/permissions/platform", () => ({
-  requirePlatformPermission: vi.fn(),
+  requirePlatformPermission: mocks.permission,
 }));
 vi.mock("@/server/repositories/platform-answerbit", () => ({
   platformAnswerbitRepository: {
-    findBrand: vi.fn().mockResolvedValue({
+    findBrand: mocks.findBrand.mockResolvedValue({
       brandId: "brand-1",
       brandName: "腾讯品牌",
       organizationId: "organization-1",
     }),
-    getConfiguration: vi.fn().mockResolvedValue({
+    getConfiguration: mocks.getConfiguration.mockResolvedValue({
       teamId: "team-1",
       status: "active",
       encryptedApiKey: "ciphertext",
@@ -88,6 +92,48 @@ describe("平台腾讯品牌业务编排", () => {
       organizationId: "organization-1",
       organizationName: "腾讯品牌",
     });
+  });
+
+  it("品牌详情读取本地资料，不访问腾讯或读取密钥配置", async () => {
+    const brand = {
+      brandId: "brand-1",
+      brandName: "本地品牌",
+      organizationId: "organization-1",
+      alias: "别名",
+      website: "https://example.test",
+      description: "介绍",
+      note: "备注",
+      websiteAutoTrace: false,
+    };
+    mocks.findBrand.mockResolvedValueOnce(brand);
+    mocks.getBrandDetail.mockRejectedValueOnce(
+      new Error("upstream unavailable"),
+    );
+    expect(
+      await platformAnswerbitService.getBrand("brand-1", "user-1", "request-1"),
+    ).toEqual(brand);
+    expect(mocks.permission).toHaveBeenCalledWith(
+      "user-1",
+      "platform.answerbit.read",
+    );
+    expect(mocks.getConfiguration).not.toHaveBeenCalled();
+    expect(mocks.getBrandDetail).not.toHaveBeenCalled();
+  });
+
+  it("本地目录不存在或已关闭的品牌返回404", async () => {
+    mocks.findBrand.mockResolvedValueOnce(undefined);
+    await expect(
+      platformAnswerbitService.getBrand("missing", "user-1", "request-1"),
+    ).rejects.toMatchObject({ status: 404, code: "ANSWERBIT_BRAND_NOT_FOUND" });
+    expect(mocks.getBrandDetail).not.toHaveBeenCalled();
+  });
+
+  it("没有管理权限时不读取本地品牌资料", async () => {
+    mocks.permission.mockRejectedValueOnce(new Error("permission denied"));
+    await expect(
+      platformAnswerbitService.getBrand("brand-1", "user-1", "request-1"),
+    ).rejects.toThrow("permission denied");
+    expect(mocks.findBrand).not.toHaveBeenCalled();
   });
 
   it("存在初始化问题或竞品时使用固定 TeamID 调用 bundle 创建", async () => {
