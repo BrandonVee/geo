@@ -826,7 +826,13 @@ test.describe("真实运营操作闭环", () => {
     await expect(knowledge).toHaveValue("企业 A 的参考素材");
     await expect(reference).toHaveValue("https://example.com/reference-a");
     await page.getByRole("tab", { name: "文档库", exact: true }).click();
+    await expect
+      .poll(() => new URL(page.url()).searchParams.get("stage"))
+      .toBe("library");
     await page.getByRole("tab", { name: "AI 生成", exact: true }).click();
+    await expect
+      .poll(() => new URL(page.url()).searchParams.get("stage"))
+      .toBe("generate");
     await expect(reference).toHaveValue("https://example.com/reference-a");
     await page.reload();
     await expect(knowledge).toHaveValue("企业 A 的参考素材");
