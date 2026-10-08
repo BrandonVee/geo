@@ -454,10 +454,7 @@ export const contentDocumentRepository = {
         body: version.snapshot.body,
         status: version.snapshot.status,
         language: version.snapshot.language as
-          | "zh-CN"
-          | "zh-TW"
-          | "en-US"
-          | "ja-JP",
+          "zh-CN" | "zh-TW" | "en-US" | "ja-JP",
         tags: version.snapshot.tags,
         changeSummary,
       },

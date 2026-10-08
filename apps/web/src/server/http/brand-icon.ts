@@ -43,8 +43,7 @@ const matchesMimeType = (value: Uint8Array, mimeType: string) => {
 };
 
 export type BrandIconValidationResult =
-  | { success: true; byteLength: number }
-  | { success: false; message: string };
+  { success: true; byteLength: number } | { success: false; message: string };
 
 export function validateBrandIconPayload(
   iconMimeType: string,

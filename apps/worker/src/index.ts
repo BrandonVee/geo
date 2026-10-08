@@ -675,8 +675,7 @@ async function processArticleGeneration(data: {
       (claimed[0].startedAt?.getTime() ?? Date.now()) +
       articleGenerationDeadlineMs;
     let progress:
-      | ReturnType<typeof answerBitArticleProgressSchema.parse>
-      | undefined;
+      ReturnType<typeof answerBitArticleProgressSchema.parse> | undefined;
     try {
       progress = await callAnswerBit(
         "/geo/article/get",

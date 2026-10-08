@@ -767,9 +767,8 @@ describe("文章追踪与生成契约", () => {
     ).toBe(false);
   });
   it("计费操作必须提交用户看到的积分报价", async () => {
-    const { createArticleJobSchema, traceArticleSchema } = await import(
-      "./index"
-    );
+    const { createArticleJobSchema, traceArticleSchema } =
+      await import("./index");
     expect(
       createArticleJobSchema.safeParse({
         ...scope,

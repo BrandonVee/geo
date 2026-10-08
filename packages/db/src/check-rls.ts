@@ -93,8 +93,7 @@ try {
     );
   } catch (error) {
     const databaseError = error as
-      | { code?: string; cause?: { code?: string } }
-      | undefined;
+      { code?: string; cause?: { code?: string } } | undefined;
     tenantRuntimeAccessDenied =
       databaseError?.code === "42501" || databaseError?.cause?.code === "42501";
   }
@@ -109,8 +108,7 @@ try {
     );
   } catch (error) {
     const databaseError = error as
-      | { code?: string; cause?: { code?: string } }
-      | undefined;
+      { code?: string; cause?: { code?: string } } | undefined;
     tenantRuntimeTaskAccessDenied =
       databaseError?.code === "42501" || databaseError?.cause?.code === "42501";
   }
@@ -124,8 +122,7 @@ try {
     );
   } catch (error) {
     const databaseError = error as
-      | { code?: string; cause?: { code?: string } }
-      | undefined;
+      { code?: string; cause?: { code?: string } } | undefined;
     tenantReleaseStateAccessDenied =
       databaseError?.code === "42501" || databaseError?.cause?.code === "42501";
   }
@@ -139,8 +136,7 @@ try {
     );
   } catch (error) {
     const databaseError = error as
-      | { code?: string; cause?: { code?: string } }
-      | undefined;
+      { code?: string; cause?: { code?: string } } | undefined;
     tenantFrogCredentialAccessDenied =
       databaseError?.code === "42501" || databaseError?.cause?.code === "42501";
   }

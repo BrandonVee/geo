@@ -8,11 +8,7 @@ import { z } from "zod";
 
 export type FrogMediaType = "website" | "wemedia";
 export type FrogPublicationErrorKind =
-  | "not_configured"
-  | "timeout"
-  | "upstream"
-  | "business"
-  | "invalid_response";
+  "not_configured" | "timeout" | "upstream" | "business" | "invalid_response";
 
 export class FrogPublicationError extends Error {
   constructor(

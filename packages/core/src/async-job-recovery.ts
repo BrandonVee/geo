@@ -1,10 +1,5 @@
 export type QueueJobState =
-  | "created"
-  | "retry"
-  | "active"
-  | "completed"
-  | "cancelled"
-  | "failed";
+  "created" | "retry" | "active" | "completed" | "cancelled" | "failed";
 
 export type AsyncJobRecoveryAction = "none" | "requeue" | "fail_uncertain";
 

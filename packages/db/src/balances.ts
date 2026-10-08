@@ -30,11 +30,7 @@ import {
 
 export type BalanceAsset = "answerbit_points" | "publication_cny";
 export type BalanceOperation =
-  | "grant"
-  | "allocate"
-  | "consume"
-  | "restore"
-  | "adjust";
+  "grant" | "allocate" | "consume" | "restore" | "adjust";
 export type BalanceTransactionFilters = {
   organizationId?: string;
   userId?: string;
