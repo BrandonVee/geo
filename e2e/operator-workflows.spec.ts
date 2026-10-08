@@ -9005,7 +9005,6 @@ test.describe("真实运营操作闭环", () => {
     await operation.press("Home");
     await operation.press("ArrowDown");
     await operation.press("ArrowDown");
-    await operation.press("ArrowDown");
     await operation.press("Enter");
     await card
       .getByLabel("流水日期（北京时间）", { exact: true })
