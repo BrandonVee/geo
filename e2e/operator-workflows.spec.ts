@@ -9002,10 +9002,11 @@ test.describe("真实运营操作闭环", () => {
       name: "按操作类型筛选企业流水",
     });
     await operation.press("ArrowDown");
-    await page
-      .locator(".ant-select-dropdown:visible")
-      .getByText("业务消耗", { exact: true })
-      .click();
+    await operation.press("Home");
+    await operation.press("ArrowDown");
+    await operation.press("ArrowDown");
+    await operation.press("ArrowDown");
+    await operation.press("Enter");
     await card
       .getByLabel("流水日期（北京时间）", { exact: true })
       .fill("2026-01-01");
