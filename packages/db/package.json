@@ -20,7 +20,7 @@
   "dependencies": {
     "@geo/config": "workspace:*",
     "@geo/core": "workspace:*",
-    "drizzle-orm": "latest",
+    "drizzle-orm": "catalog:",
     "pg": "latest"
   },
   "devDependencies": {

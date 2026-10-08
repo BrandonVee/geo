@@ -104,7 +104,8 @@ test("首次初始化、失败提示、登录和路由守卫形成完整闭环",
 
   await page.getByLabel("登录密码").fill(administrator.password);
   await page.getByRole("button", { name: "进入工作台" }).click();
-  await expect(page).toHaveURL(/\/admin\?section=integration$/);
+  await expect(page).toHaveURL(/\/dashboard$/);
+  await page.goto("/admin?section=integration");
   await expect(
     page.getByText("平台统一腾讯接入", { exact: true }),
   ).toBeVisible();

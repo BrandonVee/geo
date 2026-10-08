@@ -58,6 +58,8 @@ v15 对没有 ArticleID 的历史 `running` 任务，以及已经尝试过的 `q
 3. Operator workflow gate 通过 `pnpm test:workflows` 创建一次性数据库，运行真实事务与认证回归，按 Docker 镜像布局准备并直接启动 Web standalone 产物，先执行 `pnpm smoke:web`，再执行完整运营流程浏览器回归；包括等待任务的当前权限复核、企业有效期与余额事务，以及权限变更、余额、内容、通知、发布及渠道定价的异常恢复和多尺寸明暗主题检查。冒烟与浏览器使用同一临时本地地址，验证入口、静态资源与安全响应头随产物一起可用。测试明确启用运营用例，不能用未设置 `WORKFLOW_E2E` 的普通 Playwright 命令替代。腾讯与发布地址指向本地测试服务，不执行真实外部收费操作。结束后删除整个测试数据库。
 4. Container matrix 分别构建 `release`、`web`、`worker` 目标并检查最终镜像用户为 `node`，同时确认 Web 镜像包含运行时所需的 `public` 模型图标。
 
+Database release gate 与 Operator workflow gate 失败时上传 `test-results/` 中的浏览器截图、错误上下文和 trace，保留 7 天，供排查页面状态与请求时序。
+
 外部 GitHub Actions 使用不可变提交摘要固定，`.github/dependabot.yml` 每周为 pnpm 工作区、Actions 与 Docker 基础镜像提出独立更新。CI 只使用一次性占位密钥和本地服务数据库，不读取生产 Secrets。保护分支应把 Quality gate、Database release gate、Operator workflow gate 和三个 Container 检查设为必需状态；只有全部通过的提交才能进入镜像发布流程。
 
 ## 发布顺序
