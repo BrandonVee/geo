@@ -85,9 +85,11 @@ const resetQueryKeys = [
   ...Object.values(queryKeys),
 ];
 const number = new Intl.NumberFormat("zh-CN");
+const beijingToday = () =>
+  dayjs(new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10));
 const defaultRange = (): [Dayjs, Dayjs] => [
-  dayjs().subtract(29, "day").startOf("day"),
-  dayjs().startOf("day"),
+  beijingToday().subtract(29, "day"),
+  beijingToday(),
 ];
 const operationOptions = [
   { label: "全部收支", value: "all" },
@@ -501,7 +503,7 @@ export function PointUsageClient({
             <DatePicker.RangePicker
               disabled={!scopeReady}
               allowClear={false}
-              disabledDate={(current) => current.isAfter(dayjs(), "day")}
+              disabledDate={(current) => current.isAfter(beijingToday(), "day")}
               id="point-usage-date-range"
               onChange={(value) => {
                 if (value?.[0] && value[1])
@@ -513,12 +515,12 @@ export function PointUsageClient({
               presets={[
                 {
                   label: "近 7 天",
-                  value: [dayjs().subtract(6, "day"), dayjs()],
+                  value: [beijingToday().subtract(6, "day"), beijingToday()],
                 },
                 { label: "近 30 天", value: defaultRange() },
                 {
                   label: "近 90 天",
-                  value: [dayjs().subtract(89, "day"), dayjs()],
+                  value: [beijingToday().subtract(89, "day"), beijingToday()],
                 },
               ]}
               style={{ width: "100%" }}

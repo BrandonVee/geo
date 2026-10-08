@@ -29,11 +29,7 @@ export const runtimeTaskDefinitions = {
 export type RuntimeTaskName = keyof typeof runtimeTaskDefinitions;
 export type RuntimeTaskState = "running" | "succeeded" | "failed";
 export type RuntimeTaskHealth =
-  | "healthy"
-  | "running"
-  | "failed"
-  | "stale"
-  | "missing";
+  "healthy" | "running" | "failed" | "stale" | "missing";
 
 type RuntimeTaskSnapshot = {
   state: RuntimeTaskState;

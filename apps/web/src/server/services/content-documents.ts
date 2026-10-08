@@ -36,10 +36,7 @@ async function authorize(
   scope: Scope,
   userId: string,
   permission:
-    | "resource.read"
-    | "resource.create"
-    | "resource.update"
-    | "resource.delete",
+    "resource.read" | "resource.create" | "resource.update" | "resource.delete",
 ) {
   if (await isPlatformAdministrator(userId)) {
     await requirePlatformPermission(userId, permission);

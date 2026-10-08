@@ -160,6 +160,15 @@ jobs:
           wait "$worker_pid"
           grep -q '"event":"geo-worker.stopping"' "$RUNNER_TEMP/worker-smoke.log"
 
+      - name: Preserve browser failure evidence
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: browser-failures-${{ github.job }}
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
   operator-workflows:
     name: Operator workflow gate
     runs-on: ubuntu-latest
@@ -205,6 +214,15 @@ jobs:
         run: pnpm exec playwright install --with-deps chromium
       - name: Run isolated database and operator workflow regressions
         run: pnpm test:workflows
+
+      - name: Preserve browser failure evidence
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: browser-failures-${{ github.job }}
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 7
 
   container-build:
     name: Container / ${{ matrix.target }}

@@ -44,10 +44,7 @@ async function prepare(
   scope: Scope,
   userId: string,
   permission:
-    | "resource.read"
-    | "resource.create"
-    | "resource.update"
-    | "resource.delete",
+    "resource.read" | "resource.create" | "resource.update" | "resource.delete",
   feature: "geo_insights" | "content" = "geo_insights",
 ) {
   await authorizeBrand(

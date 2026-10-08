@@ -6,6 +6,7 @@
 
 - Node.js：满足当前 pnpm 工作区和 Next.js 版本要求；
 - pnpm `10.33.0`；
+- Web、Worker 与数据库包的 `drizzle-orm` 统一引用 `pnpm-workspace.yaml` 中的 catalog；升级时只修改该版本入口并重新生成锁文件，同时通过根 `package.json` 的 `pnpm.overrides.pg` 统一 PostgreSQL 驱动 peer 版本，避免跨包 SQL 类型来自不同 ORM 实例；
 - Docker 与 Docker Compose；
 - 可用端口：Web 默认 `3000`、PostgreSQL 默认 `5432`、Redis 默认 `6379`。
 

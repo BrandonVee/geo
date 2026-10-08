@@ -132,7 +132,7 @@ export const reportExportService = {
     if (!result.ok)
       throw new ApiError(
         result.code === "RESERVATION_ALREADY_SETTLED" ||
-        result.code === "QUOTA_IDEMPOTENCY_CONFLICT"
+          result.code === "QUOTA_IDEMPOTENCY_CONFLICT"
           ? 409
           : 402,
         result.code,

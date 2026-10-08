@@ -20,7 +20,7 @@
   "dependencies": {
     "@geo/config": "workspace:*",
     "@geo/core": "workspace:*",
-    "drizzle-orm": "latest",
+    "drizzle-orm": "catalog:",
     "pg": "latest"
   },
   "devDependencies": {
@@ -28,7 +28,7 @@
     "@types/pg": "latest",
     "drizzle-kit": "latest",
     "typescript": "^5.9.3",
-    "vitest": "^4.0.0",
+    "vitest": "^5.0.3",
     "tsx": "latest"
   }
 }
