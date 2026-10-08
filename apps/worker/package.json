@@ -16,7 +16,7 @@
     "@geo/contracts": "workspace:*",
     "@geo/core": "workspace:*",
     "@geo/db": "workspace:*",
-    "drizzle-orm": "^0.45.2",
+    "drizzle-orm": "catalog:",
     "pg-boss": "latest",
     "@geo/publication": "workspace:*"
   },

@@ -6119,6 +6119,9 @@ test.describe("真实运营操作闭环", () => {
       .locator(".ant-card")
       .filter({ has: page.getByText("企业资产划拨", { exact: true }) });
     const amount = allocation.getByLabel("划拨数量", { exact: true });
+    await expect(
+      allocation.getByRole("button", { name: "确认划拨", exact: true }),
+    ).toBeEnabled();
     await amount.fill("1.4");
     await allocation
       .getByRole("button", { name: "确认划拨", exact: true })

@@ -4,6 +4,12 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+catalogs:
+  default:
+    drizzle-orm:
+      specifier: 0.45.2
+      version: 0.45.2
+
 overrides:
   '@esbuild-kit/core-utils>esbuild': 0.25.12
   tslib: 2.8.1
@@ -79,7 +85,7 @@ importers:
         specifier: ^1.11.23
         version: 1.11.23
       drizzle-orm:
-        specifier: ^0.45.2
+        specifier: 'catalog:'
         version: 0.45.2(@types/pg@8.23.1)(kysely@0.29.5)(pg@8.23.0)
       next:
         specifier: latest
@@ -149,7 +155,7 @@ importers:
         specifier: workspace:*
         version: link:../../packages/publication
       drizzle-orm:
-        specifier: ^0.45.2
+        specifier: 'catalog:'
         version: 0.45.2(@types/pg@8.23.1)(kysely@0.29.5)(pg@8.23.0)
       pg-boss:
         specifier: latest
@@ -230,7 +236,7 @@ importers:
         specifier: workspace:*
         version: link:../core
       drizzle-orm:
-        specifier: latest
+        specifier: 'catalog:'
         version: 0.45.2(@types/pg@8.23.1)(kysely@0.29.5)(pg@8.23.0)
       pg:
         specifier: latest
