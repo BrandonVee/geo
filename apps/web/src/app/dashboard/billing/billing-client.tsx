@@ -927,6 +927,7 @@ function BillingWorkspace({
               disabled={
                 actionAttempt.inFlight || !scope.can("publication.read")
               }
+              aria-label="核对订单状态"
               loading={checkingAction}
               onClick={() => void checkOrderAction()}
             >
