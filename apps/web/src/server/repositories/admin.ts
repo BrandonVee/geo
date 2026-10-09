@@ -1,3 +1,4 @@
+import { getServerEnv } from "@/server/env";
 import { listPlatformOrganizations } from "./organization-directory";
 import {
   answerbitApiCalls,
@@ -16,6 +17,8 @@ import {
   roles,
   reportExports,
   runtimeHeartbeats,
+  platformAnswerbitCredentials,
+  platformFrogCredentials,
   runtimeTaskStatuses,
   sessions,
   users,
@@ -23,6 +26,7 @@ import {
 import { and, desc, eq, ilike, inArray, ne, or, sql } from "drizzle-orm";
 import {
   classifyRuntimeTaskHealth,
+  runtimeTaskBlockedReason,
   runtimeTaskDefinitions,
   type OrganizationFeature,
   type RuntimeTaskName,
@@ -73,6 +77,8 @@ export const adminRepository = {
       [articleJobHealth],
       [reportJobHealth],
       runtimeTaskRows,
+      [answerbitConfiguration],
+      [publicationConfiguration],
     ] = await Promise.all([
       db
         .select({
@@ -159,6 +165,16 @@ export const adminRepository = {
         .from(reportExports)
         .limit(1),
       db.select().from(runtimeTaskStatuses),
+      db
+        .select()
+        .from(platformAnswerbitCredentials)
+        .where(eq(platformAnswerbitCredentials.id, 1))
+        .limit(1),
+      db
+        .select()
+        .from(platformFrogCredentials)
+        .where(eq(platformFrogCredentials.id, 1))
+        .limit(1),
     ]);
     const calls24h = answerbitHealth?.total24h ?? 0;
     const failedCalls24h = answerbitHealth?.failed24h ?? 0;
@@ -172,10 +188,16 @@ export const adminRepository = {
     ).map((taskName) => {
       const definition = runtimeTaskDefinitions[taskName];
       const row = taskRowsByName.get(taskName);
+      const blockedReason = runtimeTaskBlockedReason(taskName, {
+        answerbit: answerbitConfiguration ?? null,
+        publication: publicationConfiguration ?? null,
+        publicationFallbackKey: getServerEnv().FROG_PUBLICATION_API_KEY,
+      });
       return {
         taskName,
         label: definition.label,
-        status: classifyRuntimeTaskHealth(row),
+        status: classifyRuntimeTaskHealth(row, Date.now(), blockedReason),
+        blockedReason,
         state: row?.state ?? null,
         instanceId: row?.instanceId ?? null,
         lastStartedAt: row?.lastStartedAt ?? null,
@@ -221,6 +243,9 @@ export const adminRepository = {
       staleNotificationRules: notificationHealth?.stale ?? 0,
       runtimeTasks,
       healthyRuntimeTasks,
+      blockedRuntimeTasks: runtimeTasks.filter(
+        (task) => task.status === "blocked",
+      ).length,
       failedRuntimeTasks: runtimeTasks.filter(
         (task) => task.status === "failed",
       ).length,

@@ -89,7 +89,10 @@ import {
   users,
 } from "@geo/db";
 import { PgBoss, type Job } from "pg-boss";
-import { runtimeTaskErrorCode } from "./runtime-task";
+import {
+  runtimeTaskErrorCode,
+  skippedRuntimeTaskErrorCode,
+} from "./runtime-task";
 import { evaluateNotificationRules } from "./notification-evaluation";
 import { assertWorkerJobAccess, WorkerJobAccessError } from "./job-access";
 import {
@@ -167,7 +170,12 @@ async function processTencentEnterpriseSync() {
     .limit(1);
   if (!configuration?.teamId || configuration.status !== "active") {
     console.info(JSON.stringify({ event: "tencent-enterprise-sync.skipped" }));
-    return;
+    return {
+      skipped: true,
+      reason: !configuration?.teamId
+        ? "ANSWERBIT_KEY_NOT_CONFIGURED"
+        : "ANSWERBIT_KEY_NOT_ACTIVE",
+    };
   }
   if (
     configuration.lastSyncedAt &&
@@ -1494,12 +1502,14 @@ async function runTrackedTask<T>(
 
   try {
     const result = await execute();
+    const skippedErrorCode = skippedRuntimeTaskErrorCode(taskName, result);
     if (trackingReady)
       try {
         await recordRuntimeTaskCompletion({
           taskName,
           runId,
-          state: "succeeded",
+          state: skippedErrorCode ? "failed" : "succeeded",
+          errorCode: skippedErrorCode ?? undefined,
           startedAt,
         });
       } catch (error) {

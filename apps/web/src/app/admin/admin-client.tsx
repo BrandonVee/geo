@@ -123,6 +123,7 @@ type Overview = {
   staleNotificationRules: number;
   runtimeTasks: RuntimeTask[];
   healthyRuntimeTasks: number;
+  blockedRuntimeTasks: number;
   failedRuntimeTasks: number;
   staleRuntimeTasks: number;
   missingRuntimeTasks: number;
@@ -139,7 +140,8 @@ type Overview = {
 type RuntimeTask = {
   taskName: string;
   label: string;
-  status: "healthy" | "running" | "failed" | "stale" | "missing";
+  status: "healthy" | "running" | "failed" | "stale" | "missing" | "blocked";
+  blockedReason: string | null;
   state: "running" | "succeeded" | "failed" | null;
   instanceId: string | null;
   lastStartedAt: string | null;
@@ -151,6 +153,7 @@ type RuntimeTask = {
   timeoutSeconds: number;
 };
 const runtimeTaskStatusMeta = {
+  blocked: { color: "warning", label: "等待接入" },
   healthy: { color: "success", label: "正常" },
   running: { color: "processing", label: "执行中" },
   failed: { color: "error", label: "失败" },
@@ -2351,7 +2354,11 @@ export function AdminClient({
                         <Statistic
                           suffix="%"
                           title="24 小时失败率"
-                          value={overview?.answerbitFailureRate24h ?? 0}
+                          value={
+                            overview?.answerbitCalls24h
+                              ? overview.answerbitFailureRate24h
+                              : "—"
+                          }
                           valueStyle={
                             (overview?.answerbitFailureRate24h ?? 0) > 0
                               ? { color: token.colorError }
@@ -2495,7 +2502,7 @@ export function AdminClient({
                                 : !workerHealthy
                                   ? "未检测到 90 秒内的 Worker 心跳，文章生成、报告导出、目录同步与持续检测可能停止，请检查 Worker 进程。"
                                   : !runtimeTasksHealthy
-                                    ? `Worker 在线，但有 ${overview.failedRuntimeTasks ?? 0} 项后台任务失败、${overview.staleRuntimeTasks ?? 0} 项超时、${overview.missingRuntimeTasks ?? 0} 项未上报，请进入运行与审计查看详情。`
+                                    ? `Worker 在线，但有 ${overview.failedRuntimeTasks ?? 0} 项后台任务失败、${overview.staleRuntimeTasks ?? 0} 项超时、${overview.missingRuntimeTasks ?? 0} 项未上报、${overview.blockedRuntimeTasks ?? 0} 项等待接入，请进入运行与审计查看详情。`
                                     : !asyncJobsHealthy
                                       ? `Worker 在线，但有 ${overview.staleAsyncJobs ?? 0} 个文章生成或报表导出作业超过恢复阈值，请检查异步任务恢复状态。`
                                       : "Worker 在线，但存在评估失败或超过 30 分钟未评估的通知规则，请进入通知中心查看错误码。"
@@ -3828,7 +3835,11 @@ export function AdminClient({
                           <Statistic
                             suffix="%"
                             title="AnswerBit 24 小时失败率"
-                            value={overview?.answerbitFailureRate24h ?? 0}
+                            value={
+                              overview?.answerbitCalls24h
+                                ? overview.answerbitFailureRate24h
+                                : "—"
+                            }
                           />
                         </Col>
                       </Row>
@@ -3863,6 +3874,14 @@ export function AdminClient({
                                 title={task.label}
                               >
                                 <Descriptions column={1} size="small">
+                                  {task.blockedReason ? (
+                                    <Descriptions.Item label="接入状态">
+                                      {task.blockedReason ===
+                                      "PUBLICATION_KEY_NOT_CONFIGURED"
+                                        ? "请在发布平台配置有效 API Key"
+                                        : "请在腾讯服务配置并验证 TeamID 与 API Key"}
+                                    </Descriptions.Item>
+                                  ) : null}
                                   <Descriptions.Item label="最近成功">
                                     {task.lastSucceededAt
                                       ? new Date(
@@ -3892,7 +3911,7 @@ export function AdminClient({
                               : !workerHealthy
                                 ? "Worker 心跳超过 90 秒未更新。请检查 Worker 进程、数据库连接与 pg-boss 消费状态。"
                                 : !runtimeTasksHealthy
-                                  ? `当前有 ${overview.failedRuntimeTasks ?? 0} 项后台任务失败、${overview.staleRuntimeTasks ?? 0} 项超时、${overview.missingRuntimeTasks ?? 0} 项未上报。请根据任务错误码和 Worker 日志排查。`
+                                  ? `当前有 ${overview.failedRuntimeTasks ?? 0} 项后台任务失败、${overview.staleRuntimeTasks ?? 0} 项超时、${overview.missingRuntimeTasks ?? 0} 项未上报、${overview.blockedRuntimeTasks ?? 0} 项等待接入。请根据任务错误码和 Worker 日志排查。`
                                   : !asyncJobsHealthy
                                     ? `当前有 ${overview.staleAsyncJobs ?? 0} 个异步作业超过恢复阈值。请检查“异步任务恢复”状态、队列任务和错误码。`
                                     : `当前有 ${overview.failedNotificationRules} 条评估失败、${overview.staleNotificationRules} 条超过 30 分钟未评估的持续检测规则。`

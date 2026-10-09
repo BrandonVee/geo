@@ -10,6 +10,7 @@ export {
 } from "./async-job-recovery";
 export {
   classifyRuntimeTaskHealth,
+  runtimeTaskBlockedReason,
   runtimeTaskDefinitions,
   type RuntimeTaskHealth,
   type RuntimeTaskName,

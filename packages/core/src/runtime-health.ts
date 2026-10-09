@@ -33,7 +33,8 @@ export type RuntimeTaskHealth =
   | "running"
   | "failed"
   | "stale"
-  | "missing";
+  | "missing"
+  | "blocked";
 
 type RuntimeTaskSnapshot = {
   state: RuntimeTaskState;
@@ -49,7 +50,9 @@ const timestamp = (value: Date | string) =>
 export function classifyRuntimeTaskHealth(
   snapshot: RuntimeTaskSnapshot | null | undefined,
   now = Date.now(),
+  blockedReason?: string | null,
 ): RuntimeTaskHealth {
+  if (blockedReason) return "blocked";
   if (!snapshot) return "missing";
   if (snapshot.state === "failed") return "failed";
 
@@ -67,4 +70,37 @@ export function classifyRuntimeTaskHealth(
     now - succeededAt <= snapshot.expectedIntervalSeconds * 2_000
     ? "healthy"
     : "stale";
+}
+
+export function runtimeTaskBlockedReason(
+  taskName: RuntimeTaskName,
+  dependencies: {
+    answerbit: {
+      teamId: string | null;
+      status: string;
+      encryptedApiKey: string;
+    } | null;
+    publication: { status: string; encryptedApiKey: string } | null;
+    publicationFallbackKey?: string;
+  },
+): string | null {
+  if (taskName === "tencent-enterprise-sync") {
+    if (
+      !dependencies.answerbit?.teamId ||
+      !dependencies.answerbit.encryptedApiKey
+    )
+      return "ANSWERBIT_KEY_NOT_CONFIGURED";
+    if (dependencies.answerbit.status !== "active")
+      return "ANSWERBIT_KEY_NOT_ACTIVE";
+  }
+  if (
+    taskName === "publication-reconciliation" &&
+    !(
+      dependencies.publication?.status === "active" &&
+      dependencies.publication.encryptedApiKey
+    ) &&
+    !dependencies.publicationFallbackKey?.trim()
+  )
+    return "PUBLICATION_KEY_NOT_CONFIGURED";
+  return null;
 }

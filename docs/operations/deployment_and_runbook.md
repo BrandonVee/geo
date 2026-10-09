@@ -98,6 +98,7 @@ docker run --rm \
 - `answerbit-api-call.log-failed` 表示调用结果日志未落库；`feature-usage.restore-failed` 表示完整功能失败后的即时积分返还未落库，必须分别按 requestId 或功能 referenceId 告警。计费维护会继续扫描失败或取消的文章任务并按原扣款幂等补还，运维仍应核对最终账本；
 - `operation_logs` 提供管理员和企业敏感操作审计；
 - `runtime_heartbeats` 记录每个 Worker 实例的启动时间、版本与最近心跳。Worker 每 30 秒更新一次；平台控制台只把 90 秒内的记录计为在线，启用通知规则超过 30 分钟未评估时标记过期。优雅退出会删除当前实例行，异常退出由心跳超时识别；7 天前的旧 Worker 记录在下次启动时清理。
+- Worker 心跳只表示进程在线。运营总览与运行审计按当前凭证独立检查任务前置条件：腾讯企业同步缺少 TeamID/Key 或凭证非 active、聚合发布同步没有有效网页 Key 且没有兼容环境 Key 时显示“等待接入”，不计入正常任务，整体运行健康显示需要处理。读取当前配置会覆盖历史成功状态，无需等待下一次调度；凭证恢复后仍按真实任务记录与时间判断健康。无 AnswerBit 调用记录时失败率显示“—”。
 - `runtime_task_statuses` 记录计费维护、异步任务恢复、通知评估、腾讯企业同步和聚合发布同步的当前 run ID、执行实例、最近启动/成功/失败、耗时和稳定错误码。聚合发布同步每 5 分钟核对订单，同时只在渠道缓存超过 30 分钟或网页 Key 更新后同步一次完整渠道目录；页面分页读取不会触发目录刷新。平台将失败、执行超时、超过两个调度周期未成功和未上报显示为异常；旧执行完成时因 run ID 不匹配不能覆盖新状态。`runtime-task-tracking.failed` 只表示观测写入失败，原任务仍按自己的结果完成或失败。
 - 腾讯统一凭证未填写、被停用或上游授权失效时，用户仍可登录并按权限查看内容、订单、余额和通知等本地记录；平台应通过全局提示和管理端“腾讯接入”页引导重新验证或轮换 Key。
 - 平台总览直接统计文章与报告的等待、执行、24 小时失败和过期数量；`queued` 超过 10 分钟或 `running` 超过 15 分钟视为过期。`async-job-reconciliation.completed` 应至少每 5 分钟出现一次，`requeuedArticles`、`uncertainArticles`、`requeuedReports`、`activeJobs`、`races` 与 `errors` 用于判断恢复效果；`ASYNC_JOB_RECONCILIATION_PARTIAL_FAILURE` 或 `async-job-reconciliation.item-failed` 需要按任务 ID 排查。
@@ -146,7 +147,7 @@ Redis 可启用 AOF 并纳入基础设施备份，但它只承载登录限流；
 
 ### 余额或发布异常
 
-按企业、资产、品牌、reference 和 idempotency key 核对 `balance_transactions`，不要直接改历史流水。发布失败/取消应存在唯一 restore 流水；状态冲突先确认当前订单终态，再决定是否创建人工调整记录。聚合投稿出现 `FROG_PUBLICATION_RESULT_UNCERTAIN` 时，先用本地订单的 `provider_order_id`、`third_id` 和上游后台核对是否已建单；结果未确认前不重复投稿或人工退款。`frog-publication.channels.refresh-failed` 使用最近缓存，`frog-publication.orders.sync-failed` 表示本轮状态未推进，可在恢复上游后刷新发布订单重试只读查询。后台 `publication-reconciliation` 每 5 分钟同步；`publication-reconciliation.completed` 报告 checked/errors，部分失败码为 `PUBLICATION_RECONCILIATION_PARTIAL_FAILURE`。未配置 Key 时任务跳过，上报成功不等于已同步订单；确认 Web、Worker 均注入同一 Key。管理员不得通过人工渠道状态入口处理聚合订单。
+按企业、资产、品牌、reference 和 idempotency key 核对 `balance_transactions`，不要直接改历史流水。发布失败/取消应存在唯一 restore 流水；状态冲突先确认当前订单终态，再决定是否创建人工调整记录。聚合投稿出现 `FROG_PUBLICATION_RESULT_UNCERTAIN` 时，先用本地订单的 `provider_order_id`、`third_id` 和上游后台核对是否已建单；结果未确认前不重复投稿或人工退款。`frog-publication.channels.refresh-failed` 使用最近缓存，`frog-publication.orders.sync-failed` 表示本轮状态未推进，可在恢复上游后刷新发布订单重试只读查询。后台 `publication-reconciliation` 每 5 分钟同步；`publication-reconciliation.completed` 报告 checked/errors，部分失败码为 `PUBLICATION_RECONCILIATION_PARTIAL_FAILURE`。未配置 Key 时任务跳过并记录 `PUBLICATION_KEY_NOT_CONFIGURED`，不推进最近成功时间；确认 Web、Worker 均注入同一 Key。管理员不得通过人工渠道状态入口处理聚合订单。
 
 ### Worker 积压
 
