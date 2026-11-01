@@ -3,4 +3,4 @@ packages:
   - packages/*
 
 catalog:
-  drizzle-orm: 0.45.2
+  drizzle-orm: 0.45.4
