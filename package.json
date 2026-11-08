@@ -27,13 +27,13 @@
     "db:rls-check": "node scripts/run-with-env.mjs pnpm --filter @geo/db rls-check"
   },
   "dependencies": {
-    "tslib": "2.8.1"
+    "tslib": "2.9.1"
   },
   "pnpm": {
     "overrides": {
       "pg": "8.23.0",
       "@esbuild-kit/core-utils>esbuild": "0.25.12",
-      "tslib": "2.8.1"
+      "tslib": "2.9.1"
     },
     "patchedDependencies": {
       "@rc-component/portal@1.1.2": "patches/@rc-component__portal@1.1.2.patch",
@@ -41,8 +41,8 @@
     }
   },
   "devDependencies": {
-    "@playwright/test": "1.59.1",
-    "axe-core": "4.13.0",
-    "prettier": "3.6.2"
+    "@playwright/test": "1.64.1",
+    "axe-core": "4.14.0",
+    "prettier": "3.9.10"
   }
 }
